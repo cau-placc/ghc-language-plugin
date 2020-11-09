@@ -1,11 +1,12 @@
-{-# OPTIONS_GHC -fplugin Plugin.CurryPlugin -O2 #-}
-{-# LANGUAGE NoImplicitPrelude                  #-}
-{-# LANGUAGE BangPatterns #-}
+{-# OPTIONS_GHC -fplugin Plugin.CurryPlugin #-}
+{-# LANGUAGE NoImplicitPrelude              #-}
 module Example where
 
 import Plugin.CurryPlugin.Prelude
 
-data X = X {-# UNPACK #-} !Int
-
-test :: X -> X -> X
-test (X n) (X m) = X (n + m)
+permutations :: [a] -> [a]
+permutations []     = []
+permutations (x:xs) = insert x (permutations xs)
+  where
+    insert e []     = [e]
+    insert e (y:ys) = (e:y:ys) ? (y : insert e ys)
