@@ -1,0 +1,49 @@
+cabal-version:       3.0
+
+name:                sandbox
+version:             0.1.0.0
+license:             BSD-3-Clause
+license-file:        LICENSE
+copyright:           (c) 2019-2020, Kai-Oliver Prott
+author:              Kai-Oliver Prott
+maintainer:          kai.prott@hotmail.de
+build-type:          Simple
+
+common deps
+  hs-source-dirs:    src
+  default-language:  Haskell2010
+  other-extensions:  NoImplicitPrelude
+  build-depends:
+    base             ^>=4.14.0.0,
+    curry-ghc-plugin -any
+
+library
+  import: deps
+  exposed-modules:
+    Example
+    Example2
+    Main
+--
+-- executable sandbox
+--   import: deps
+--   other-modules:
+--     Example
+--     Example2
+--   main-is: Main.hs
+--   ghc-options:
+--     -O2
+--     -fspecialise-aggressively
+--     -fspec-constr-keen
+--     -flate-specialise
+--     -fexpose-all-unfoldings
+--     -flate-dmd-anal
+--     -fsimplifier-phases=5
+--     -fsimpl-tick-factor=1000
+--     -fmax-simplifier-iterations=10
+--     -fstatic-argument-transformation
+--     -funfolding-keeness-factor=30
+--     -funfolding-fun-discount=1200
+--     -funfolding-dict-discount=600
+--     -ddump-simpl-stats -ddump-rule-firings
+--     -ddump-simpl
+--     -fforce-recomp

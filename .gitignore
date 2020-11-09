@@ -1,0 +1,10 @@
+# haskell
+dist
+dist-newstyle
+.ghc.environment.*
+cabal.project.local
+*.lock
+.stack-work
+
+# test output
+test-examples/out/*

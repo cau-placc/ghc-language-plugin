@@ -1,0 +1,134 @@
+cabal-version: 3.0
+name:          curry-ghc-plugin
+synopsis:      A compiler plugin to provide nondeterminism as a language feature
+version:       0.1.0.0
+license:       BSD-3-Clause
+license-file:  LICENSE
+copyright:     (c) 2019-2020, Kai-Oliver Prott
+maintainer:    kai.prott@hotmail.de
+author:        Kai-Oliver Prott
+category:      Language
+build-type:    Simple
+stability:     experimental
+
+description:
+  This compiler plugin for GHC enables the use of nondeterminism with
+  call-time-choice as a language feauture.
+  It can be activated per-module and provides the user with an
+  operator "(?) :: a -> a -> a",
+  that nondeterministically chooses between its arguments.
+
+  The user can get all values of a particular nondeterministic computation from
+  within normal Haskell code by using the function "eval".
+
+extra-source-files:
+  README.md
+
+source-repository head
+  type:     git
+  location: https://git.ps.informatik.uni-kiel.de/theses/2020/2020-kprott-ma/
+
+common deps
+  hs-source-dirs: src
+  build-depends:
+    base             ^>= 4.14.0.0,
+    ghc              ^>= 8.10.1,
+    ghc-prim         ^>= 0.6.1,
+    template-haskell ^>= 2.16.0,
+    bytestring       ^>= 0.10.10.0,
+    containers       ^>= 0.6.0,
+    deque            ^>= 0.4.3,
+    transformers     ^>= 0.5.6,
+    mtl              ^>= 2.2.2,
+    syb              ^>= 0.7.1,
+    extra            ^>= 1.7.3
+  ghc-options:      -Wall
+  default-language: Haskell2010
+  other-extensions:
+    TupleSections,
+    RecursiveDo,
+    EmptyCase,
+    LambdaCase,
+    OverloadedStrings,
+    TypeFamilies,
+    RankNTypes,
+    ScopedTypeVariables,
+    ExistentialQuantification,
+    TypeOperators,
+    FlexibleContexts,
+    FlexibleInstances,
+    UndecidableInstances,
+    FunctionalDependencies,
+    DeriveFunctor,
+    DeriveGeneric,
+    DeriveDataTypeable,
+    GeneralizedNewtypeDeriving,
+    DeriveAnyClass,
+    EmptyDataDeriving,
+    StandaloneDeriving,
+    DefaultSignatures,
+    MultiParamTypeClasses,
+    TemplateHaskell
+  other-modules:
+    Plugin.Dump
+    Plugin.CurryPlugin.ForeignExport
+    Plugin.Effect.Tree
+    Plugin.Effect.THEval
+    Plugin.Trans.Expr
+    Plugin.Trans.Import
+    Plugin.Trans.Constr
+    Plugin.Trans.Class
+    Plugin.Trans.CreateSyntax
+    Plugin.Trans.ClsInst
+    Plugin.Trans.TyCon
+    Plugin.Trans.Record
+    Plugin.Trans.DictInstFun
+    Plugin.Trans.Type
+    Plugin.Trans.Util
+    Plugin.Trans.Var
+    Plugin.Trans.Pat
+    Plugin.Trans.FunWiredIn
+    Plugin.Trans.TysWiredIn
+    Plugin.Trans.Enum
+    Plugin.Trans.Preprocess
+    Plugin.Trans.Derive
+    Plugin.Trans.PatternMatching
+    Plugin.Trans.ConstraintSolver
+
+library
+  import: deps
+  exposed-modules:
+    Plugin.CurryPlugin
+    Plugin.CurryPlugin.BuiltIn
+    Plugin.CurryPlugin.Encapsulation
+    Plugin.CurryPlugin.Prelude
+    Plugin.Effect.Monad
+    Plugin.Effect.Classes
+    Plugin.Effect.Annotation
+    Plugin.Effect.CurryEffect
+
+test-suite tests
+  import:         deps
+  type:           detailed-0.9
+  hs-source-dirs: test
+  test-module:    Tests
+  other-modules:
+    SemanticTests
+    Tests.Guards
+    Tests.UnknownNat
+    Tests.LetPattern
+
+    Plugin.CurryPlugin
+    Plugin.CurryPlugin.BuiltIn
+    Plugin.CurryPlugin.Encapsulation
+    Plugin.CurryPlugin.Prelude
+    Plugin.Effect.Monad
+    Plugin.Effect.Classes
+    Plugin.Effect.Annotation
+    Plugin.Effect.CurryEffect
+  build-depends:
+    curry-ghc-plugin,
+    process   ^>= 1.6.5.0,
+    filepath  ^>= 1.4.2.1,
+    directory ^>= 1.3.3.0,
+    Cabal     ^>= 3.2.0.0
