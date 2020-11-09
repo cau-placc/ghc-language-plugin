@@ -1,5 +1,7 @@
-{-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE LambdaCase   #-}
+{-# LANGUAGE ViewPatterns        #-}
+{-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE RankNTypes          #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-|
 Module      : Plugin.Trans.Type
 Description : Various functions to get or lift type-related things
@@ -14,24 +16,25 @@ module Plugin.Trans.Type where
 import Data.IORef
 import Data.List
 import Data.Maybe
-import Data.Generics.Aliases
-import Data.Generics.Schemes
+import Data.Data (Typeable, Data, gcast, gmapM)
+--import Data.Generics.Aliases
+--import Data.Generics.Schemes
 
-import OccName    hiding (varName)
-import HscTypes
-import GhcPlugins hiding (substTy, extendTvSubst)
-import TyCoRep
-import Type
-import Finder
-import IfaceEnv
-import TcRnTypes
-import TcRnMonad
-import Class
-import TcMType
-import UniqMap
-import IfaceSyn
-import TcEvidence
-import Predicate
+import GHC.Types.Name.Occurrence hiding (varName)
+--import HscTypes
+import GHC.Plugins hiding (substTy, extendTvSubst)
+import GHC.Core.TyCo.Rep
+import GHC.Unit.Finder
+import GHC.Iface.Env
+import GHC.Tc.Types
+import GHC.Tc.Utils.Monad
+import GHC.Core.Class
+import GHC.Tc.Utils.TcMType
+import GHC.Types.Unique.Set
+import GHC.Types.Unique.FM
+import GHC.Iface.Syntax
+import GHC.Tc.Types.Evidence
+import GHC.Core.Predicate
 
 -- This Type contains an IORef, because looking up the mapping between
 -- new <-> old type constructors needs IO.
@@ -39,8 +42,8 @@ import Predicate
 -- we will probably only need a fraction of those anyway
 -- | A mapping between the lifted and unlifted version of each type constructor,
 -- loaded in lazily.
-type TyConMap = (HscEnv, TcRef (UniqMap TyCon TyCon, -- Old -> New
-                                UniqMap TyCon TyCon, -- New -> Old
+type TyConMap = (HscEnv, TcRef (UniqFM TyCon TyCon, -- Old -> New
+                                UniqFM TyCon TyCon, -- New -> Old
                                 UniqSet TyCon,       -- Old
                                 UniqSet TyCon))      -- New
 
@@ -457,7 +460,7 @@ lookupTyConMap d (hsc, ref) tc = do
   -- Check if we have all the infos for the given TyCon loaded already.
   if tc `elementOfUniqSet` s
     -- Look the TyCon up, with a default fallback.
-    then return (lookupWithDefaultUniqMap m tc tc)
+    then return (lookupWithDefaultUniqFM m tc tc)
     -- Otherwise, get the module of the type constructor if available.
     else case mbMdl of
       -- Check if the module is in the home or external package and load it
@@ -491,20 +494,20 @@ lookupTyConMap d (hsc, ref) tc = do
     declFinder (_, f) = occName (ifName f) == occ2
 
     -- | Check if the given TyCon uses the name we are looking for.
-    tyThingFinder (_, ATyCon tc') = occName n' == occ2 &&
-                                    nameModule_maybe n' == mbMdl
+    tyThingFinder (_, ATcTyCon tc') = occName n' == occ2 &&
+                                      nameModule_maybe n' == mbMdl
       where n' = tyConName tc'
     tyThingFinder _               = False
 
     -- | Insert a lookup result into the correct map on success.
     -- Regardless of success or not, update the set of TyCons that we have
     -- performed a lookup for.
-    processResult m s (mn, mo, sn, so) (Just (ATyCon tc'))
+    processResult m s (mn, mo, sn, so) (Just (ATcTyCon tc'))
       | GetNew <- d = do
-        writeIORef ref (addToUniqMap m tc tc', mo, addOneToUniqSet s tc, so)
+        writeIORef ref (addToUniqFM m tc tc', mo, addOneToUniqSet s tc, so)
         return tc'
       | otherwise   = do
-        writeIORef ref (mn, addToUniqMap m tc tc', sn, addOneToUniqSet s tc)
+        writeIORef ref (mn, addToUniqFM m tc tc', sn, addOneToUniqSet s tc)
         return tc'
     processResult _ s (mn, mo, sn, so) _
       | GetNew <- d = do
@@ -525,7 +528,7 @@ lookupTyConMap d (hsc, ref) tc = do
 
 -- | Update the type constructors in a type with a pure,
 -- side-effect free replacement map.
-replaceTyconTyPure :: UniqMap TyCon TyCon -> Type -> Type
+replaceTyconTyPure :: UniqFM TyCon TyCon -> Type -> Type
 replaceTyconTyPure tcs = replaceTyconTy'
   where
     replaceTyconTy' (ForAllTy b ty) =
@@ -541,7 +544,7 @@ replaceTyconTyPure tcs = replaceTyconTy'
     replaceTyconTy' (AppTy ty1 ty2) =
       AppTy (replaceTyconTy' ty1) (replaceTyconTy' ty2)
     replaceTyconTy' (TyConApp tc tys) =
-      let tc' = case lookupUniqMap tcs tc of
+      let tc' = case lookupUniqFM tcs tc of
                   Just x -> x
                   _      -> tc
       in TyConApp tc' (map replaceTyconTy' tys)
@@ -603,3 +606,46 @@ mkEvWrapSimilar = go []
 
     gos []     _  _  = WpHole
     gos (w:ws) vs cs = go ws w vs cs
+
+-- | Make a generic monadic transformation;
+--   start from a type-specific case;
+--   resort to return otherwise
+--
+mkM :: ( Monad m
+       , Typeable a
+       , Typeable b
+       )
+    => (b -> m b)
+    -> a
+    -> m a
+mkM = extM return
+
+-- | Extend a generic monadic transformation by a type-specific case
+extM :: ( Monad m
+        , Typeable a
+        , Typeable b
+        )
+     => (a -> m a) -> (b -> m b) -> a -> m a
+extM def ext = unM ((M def) `ext0` (M ext))
+
+
+-- | The type constructor for transformations
+newtype M m x = M { unM :: x -> m x }
+
+-- | Flexible type extension
+ext0 :: (Typeable a, Typeable b) => c a -> c b -> c a
+ext0 def ext = maybe def id (gcast ext)
+
+-- | Monadic variation on everywhere
+everywhereM :: forall m. Monad m => GenericM m -> GenericM m
+everywhereM f = go
+  where
+    go :: GenericM m
+    go x = do
+      x' <- gmapM go x
+      f x'
+
+-- | Generic monadic transformations,
+--   i.e., take an \"a\" and compute an \"a\"
+--
+type GenericM m = forall a. Data a => a -> m a

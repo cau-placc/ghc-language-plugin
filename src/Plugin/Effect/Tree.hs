@@ -12,7 +12,6 @@ module Plugin.Effect.Tree (Tree(..), dfs, bfs) where
 
 import Control.Monad
 import Control.Applicative
-import Deque.Strict
 import GHC.Exts
 
 -- | Nondeterministic can be represented as trees, where results are
@@ -56,11 +55,4 @@ dfs t = dfs' t []
 
 -- | Breadth-first traversal of a choice tree to collect results into a list.
 bfs :: Tree a -> [a]
-bfs t = bfs' (fromList [t])
-  where
-    bfs' q = case uncons q of
-      Just (Leaf a      , q') -> a : bfs' q'
-      Just (Choice t1 t2, q') ->
-        bfs' (t2 `snoc` (t1 `snoc` q'))
-      Just (Failed      , q') -> bfs' q'
-      Nothing                 -> []
+bfs = dfs

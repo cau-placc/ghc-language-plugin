@@ -1,11 +1,14 @@
-{-# OPTIONS_GHC -fplugin Plugin.CurryPlugin -O2 #-}
-{-# LANGUAGE NoImplicitPrelude                  #-}
-{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE NoImplicitPrelude              #-}
+{-# LANGUAGE RankNTypes #-}
 module Example where
 
 import Plugin.CurryPlugin.Prelude
 
-data X = X {-# UNPACK #-} !Int
+newtype I a = I a
 
-test :: X -> X -> X
-test (X n) (X m) = X (n + m)
+bind :: I a -> (a -> I b) -> I b
+bind (I a) f = f a
+
+applyBoth :: I (I (forall c. I c -> I c) -> I (I (I a, I b) -> I (I a, I b)))
+-- Nondet ((forall a. a)
+applyBoth = I (\f -> I (\t -> f `bind` (\f' -> t `bind` (\(a, b) -> I (f' a, f' b)))))

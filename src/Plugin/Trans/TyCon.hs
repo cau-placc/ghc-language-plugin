@@ -82,35 +82,6 @@ liftTycon stycon mtycon supply tcs tcsM tc
           name (tyConBinders tc) (tyConResKind tc)
           (tyConRoles tc) ty (isTauTyCon tc) (isFamFreeTyCon tc)
     return (supply1, (tc, Just tycon))
-  | isFamilyTyCon tc = mdo
-      let u1 = uniqFromSupply supply
-          (supply', other) = splitUniqSupply supply
-          u2 = uniqFromSupply other
-          name = liftName (tyConName tc) u1
-          flav = case famTyConFlav_maybe tc of
-            Nothing
-              -> panicAnyUnsafe "Type family is missing its flavour" tc
-            Just (DataFamilyTyCon nm)
-              -> DataFamilyTyCon (liftName nm u2)
-            Just OpenSynFamilyTyCon
-              -> OpenSynFamilyTyCon
-            Just (ClosedSynFamilyTyCon mbax)
-              -> ClosedSynFamilyTyCon (fmap (liftFamAx u2 tycon) mbax)
-            Just AbstractClosedSynFamilyTyCon
-              -> AbstractClosedSynFamilyTyCon
-            Just (BuiltInSynFamTyCon b)
-              -> BuiltInSynFamTyCon b
-          parent = case tyConFlavour tc of
-            DataFamilyFlavour     p -> p
-            OpenTypeFamilyFlavour p -> p
-            _                       -> Nothing
-      parent' <- maybe (return Nothing)
-                   (fmap Just . lookupTyConMap GetNew tcsM) parent
-      let parentCls = parent' >>= lookupUniqMap tcs >>= tyConClass_maybe
-          tycon = mkFamilyTyCon name (tyConBinders tc) (tyConResKind tc)
-                    (tyConFamilyResVar_maybe tc) flav parentCls
-                    (tyConInjectivityInfo tc)
-      return (supply', (tc, Just tycon))
   | otherwise = return (supply, (tc, Nothing))
 
 -- Sadly, newtype constr have to be treated differently than data constr
@@ -183,9 +154,6 @@ liftAlgRhs isClass stycon mtycon tcs tcsM tycon us
     let co' = mkNewTypeCoAxiom axNameNew tycon etavs etaroles etarhs
     return (u4, NewTyCon dc' rhs' (etavs, etarhs) co' lev)
 liftAlgRhs _ _ _ _ _ _ u c = return (u, c)
-
-liftFamAx :: Unique -> TyCon -> CoAxiom Branched -> CoAxiom Branched
-liftFamAx u tc ax = undefined
 
 -- | Eta-reduce type variables of a newtype declaration to generate a
 -- more siple newtype coercion.
