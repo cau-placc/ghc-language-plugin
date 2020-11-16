@@ -87,7 +87,7 @@ mkConLam w c (ty:tys) vs = do
   (e, resty) <- mkConLam w c tys (v:vs)
   -- Make the lambda for this variable
   let e' = mkLam (noLoc v) ty' e resty
-  let lamty = mkVisFunTy ty' resty
+  let lamty = mkVisFunTyMany ty' resty
   -- Wrap the whole term in a 'return'.
   e'' <- mkApp mkNewReturnTh lamty [noLoc $ HsPar noExtField e']
   let mty = mkTyConTy mtc
@@ -133,7 +133,7 @@ mkNewReturnTh etype = do
   mtycon <- getMonadTycon
   th_expr <- liftQ [| return |]
   let mty = mkTyConTy mtycon
-  let expType = mkVisFunTy etype $ -- 'e ->
+  let expType = mkVisFunTyMany etype $ -- 'e ->
                 mkAppTy mty etype  -- m 'e
   mkNewAny th_expr expType
 
@@ -144,8 +144,8 @@ mkNewBindTh etype btype = do
   th_expr <- liftQ [| (>>=) |]
   let mty = mkTyConTy mtycon
   let resty = mkAppTy mty btype
-  let expType = mkVisFunTy (mkAppTy mty etype) $    -- m 'e ->
-                mkVisFunTy (mkVisFunTy etype resty) -- (e' -> m b) ->
+  let expType = mkVisFunTyMany (mkAppTy mty etype) $    -- m 'e ->
+                mkVisFunTyMany (mkVisFunTyMany etype resty) -- (e' -> m b) ->
                   resty                             -- m b
   mkNewAny th_expr expType
 
@@ -155,8 +155,8 @@ mkNewFmapTh etype btype = do
   mtycon <- getMonadTycon
   th_expr <- liftQ [| fmap |]
   let appMty = mkTyConApp mtycon . (:[])
-  let expType = mkVisFunTy (mkVisFunTy etype btype) $     -- ('e -> 'b) ->
-                mkVisFunTy (appMty etype) (appMty btype)  -- m 'e -> m 'b
+  let expType = mkVisFunTyMany (mkVisFunTyMany etype btype) $     -- ('e -> 'b) ->
+                mkVisFunTyMany (appMty etype) (appMty btype)  -- m 'e -> m 'b
   mkNewAny th_expr expType
 
 -- | Create a 'share' for the given argument types.
@@ -164,7 +164,7 @@ mkNewShareTh :: Type -> TcM (LHsExpr GhcTc)
 mkNewShareTh ty = do
   mtycon <- getMonadTycon
   th_expr <- liftQ [| share |]
-  let expType = mkVisFunTy ty $        -- a ->
+  let expType = mkVisFunTyMany ty $        -- a ->
                 mkTyConApp mtycon [ty] -- m a
   mkNewAny th_expr expType
 
@@ -173,7 +173,7 @@ mkNewLiftETh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewLiftETh ty1 ty2 = do
   mty <- (. (: [])) . mkTyConApp <$> getMonadTycon
   th_expr <- liftQ [| liftE |]
-  let expType = mkVisFunTy (mty ty1) (mty ty2) -- m a -> m b
+  let expType = mkVisFunTyMany (mty ty1) (mty ty2) -- m a -> m b
   mkNewAny th_expr expType
 
 -- | Create a 'nf' for the given argument types.
@@ -181,7 +181,7 @@ mkNewNfTh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewNfTh ty1 ty2 = do
   mty <- (. (: [])) . mkTyConApp <$> getMonadTycon
   th_expr <- liftQ [| nf |]
-  let expType = mkVisFunTy (mty ty1) (mty ty2) -- m a -> m b
+  let expType = mkVisFunTyMany (mty ty1) (mty ty2) -- m a -> m b
   mkNewAny th_expr expType
 
 -- | Create a 'apply1' for the given argument types.
@@ -190,10 +190,10 @@ mkNewApply1 ty1 ty2 = do
   mtycon <- getMonadTycon
   th_expr <- liftQ [| apply1 |]
   let expType =
-        mkVisFunTy (mkTyConApp mtycon                     -- Nondet
-                  [mkVisFunTy (mkTyConApp mtycon [ty1])   --  ( Nondet a ->
+        mkVisFunTyMany (mkTyConApp mtycon                     -- Nondet
+                  [mkVisFunTyMany (mkTyConApp mtycon [ty1])   --  ( Nondet a ->
                            (mkTyConApp mtycon [ty2])])    --    Nondet b ) ->
-          (mkVisFunTy (mkTyConApp mtycon [ty1])           -- Nondet a ->
+          (mkVisFunTyMany (mkTyConApp mtycon [ty1])           -- Nondet a ->
                    (mkTyConApp mtycon [ty2]))             -- Nondet b
   mkNewAny th_expr expType
 
@@ -204,13 +204,13 @@ mkNewApply2 ty1 ty2 ty3 = do
   th_expr <- liftQ [| apply2 |]
   let expType =
         mkTyConApp mtycon                                    -- Nondet
-                  [mkVisFunTy (mkTyConApp mtycon [ty1])      --  (Nondet a ->
+                  [mkVisFunTyMany (mkTyConApp mtycon [ty1])      --  (Nondet a ->
                     (mkTyConApp mtycon                       --   Nondet
-                       [mkVisFunTy (mkTyConApp mtycon [ty2]) --     (Nondet b ->
+                       [mkVisFunTyMany (mkTyConApp mtycon [ty2]) --     (Nondet b ->
                          (mkTyConApp mtycon [ty3])])]        --      Nondet c )
-        `mkVisFunTy`                                         --  ) ->
-        mkVisFunTy (mkTyConApp mtycon [ty1])                 -- Nondet a ->
-          (mkVisFunTy (mkTyConApp mtycon [ty2])              -- Nondet b ->
+        `mkVisFunTyMany`                                         --  ) ->
+        mkVisFunTyMany (mkTyConApp mtycon [ty1])                 -- Nondet a ->
+          (mkVisFunTyMany (mkTyConApp mtycon [ty2])              -- Nondet b ->
                    (mkTyConApp mtycon [ty3]))                -- Nondet c
   mkNewAny th_expr expType
 
@@ -221,13 +221,13 @@ mkNewApply2Unlifted ty1 ty2 ty3 = do
   th_expr <- liftQ [| apply2Unlifted |]
   let expType =
         mkTyConApp mtycon                                 -- Nondet
-                  [mkVisFunTy (mkTyConApp mtycon [ty1])      --  ( Nondet a ->
+                  [mkVisFunTyMany (mkTyConApp mtycon [ty1])      --  ( Nondet a ->
                     (mkTyConApp mtycon                    --    Nondet
-                       [mkVisFunTy (mkTyConApp mtycon [ty2]) --      ( Nondet b ->
+                       [mkVisFunTyMany (mkTyConApp mtycon [ty2]) --      ( Nondet b ->
                          (mkTyConApp mtycon [ty3])])]     --        Nondet c )
-        `mkVisFunTy`                                         --  ) ->
-        mkVisFunTy (mkTyConApp mtycon [ty1])                 -- Nondet a ->
-          (mkVisFunTy                     ty2                --        b ->
+        `mkVisFunTyMany`                                         --  ) ->
+        mkVisFunTyMany (mkTyConApp mtycon [ty1])                 -- Nondet a ->
+          (mkVisFunTyMany                     ty2                --        b ->
                    (mkTyConApp mtycon [ty3]))             -- Nondet c
   mkNewAny th_expr expType
 
@@ -240,9 +240,9 @@ mkListBind a b = do
     mk _ = do
       th_expr <- liftQ [| (>>=) |]
       let expType = mkTyConApp listTyCon [a]
-                    `mkVisFunTy`
-                    ((a `mkVisFunTy` mkTyConApp listTyCon [b])
-                      `mkVisFunTy`
+                    `mkVisFunTyMany`
+                    ((a `mkVisFunTyMany` mkTyConApp listTyCon [b])
+                      `mkVisFunTyMany`
                       mkTyConApp listTyCon [b])
       mkNewAny th_expr expType
 
@@ -254,7 +254,7 @@ mkListReturn a = do
   where
     mk _ = do
       th_expr <- liftQ [| return |]
-      let expType = a `mkVisFunTy` mkTyConApp listTyCon [a]
+      let expType = a `mkVisFunTyMany` mkTyConApp listTyCon [a]
       mkNewAny th_expr expType
 
 -- | Create a 'fail' specialized to lists for list comprehensions.
@@ -265,7 +265,7 @@ mkListFail a = do
   where
     mk _ = do
       th_expr <- liftQ [| fail |]
-      let expType = stringTy `mkVisFunTy` mkTyConApp listTyCon [a]
+      let expType = stringTy `mkVisFunTyMany` mkTyConApp listTyCon [a]
       mkNewAny th_expr expType
 
 -- | Create a 'guard' specialized to lists for list comprehensions.
@@ -276,7 +276,7 @@ mkListGuard = do
   where
     mk _ = do
       th_expr <- liftQ [| guard |]
-      let expType = boolTy `mkVisFunTy` mkTyConApp listTyCon [unitTy]
+      let expType = boolTy `mkVisFunTyMany` mkTyConApp listTyCon [unitTy]
       mkNewAny th_expr expType
 
 -- | Create a '(>>)' specialized to lists for list comprehensions.
@@ -288,9 +288,9 @@ mkListSeq a b = do
     mk _ = do
       th_expr <- liftQ [| (>>) |]
       let expType = mkTyConApp listTyCon [a]
-                    `mkVisFunTy`
+                    `mkVisFunTyMany`
                     (mkTyConApp listTyCon [b]
-                      `mkVisFunTy`
+                      `mkVisFunTyMany`
                       mkTyConApp listTyCon [b])
       mkNewAny th_expr expType
 

@@ -129,7 +129,7 @@ liftDictExpr cls w tcs (L l ex) = L l <$> liftDictExpr' ex
               mkShareType t' = mkTyConApp stc [mkTyConTy mtc, t']
               cons = zipWith (mkShareable mkShareType) uss bs
           bs' <- liftIO (mapM (replacePiTy tcs) (bs1 ++ bs2))
-          ty' <- mkPiTys bs' . flip (foldr mkInvisFunTy) cons
+          ty' <- mkPiTys bs' . flip (foldr mkInvisFunTyMany) cons
             <$> liftTypeTcM tcs ty2
           return (setVarType v ty')
 

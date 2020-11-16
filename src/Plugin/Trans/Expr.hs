@@ -143,7 +143,7 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
               mkShareType t' = mkTyConApp stycon [mkTyConTy mtycon, t']
               cons = zipWith (mkShareable mkShareType) uss bs
           bs1' <- liftIO (mapM (replacePiTy tcs) bs1)
-          mkPiTys bs1' . flip (foldr mkInvisFunTy) cons
+          mkPiTys bs1' . flip (foldr mkInvisFunTyMany) cons
             <$> liftTypeTcM tcs t1
 
       -- The wrapper w deals with matching the impedence beteween the expected
@@ -235,7 +235,7 @@ liftMonadicBinding _ _ _ tcs _ (VarBind x1 name e1 inl)
             mkShareType t' = mkTyConApp stycon [mkTyConTy mtycon, t']
             cons = zipWith (mkShareable mkShareType) uss bs
         bs1' <- liftIO (mapM (replacePiTy tcs) bs1)
-        (,cons) . mkPiTys bs1' . flip (foldr mkInvisFunTy) cons
+        (,cons) . mkPiTys bs1' . flip (foldr mkInvisFunTyMany) cons
           <$> liftTypeTcM tcs ty1
 
     let name' = setVarType name ty'
@@ -360,12 +360,12 @@ liftMonadicExpr given tcs (L l (HsOverLit _ lit)) =
 liftMonadicExpr given tcs (L l (HsLam x mg)) = do
   mg'@(MG (MatchGroupTc [arg] res) _ _) <- liftMonadicEquation given tcs mg
   let e = L l (HsLam x mg')
-  let ty = mkVisFunTy arg res
+  let ty = mkVisFunTyMany arg res
   mkApp mkNewReturnTh ty [noLoc (HsPar noExtField e)]
 liftMonadicExpr given tcs (L l (HsLamCase x mg)) = do
   mg'@(MG (MatchGroupTc [arg] res) _ _) <- liftMonadicEquation given tcs mg
   let e = L l (HsLamCase x mg')
-  let ty = mkVisFunTy arg res
+  let ty = mkVisFunTyMany arg res
   mkApp mkNewReturnTh ty [noLoc (HsPar noExtField e)]
 liftMonadicExpr _ tcs (L _ (HsConLikeOut _ (RealDataCon c))) = do
   c' <- liftIO (getLiftedCon c tcs)
@@ -779,7 +779,7 @@ liftExplicitTuple given tcs args b = liftExplicitTuple' [] WpHole args
       inner <- liftExplicitTuple' (arg:col) (WpTyApp (bindingType ty') <.> w) xs
       resty <- getTypeOrPanic inner
       let lam = mkLam v ty inner resty
-      mkApp mkNewReturnTh (mkVisFunTy ty' resty) [lam]
+      mkApp mkNewReturnTh (mkVisFunTyMany ty' resty) [lam]
     liftExplicitTuple' col w [] = do
       let exprArgs = reverse col
       dc <- liftIO (getLiftedCon (tupleDataCon b (length exprArgs)) tcs)

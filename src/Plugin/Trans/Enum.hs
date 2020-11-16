@@ -135,7 +135,7 @@ liftDerivedEnumExpr tcs (L l1 (HsLam x1 (MG (MatchGroupTc [arg] res) (L l2
     let e''' = L l1 (HsLam x1 (MG (MatchGroupTc [arg'] res') (L l2
                  [L l3 (Match x2 ctxt [L l4 (VarPat x3 (L l5 v'))]
                  (GRHSs x4 [L l6 (GRHS x5 g e'')] lcl))]) orig))
-    let ty = mkVisFunTy arg' res'
+    let ty = mkVisFunTyMany arg' res'
     mkApp mkNewReturnTh ty [noLoc (HsPar noExtField e''')]
 liftDerivedEnumExpr tcs (L l (HsPar x e)) =
   L l . HsPar x <$> liftDerivedEnumExpr tcs e

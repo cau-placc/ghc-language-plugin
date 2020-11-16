@@ -379,7 +379,7 @@ makeUnaryBindings ctxt vs (MG (MatchGroupTc args res) (L l alts) _) e =
             Left  mg -> noLoc (HsLam noExtField mg)
             Right ex -> ex
 
-      let mgtcLam = MatchGroupTc [x] (foldr mkVisFunTy res xs)
+      let mgtcLam = MatchGroupTc [x] (foldr mkVisFunTyMany res xs)
       let patLam = VarPat noExtField (noLoc v)
       let innerCtxt = if isFunCtxt ctxt then LambdaExpr else ctxt
       let altLam = mkSimpleAlt innerCtxt bdy1 [noLoc patLam]
@@ -387,7 +387,7 @@ makeUnaryBindings ctxt vs (MG (MatchGroupTc args res) (L l alts) _) e =
 
       if isFunCtxt ctxt
         then do
-          let mgtcTop = MatchGroupTc [] (foldr mkVisFunTy res args)
+          let mgtcTop = MatchGroupTc [] (foldr mkVisFunTyMany res args)
           let bdy2 = HsLam noExtField mgLam
           let altTop = mkSimpleAlt ctxt (noLoc bdy2) []
           let mgTop = MG mgtcTop (noLoc [noLoc altTop]) Generated
@@ -576,7 +576,7 @@ mkNaturalOrSimpleAlt ty1 ty2 v e1 (L l (LitPat _ lit)) alts
       (SyntaxExpr
         (HsVar noExtField (noLoc (mkGlobalVar
            VanillaId eqStringName
-           (mkVisFunTy strTy (mkVisFunTy strTy boolTy))
+           (mkVisFunTyMany strTy (mkVisFunTyMany strTy boolTy))
            vanillaIdInfo)))
         [WpHole, WpHole]
         WpHole))) alts
