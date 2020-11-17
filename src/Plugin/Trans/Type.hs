@@ -360,6 +360,10 @@ replaceTyconTy tcs = replaceTyconTy'
     replaceTyconTy' (TyVarTy v) =
       return (TyVarTy v)
 
+replaceTyconScaled :: TyConMap -> Scaled Type -> IO (Scaled Type)
+replaceTyconScaled tcs (Scaled m ty) =
+  Scaled <$> replaceTyconTy tcs m <*> replaceTyconTy tcs ty
+
 -- | Lift only the result type of a type.
 -- Sometimes (e.g. for records) we only need to lift the result of a type
 liftResultTy :: TyCon       -- ^ 'Shareable' type constructor

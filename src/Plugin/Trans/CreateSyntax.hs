@@ -12,22 +12,22 @@ module Plugin.Trans.CreateSyntax where
 
 import Control.Monad
 
+import GHC.Plugins
 import GHC.Hs.Binds
 import GHC.Hs.Extension
 import GHC.Hs.Pat
 import GHC.Hs.Utils
 import GHC.Hs.Expr
-import TcRnMonad
-import TcHsSyn
-import TysWiredIn
-import TyCoRep
-import SrcLoc
-import ConLike
-import GhcPlugins
-import TcEvidence
-import TcSimplify
-import Constraint
-import Bag
+import GHC.Tc.Solver
+import GHC.Tc.Types
+import GHC.Tc.Types.Evidence
+import GHC.Tc.Types.Constraint
+import GHC.Tc.Utils.Monad
+import GHC.Tc.Utils.Zonk
+import GHC.Types.Fixity
+import GHC.Core.TyCo.Rep
+import GHC.Core.ConLike
+import GHC.Data.Bag
 
 import Plugin.Effect.Monad
 import Plugin.Trans.Constr
@@ -46,7 +46,7 @@ mkConLam mw c [] vs
     [v] <- vs = do
       -- Use the given wrapper for the constructor.
       let wrap = case mw of
-            Just w  -> HsWrap noExtField w
+            Just w  -> XExpr . WrapExpr . HsWrap w
             Nothing -> id
       let ce = noLoc (wrap (HsConLikeOut noExtField (RealDataCon c)))
       -- Create the lambda-bound variable.
@@ -62,7 +62,7 @@ mkConLam mw c [] vs
   | otherwise = do
     -- Use the given wrapper for the constructor.
     let wrap = case mw of
-          Just w  -> HsWrap noExtField w
+          Just w  -> XExpr . WrapExpr . HsWrap w
           Nothing -> id
     -- Apply all variables in reverse to the constructor.
     let e = foldl ((noLoc .) . HsApp noExtField)
@@ -122,8 +122,8 @@ mkAppWith :: (Type -> TcM (LHsExpr GhcTc))
           -> [Ct] -> Type -> [LHsExpr GhcTc]
           -> TcM (LHsExpr GhcTc)
 mkAppWith con cts typ args = do
-  (e', WC wanted impls) <- captureConstraints (con typ)
-  let constraints = WC (unionBags wanted (listToBag cts)) impls
+  (e', WC wanted impls holes) <- captureConstraints (con typ)
+  let constraints = WC (unionBags wanted (listToBag cts)) impls holes
   wrapper <- mkWpLet . EvBinds <$> simplifyTop constraints
   zonkTopLExpr (foldl mkHsApp (mkLHsWrap wrapper e') args)
 
@@ -232,10 +232,10 @@ mkNewApply2Unlifted ty1 ty2 ty3 = do
   mkNewAny th_expr expType
 
 -- | Create a '(>>=)' specialized to lists for list comprehensions.
-mkListBind :: Type -> Type -> TcM (SyntaxExpr GhcTc)
+mkListBind :: Type -> Type -> TcM SyntaxExprTc
 mkListBind a b = do
   e <- mkApp mk b []
-  return (SyntaxExpr (unLoc e) [WpHole, WpHole] WpHole)
+  return (SyntaxExprTc (unLoc e) [WpHole, WpHole] WpHole)
   where
     mk _ = do
       th_expr <- liftQ [| (>>=) |]
@@ -247,10 +247,10 @@ mkListBind a b = do
       mkNewAny th_expr expType
 
 -- | Create a 'return' specialized to lists for list comprehensions.
-mkListReturn :: Type -> TcM (SyntaxExpr GhcTc)
+mkListReturn :: Type -> TcM SyntaxExprTc
 mkListReturn a = do
   e <- mkApp mk a []
-  return (SyntaxExpr (unLoc e) [WpHole, WpHole] WpHole)
+  return (SyntaxExprTc (unLoc e) [WpHole, WpHole] WpHole)
   where
     mk _ = do
       th_expr <- liftQ [| return |]
@@ -258,10 +258,10 @@ mkListReturn a = do
       mkNewAny th_expr expType
 
 -- | Create a 'fail' specialized to lists for list comprehensions.
-mkListFail :: Type -> TcM (SyntaxExpr GhcTc)
+mkListFail :: Type -> TcM SyntaxExprTc
 mkListFail a = do
   e <- mkApp mk a []
-  return (SyntaxExpr (unLoc e) [WpHole, WpHole] WpHole)
+  return (SyntaxExprTc (unLoc e) [WpHole, WpHole] WpHole)
   where
     mk _ = do
       th_expr <- liftQ [| fail |]
@@ -269,10 +269,10 @@ mkListFail a = do
       mkNewAny th_expr expType
 
 -- | Create a 'guard' specialized to lists for list comprehensions.
-mkListGuard :: TcM (SyntaxExpr GhcTc)
+mkListGuard :: TcM SyntaxExprTc
 mkListGuard = do
   e <- mkApp mk unitTy []
-  return (SyntaxExpr (unLoc e) [WpHole, WpHole] WpHole)
+  return (SyntaxExprTc (unLoc e) [WpHole, WpHole] WpHole)
   where
     mk _ = do
       th_expr <- liftQ [| guard |]
@@ -280,10 +280,10 @@ mkListGuard = do
       mkNewAny th_expr expType
 
 -- | Create a '(>>)' specialized to lists for list comprehensions.
-mkListSeq :: Type -> Type -> TcM (SyntaxExpr GhcTc)
+mkListSeq :: Type -> Type -> TcM SyntaxExprTc
 mkListSeq a b = do
   e <- mkApp mk b []
-  return (SyntaxExpr (unLoc e) [WpHole, WpHole] WpHole)
+  return (SyntaxExprTc (unLoc e) [WpHole, WpHole] WpHole)
   where
     mk _ = do
       th_expr <- liftQ [| (>>) |]
@@ -298,15 +298,15 @@ mkListSeq a b = do
 mkEmptyList :: Type -> TyConMap -> TcM (LHsExpr GhcTc)
 mkEmptyList ty tcs = do
   dc <- liftIO (getLiftedCon nilDataCon tcs)
-  return (noLoc (HsWrap noExtField (WpTyApp ty)
-    (HsConLikeOut noExtField (RealDataCon dc))))
+  return (noLoc (XExpr (WrapExpr (HsWrap (WpTyApp ty)
+    (HsConLikeOut noExtField (RealDataCon dc))))))
 
 -- | Create a lifted cons list constructor.
 mkConsList :: Type -> TyConMap -> TcM (LHsExpr GhcTc)
 mkConsList ty tcs = do
   dc <- liftIO (getLiftedCon consDataCon tcs)
-  return (noLoc (HsWrap noExtField (WpTyApp ty)
-    (HsConLikeOut noExtField (RealDataCon dc))))
+  return (noLoc (XExpr (WrapExpr (HsWrap (WpTyApp ty)
+    (HsConLikeOut noExtField (RealDataCon dc))))))
 
 
 -- | Create a general lambda that binds one variable on its left side.
@@ -316,7 +316,7 @@ mkLam v ty' bdy resty =
       grhs = GRHS noExtField ([] :: [GuardLStmt GhcTc]) bdy
       rhs = GRHSs noExtField [noLoc grhs] (noLoc (EmptyLocalBinds noExtField))
       match = Match noExtField LambdaExpr [noLoc pat] rhs
-      mgtc = MatchGroupTc [ty'] resty
+      mgtc = MatchGroupTc [Scaled Many ty'] resty
       mg = MG mgtc (noLoc [noLoc match]) Generated
   in noLoc $ HsPar noExtField $ noLoc $ HsLam noExtField mg
 
@@ -331,7 +331,7 @@ mkSimpleLet f scr e v a =
       alt = Match noExtField ctxt [] grhss
       mgtc = MatchGroupTc [] a
       mg = MG mgtc (noLoc [noLoc alt]) Generated
-      b = FunBind emptyUniqSet (noLoc v) mg WpHole []
+      b = FunBind WpHole (noLoc v) mg []
       nbs = NValBinds [(f, listToBag [noLoc b])] []
       bs = HsValBinds noExtField (XValBindsLR nbs)
   in HsLet noExtField (noLoc bs) e
@@ -343,13 +343,13 @@ mkSimplePatLet :: Type -> LHsExpr GhcTc -> LPat GhcTc -> LHsExpr GhcTc
 mkSimplePatLet ty scr p e =
   let grhs = GRHS noExtField [] scr
       grhss = GRHSs noExtField [noLoc grhs] (noLoc (EmptyLocalBinds noExtField))
-      b = PatBind (NPatBindTc emptyNameSet ty) p grhss ([], [[]])
+      b = PatBind ty p grhss ([], [[]])
       nbs = NValBinds [(Recursive, listToBag [noLoc b])] []
       bs = HsValBinds noExtField (XValBindsLR nbs)
   in HsLet noExtField (noLoc bs) e
 
 -- | Create a simple (case) alternative with the given right side and patterns.
-mkSimpleAlt :: HsMatchContext Name -> LHsExpr GhcTc -> [LPat GhcTc]
+mkSimpleAlt :: HsMatchContext (NoGhcTc GhcTc) -> LHsExpr GhcTc -> [LPat GhcTc]
             -> Match GhcTc (LHsExpr GhcTc)
 mkSimpleAlt ctxt e ps =
   let grhs = GRHS noExtField [] e

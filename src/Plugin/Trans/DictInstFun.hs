@@ -13,17 +13,16 @@ module Plugin.Trans.DictInstFun (liftDictInstFun) where
 import Data.List
 import Control.Monad
 
+import GHC.Plugins
 import GHC.Hs.Binds
 import GHC.Hs.Extension
 import GHC.Hs.Expr
-import InstEnv
-import ConLike
-import TcRnTypes
-import TyCoRep
-import TcEvidence
-import TcRnMonad
-import GhcPlugins
-import Bag
+import GHC.Tc.Types
+import GHC.Tc.Types.Evidence
+import GHC.Core.TyCo.Rep
+import GHC.Core.ConLike
+import GHC.Core.InstEnv
+import GHC.Data.Bag
 
 import Plugin.Trans.Type
 import Plugin.Trans.Util
@@ -48,7 +47,7 @@ liftDictInstFun bind tcs clsInsts = do
 liftDictInstBinding :: TyConMap -> ClsInst -> HsBindLR GhcTc GhcTc
                     -> TcM (Maybe (HsBindLR GhcTc GhcTc))
 liftDictInstBinding tcs cls (AbsBinds _ tvs evs ex evb bs sig)
-  | [L _ (VarBind _ _ e inl)] <- bagToList bs,
+  | [L _ (VarBind _ _ e)] <- bagToList bs,
     [ABE _ _ m w s] <- ex = do
       -- The new poly var is the one from the given clsInst.
       let p' = is_dfun cls
@@ -75,7 +74,7 @@ liftDictInstBinding tcs cls (AbsBinds _ tvs evs ex evb bs sig)
       -- Lift the actual expression.
       e' <- liftDictExpr cls wrap tcs e
 
-      let vb = listToBag [noLoc (VarBind noExtField m' e' inl)]
+      let vb = listToBag [noLoc (VarBind noExtField m' e')]
       let ex' = [ABE noExtField p' m' w s]
       let b' = AbsBinds noExtField tvs allevsids ex' evb vb sig
       return (Just b')
@@ -92,16 +91,18 @@ liftDictExpr cls w tcs (L l ex) = L l <$> liftDictExpr' ex
                        <*> liftDictExpr cls w tcs e2
     -- The dictionary constructor is lifted by getting the lifted constructor
     -- and lifting its wrapper.
-    liftDictExpr' (HsWrap _ cw (HsConLikeOut _ (RealDataCon dc))) = do
+    liftDictExpr' (XExpr (WrapExpr
+      (HsWrap cw (HsConLikeOut _ (RealDataCon dc))))) = do
       cw' <- liftIO (replaceWrapper tcs cw)
       dc' <- liftIO (getLiftedCon dc tcs)
-      return (HsWrap noExtField cw' (HsConLikeOut noExtField (RealDataCon dc')))
+      return (XExpr (WrapExpr
+        (HsWrap cw' (HsConLikeOut noExtField (RealDataCon dc')))))
     liftDictExpr' (HsConLikeOut _ (RealDataCon dc)) = do
       dc' <- liftIO (getLiftedCon dc tcs)
       return (HsConLikeOut noExtField (RealDataCon dc'))
     liftDictExpr' (HsVar _ (L _ v)) = liftInstFunUse v
     -- Other wrappers are discarded and re-create at liftInstFunUse.
-    liftDictExpr' (HsWrap _ _ e) = liftDictExpr' e
+    liftDictExpr' (XExpr (WrapExpr (HsWrap _ e))) = liftDictExpr' e
     liftDictExpr' e = panicAny "Unexpected expression in dictionary function" e
 
     liftInstFunUse :: Var -> TcM (HsExpr GhcTc)
@@ -134,13 +135,15 @@ liftDictExpr cls w tcs (L l ex) = L l <$> liftDictExpr' ex
           return (setVarType v ty')
 
       -- Use the given wrapper expression.
-      return (HsWrap noExtField w (HsVar noExtField (noLoc dfLifted)))
+      return (XExpr (WrapExpr
+        (HsWrap w (HsVar noExtField (noLoc dfLifted)))))
 
 -- | Split off all arguments of an invisible function type
 -- (e.g., all constraints).
 splitInvisFunTys :: Type -> ([TyCoBinder], Type)
-splitInvisFunTys (FunTy InvisArg ty1 ty2) =
-  let (bs, ty2') = splitInvisFunTys ty2 in (Anon InvisArg ty1 : bs, ty2')
+splitInvisFunTys (FunTy InvisArg m ty1 ty2) =
+  let (bs, ty2') = splitInvisFunTys ty2
+  in (Anon InvisArg (Scaled m ty1) : bs, ty2')
 splitInvisFunTys ty = ([], ty)
 
 -- | Test iff a binding is an AbsBind.

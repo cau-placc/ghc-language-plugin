@@ -15,10 +15,9 @@ module Plugin.Trans.TyCon (liftTycon) where
 import Control.Monad
 import Data.Maybe
 
-import GhcPlugins
-import UniqFM
-import CoAxiom
-import FamInstEnv
+import GHC.Plugins
+import GHC.Core.FamInstEnv
+import GHC.Core.Coercion.Axiom
 
 import Plugin.Trans.Constr
 import Plugin.Trans.Class
@@ -35,16 +34,17 @@ import Plugin.Trans.Util
 -- | Lift a type constructor, if possible.
 -- Note that this is part of a fixed-point computation, where the
 -- 'UniqFM' in the fourth parameter depends on the output of the computation.
-liftTycon :: TyCon               -- ^ 'Shareable' type constructor
+liftTycon :: DynFlags            -- ^ Compiler flags
+          -> TyCon               -- ^ 'Shareable' type constructor
           -> TyCon               -- ^ 'Monad' type constructor
           -> UniqSupply          -- ^ Fresh supply of unique keys
-          -> UniqFM TyCon TyCon -- ^ Map of old TyCon's from this module to lifted ones
+          -> UniqFM TyCon TyCon  -- ^ Map of old TyCon's from this module to lifted ones
           -> TyConMap            -- ^ Map of imported old TyCon's to lifted ones
           -> TyCon               -- ^ Type constructor to be lifted
           -> IO (UniqSupply, (TyCon, Maybe TyCon))
           -- ^ Next fresh unique supply, the original type constructor
           -- and maybe the lifted type constructor
-liftTycon stycon mtycon supply tcs tcsM tc
+liftTycon dynFlags stycon mtycon supply tcs tcsM tc
   | isVanillaAlgTyCon tc || isClassTyCon tc = mdo
     -- The tycon definition is cyclic, so we use this let-construction.
     let u = uniqFromSupply supply
@@ -57,7 +57,7 @@ liftTycon stycon mtycon supply tcs tcsM tc
     -- Potentially lift any class information
     flav <- case (tyConRepName_maybe tc, tyConClass_maybe tc) of
           (Just p, Just c ) -> flip ClassTyCon p <$>
-            liftClass stycon mtycon tcs tcsM tycon us2 c
+            liftClass dynFlags stycon mtycon tcs tcsM tycon us2 c
           (Just p, Nothing) -> return (VanillaAlgTyCon p)
           _                 ->
             panicAnyUnsafe "Unknown flavour of type constructor" tc
