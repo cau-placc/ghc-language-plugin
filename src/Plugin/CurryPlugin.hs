@@ -33,7 +33,7 @@ import TcEnv
 import TcMType
 import TcHsSyn
 import TcRnMonad
-import UniqMap
+import UniqFM
 import InstEnv
 import ErrUtils
 
@@ -99,7 +99,7 @@ liftMonadPlugin mdopts env = do
       mapAccumM (\s' t -> liftTycon stycon mtycon s' tnsM tyconsMap t)
         s (tcg_tcs env)
     let tycns = mapMaybe (\(a,b) -> fmap (a,) b) liftedTycns
-    let tnsM = listToUniqMap tycns
+    let tnsM = listToUFM tycns
     return (Right (tycns, liftedTycns)))
     `catch` (\e -> return (Left e)))
 
@@ -277,19 +277,19 @@ createRdrEnv = mkGlobalRdrEnv . concatMap createEntries
 
 -- | Insert the given list of type constructors into the TyConMap.
 insertNewTycons :: [(TyCon, Maybe TyCon)]
-                -> ( UniqMap TyCon TyCon
-                   , UniqMap TyCon TyCon
+                -> ( UniqFM TyCon TyCon
+                   , UniqFM TyCon TyCon
                    , UniqSet TyCon
                    , UniqSet TyCon )
-                -> ( UniqMap TyCon TyCon
-                   , UniqMap TyCon TyCon
+                -> ( UniqFM TyCon TyCon
+                   , UniqFM TyCon TyCon
                    , UniqSet TyCon
                    , UniqSet TyCon )
 insertNewTycons = flip (foldr insertNew)
   where
     insertNew (tc, mbtc) (m1, m2, s1, s2) =
-      (maybe m1 (addToUniqMap m1 tc) mbtc,
-       maybe m2 (flip (addToUniqMap m2) tc) mbtc,
+      (maybe m1 (addToUniqFM m1 tc) mbtc,
+       maybe m2 (flip (addToUniqFM m2) tc) mbtc,
        addOneToUniqSet s1 tc,
        maybe s2 (addOneToUniqSet s2) mbtc)
 

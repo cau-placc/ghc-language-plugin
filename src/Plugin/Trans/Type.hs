@@ -195,11 +195,11 @@ liftTypeParametrized sh stc mty s tcs t
     -- If it is a type class constraint, do not wrap it with our monad.
     liftType' us (TyConApp tc tys)
       | isClassTyCon tc = do
-        tc' <- tcLookupTyConMap GetNew tcs tc
+        tc' <- lookupTyConMap GetNew tcs tc
         tys' <- mapM (replaceTyconTy tcs) tys
         return (TyConApp tc' tys')
       | otherwise       = do
-        tc' <- tcLookupTyConMap GetNew tcs tc
+        tc' <- lookupTyConMap GetNew tcs tc
         tys' <- mapM (liftInnerTyParametrized sh stc mty us tcs) tys
         return (mkAppTy mty (TyConApp tc' tys'))
     liftType' _ ty@(TyVarTy _) =
@@ -331,7 +331,7 @@ liftConTypeWith isNew stc mty us tcs = liftType'
       AppTy <$> liftInnerTy stc mty us tcs ty1
             <*> liftInnerTy stc mty us tcs ty2
     liftType' (TyConApp tc tys) = do
-      tc' <- tcLookupTyConMap GetNew tcs tc
+      tc' <- lookupTyConMap GetNew tcs tc
       tys' <- mapM (liftInnerTy stc mty us tcs) tys
       return (TyConApp tc' tys')
     liftType' (TyVarTy v) =
@@ -354,7 +354,7 @@ replaceTyconTy tcs = replaceTyconTy'
     replaceTyconTy' (AppTy ty1 ty2) =
       AppTy <$> replaceTyconTy' ty1 <*> replaceTyconTy' ty2
     replaceTyconTy' (TyConApp tc tys) = do
-      tc' <- tcLookupTyConMap GetNew tcs tc
+      tc' <- lookupTyConMap GetNew tcs tc
       tys' <- mapM (replaceTyconTy tcs) tys
       return (TyConApp tc' tys')
     replaceTyconTy' (TyVarTy v) =
@@ -455,8 +455,8 @@ data LookupDirection = GetNew -- ^ Look up the lifted version with the unlifted.
 -- | Look up the other version of a type constructor in the given map
 -- or return the argument unchanged if the requested version does not exist.
 -- This function lazily loads any new type constructor mappings on demand.
-tcLookupTyConMap :: LookupDirection -> TyConMap -> TyCon -> IO TyCon
-tcLookupTyConMap d (hsc, ref) tc = do
+lookupTyConMap :: LookupDirection -> TyConMap -> TyCon -> IO TyCon
+lookupTyConMap d (hsc, ref) tc = do
   -- Get the current state of our map.
   tcs@(mn, mo, sn, so) <- readIORef ref
   -- Establish the correct variables for the given lookup direction.

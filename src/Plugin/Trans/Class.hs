@@ -15,13 +15,14 @@ module Plugin.Trans.Class
 
 import Control.Exception
 
-import GhcPlugins
-import UniqMap
-import Class
-import MkId
-import CoreUnfold
-import Demand
-import ListSetOps
+import GHC.Plugins
+import GHC.Types.Demand
+import GHC.Types.Id.Make
+import GHC.Core.Class
+import GHC.Core.Unfold.Make
+import GHC.Core.SimpleOpt
+import GHC.Driver.Config
+import GHC.Data.List.SetOps
 
 import Plugin.Trans.Type
 import Plugin.Trans.Util
@@ -43,26 +44,27 @@ instance Exception ClassLiftingException
 
 -- | Lift a class definition and all its functions.
 -- Note that this is part of a fixed-point computation, where the
--- 'UniqMap' in the third parameter and the
+-- 'UniqFM' in the third parameter and the
 -- 'TyCon' in the fifth parameter depend on the output of the computation.
-liftClass :: TyCon                -- ^ 'Shareable' type constructor
+liftClass :: DynFlags             -- ^ Compiler flags
+          -> TyCon                -- ^ 'Shareable' type constructor
           -> TyCon                -- ^ 'Nondet' type constructor
-          -> UniqMap TyCon TyCon  -- ^ Map of old TyCon's from this module to lifted ones
+          -> UniqFM TyCon TyCon   -- ^ Map of old TyCon's from this module to lifted ones
           -> TyConMap             -- ^ Map of imported old TyCon's to lifted ones
           -> TyCon                -- ^ Lifted class type constructor
           -> UniqSupply           -- ^ Supply of fresh unique keys
           -> Class                -- ^ Class to be lifted
           -> IO Class             -- ^ Lifted class
-liftClass stycon mtycon tcs tcsM tycon us cls = mdo
+liftClass dflags stycon mtycon tcs tcsM tycon us cls = mdo
   -- Look up the new type constructors for all super classes
   superclss <- mapM (fmap (replaceTyconTyPure tcs) . replaceTyconTy tcsM)
     (classSCTheta cls)
   -- Lift the super class selector functions
-  supersel  <- mapM (liftSuperSel tcs tcsM cls') (classSCSelIds cls)
+  supersel  <- mapM (liftSuperSel dflags tcs tcsM cls') (classSCSelIds cls)
   -- Lift the associated types of the class
   astypes   <- mapM (liftATItem mtycon tcs tcsM cls) (classATItems cls)
   -- Lift all class functions
-  classops  <- mapM (liftClassOpItem stycon mtycon tcs tcsM us cls cls')
+  classops  <- mapM (liftClassOpItem dflags stycon mtycon tcs tcsM us cls cls')
     (classOpItems cls)
   -- Create the new class from its lifted components
   let cls' = mkClass
@@ -71,18 +73,19 @@ liftClass stycon mtycon tcs tcsM tycon us cls = mdo
   return cls'
 
 -- | Lift a super class selector function.
-liftSuperSel :: UniqMap TyCon TyCon -> TyConMap -> Class -> Var -> IO Var
-liftSuperSel tcs tcsM cls v = do
+liftSuperSel :: DynFlags -> UniqFM TyCon TyCon -> TyConMap -> Class -> Var
+             -> IO Var
+liftSuperSel dflags tcs tcsM cls v = do
   -- A super class selector is not lifted like a function.
   -- Instead we just have to update its mentioned type constructors.
   ty' <- replaceTyconTyPure tcs <$> replaceTyconTy tcsM (varType v)
   -- Create the new selector id with the correct attributes.
-  return (mkExactNameDictSelId (varName v) cls ty')
+  return (mkExactNameDictSelId (varName v) cls ty' dflags)
 
 -- | Lift a class function.
-liftClassOpItem :: TyCon -> TyCon -> UniqMap TyCon TyCon -> TyConMap
+liftClassOpItem :: DynFlags -> TyCon -> TyCon -> UniqFM TyCon TyCon -> TyConMap
                 -> UniqSupply -> Class -> Class -> ClassOpItem -> IO ClassOpItem
-liftClassOpItem stycon mtycon tcs tcsM us clsOld clsNew (v, mbdef) = do
+liftClassOpItem dflags stycon mtycon tcs tcsM us clsOld clsNew (v, mbdef) = do
   let (us1, us2) = splitUniqSupply us
   -- The classOp has type forall clsVars . forall otherVars . (...).
   -- If we were to lift the full type,
@@ -97,7 +100,7 @@ liftClassOpItem stycon mtycon tcs tcsM us clsOld clsNew (v, mbdef) = do
   ty' <- replaceTyconTyPure tcs . mkPiTys bndr'
     <$> liftType stycon (mkTyConTy mtycon) us1 tcsM liftingType
   -- Create the new selector id with the correct attributes.
-  let v' = mkExactNameDictSelId (varName v) clsNew ty'
+  let v' = mkExactNameDictSelId (varName v) clsNew ty' dflags
   -- Lift any default implementations
   mbdef' <- maybe (return Nothing) (liftDefaultMeth us2) mbdef
   return (v', mbdef')
@@ -113,8 +116,8 @@ liftClassOpItem stycon mtycon tcs tcsM us clsOld clsNew (v, mbdef) = do
 -- but the original looks up the type from the class.
 -- This would lead to a deadlock, as the type given in the class is created
 -- here in the first place.
-mkExactNameDictSelId :: Name -> Class -> Type -> Id
-mkExactNameDictSelId name clas sel_ty
+mkExactNameDictSelId :: Name -> Class -> Type -> DynFlags -> Id
+mkExactNameDictSelId name clas sel_ty dflags
   = mkGlobalId (ClassOpId clas) name sel_ty info
   where
     tycon     = classTyCon clas
@@ -131,6 +134,7 @@ mkExactNameDictSelId name clas sel_ty
     info | new_tycon
          = base_info `setInlinePragInfo` alwaysInlinePragma
                      `setUnfoldingInfo`  mkInlineUnfoldingWithArity 1
+                                           (initSimpleOpts dflags)
                                            (mkDictSelRhs clas val_index)
          | otherwise
          = base_info `setRuleInfo` mkRuleInfo [rule]
@@ -139,7 +143,7 @@ mkExactNameDictSelId name clas sel_ty
                        , ru_fn    = name
                        , ru_nargs = n_ty_args + 1
                        , ru_try   = dictSelRule val_index n_ty_args }
-    strict_sig = mkClosedStrictSig [arg_dmd] topRes
+    strict_sig = mkClosedStrictSig [arg_dmd] topDiv
     arg_dmd | new_tycon = evalDmd
             | otherwise = mkManyUsedDmd $
                           mkProdDmd [ if name == sel_name
@@ -160,7 +164,7 @@ dictSelRule val_index n_ty_args _ id_unf _ args
 
 -- | Lift an associated type.
 -- Not implemented yet, throws an error when it is used.
-liftATItem :: TyCon -> UniqMap TyCon TyCon -> TyConMap -> Class -> ClassATItem
+liftATItem :: TyCon -> UniqFM TyCon TyCon -> TyConMap -> Class -> ClassATItem
            -> IO ClassATItem
 liftATItem _ _ _ cls (ATI _ _) =
   throw (ClassLiftingException cls reason)

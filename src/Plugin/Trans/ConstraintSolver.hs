@@ -16,17 +16,16 @@ import Data.IORef
 import Data.Tuple.Extra
 import Control.Monad.IO.Class
 
-import TcRnTypes
-import TcPluginM (getTopEnv)
-import Class
-import TcEvidence
-import TcOrigin
-import TyCoRep
-import TysPrim
-import TyCon
-import GhcPlugins
-import UniqMap
-import Constraint
+import GHC.Types.Name.Occurrence  
+import GHC.Plugins
+import GHC.Builtin.Types.Prim
+import GHC.Tc.Types
+import GHC.Tc.Plugin
+import GHC.Tc.Types.Origin
+import GHC.Tc.Types.Constraint
+import GHC.Tc.Types.Evidence
+import GHC.Core.Class
+import GHC.Core.TyCo.Rep
 
 import Plugin.Trans.Type
 
@@ -34,8 +33,8 @@ import Plugin.Trans.Type
 -- lifted imported definitions during GHC's type checking.
 -- The first argument contains the currently known mapping of
 -- lifted and unlifted type constructors.
-tcPluginSolver :: IORef (UniqMap TyCon TyCon,
-                         UniqMap TyCon TyCon,
+tcPluginSolver :: IORef (UniqFM TyCon TyCon,
+                         UniqFM TyCon TyCon,
                          UniqSet TyCon,
                          UniqSet TyCon)
                -> TcPluginSolver
@@ -70,11 +69,12 @@ transformWanted :: TyConMap -> Class -> Ct
 -- "t1 ~# t2" via a transformation to irreducible constraints.
 -- The irreducible constraints are handled by the same function below.
 transformWanted m c (CNonCanonical (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
-  (HoleDest (CoercionHole var href)) si loc))
+  (HoleDest (CoercionHole var NoBlockSubst href)) si loc))
     | tc == eqPrimTyCon = do
       res <- transformWanted m c (CIrredCan
                (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
-                 (HoleDest (CoercionHole var href)) si loc) False)
+                 (HoleDest (CoercionHole var NoBlockSubst href)) si loc)
+               OtherCIS)
       case res of
         Just ((EvExpr (Coercion co), (CIrredCan w' _)), Just new) ->
           return (Just ((EvExpr (Coercion co), (CNonCanonical w')), Just new))
@@ -82,7 +82,7 @@ transformWanted m c (CNonCanonical (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
 -- Transform irreducible constraints like
 -- "(Nondet t1) ~# (Nondet t2)" to "t1 ~# t2".
 transformWanted m _ w@(CIrredCan (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
-  (HoleDest (CoercionHole var href)) si loc) _)
+  (HoleDest (CoercionHole var NoBlockSubst href)) si loc) _)
     | tc == eqPrimTyCon
     = unsafeTcPluginTcM $ do
       mtc <- getMonadTycon
@@ -106,7 +106,7 @@ transformWanted m _ w@(CIrredCan (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
                              , ctl_env    = (ctl_env loc) { tcl_ctxt = [] }
                              }
                   -- Create the new coercion hole for the new constraint.
-                  d' = HoleDest (CoercionHole var newhref)
+                  d' = HoleDest (CoercionHole var NoBlockSubst newhref)
                   -- Create the new wanted constraint.
                   newev = CtWanted (TyConApp tc [k1, k2, ty1', ty2']) d' si loc'
                   new = CNonCanonical newev
@@ -194,10 +194,10 @@ removeNondet tcs mtc = removeNondet' . expandTypeSynonyms
   where
     removeNondet' (ForAllTy b ty) =
       first (ForAllTy b) <$> removeNondet' ty
-    removeNondet' (FunTy f ty1 ty2) = do
+    removeNondet' (FunTy f m ty1 ty2) = do
       (ty1', b1) <- removeNondet' ty1
       (ty2', b2) <- removeNondet' ty2
-      return (FunTy f ty1' ty2', b1 || b2)
+      return (FunTy f m ty1' ty2', b1 || b2)
     removeNondet' (CastTy ty kc) =
       first (flip CastTy kc) <$> removeNondet' ty
     removeNondet' (CoercionTy c) =
@@ -225,4 +225,4 @@ newDummyEvId :: Var -> TcPluginM Var
 newDummyEvId v = unsafeTcPluginTcM $ do
   u <- getUniqueM
   let name = mkSystemName u (mkVarOcc "#dummy_remove")
-  return $ mkLocalVar (DFunId True) name (varType v) vanillaIdInfo
+  return $ mkLocalVar (DFunId True) name Many (varType v) vanillaIdInfo

@@ -16,7 +16,7 @@ import Control.Monad
 import Data.Maybe
 
 import GhcPlugins
-import UniqMap
+import UniqFM
 import CoAxiom
 import FamInstEnv
 
@@ -34,11 +34,11 @@ import Plugin.Trans.Util
 -- to keep, in contrast to the unchanged Unique for Typeclasses, etc.
 -- | Lift a type constructor, if possible.
 -- Note that this is part of a fixed-point computation, where the
--- 'UniqMap' in the fourth parameter depends on the output of the computation.
+-- 'UniqFM' in the fourth parameter depends on the output of the computation.
 liftTycon :: TyCon               -- ^ 'Shareable' type constructor
           -> TyCon               -- ^ 'Monad' type constructor
           -> UniqSupply          -- ^ Fresh supply of unique keys
-          -> UniqMap TyCon TyCon -- ^ Map of old TyCon's from this module to lifted ones
+          -> UniqFM TyCon TyCon -- ^ Map of old TyCon's from this module to lifted ones
           -> TyConMap            -- ^ Map of imported old TyCon's to lifted ones
           -> TyCon               -- ^ Type constructor to be lifted
           -> IO (UniqSupply, (TyCon, Maybe TyCon))
@@ -109,12 +109,12 @@ liftTycon stycon mtycon supply tcs tcsM tc
 -- does not result in any (further) problems.
 -- | Lift the right hand side of a type constructor.
 -- Note that this is part of a fixed-point computation, where the
--- 'UniqMap' in the fourth parameter and the
+-- 'UniqFM' in the fourth parameter and the
 -- 'TyCon' in the sixth parameter depend on the output of the computation.
 liftAlgRhs :: Bool                -- ^ Is it a class definition or not
            -> TyCon               -- ^ 'Shareable' type constructor
            -> TyCon               -- ^ 'Monad' type constructor
-           -> UniqMap TyCon TyCon -- ^ Map of old TyCon's from this module to lifted ones
+           -> UniqFM TyCon TyCon -- ^ Map of old TyCon's from this module to lifted ones
            -> TyConMap            -- ^ Map of imported old TyCon's to lifted ones
            -> TyCon               -- ^ Lifted TyCon of this rhs
            -> UniqSupply          -- ^ Fresh supply of unique keys

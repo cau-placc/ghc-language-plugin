@@ -12,11 +12,11 @@ module Plugin.Trans.ClsInst (liftInstance) where
 
 import Control.Monad
 
-import GhcPlugins
-import Class
-import InstEnv
-import TcRnTypes
-import TyCoRep
+import GHC.Plugins
+import GHC.Tc.Types
+import GHC.Core.Class
+import GHC.Core.TyCo.Rep
+import GHC.Core.InstEnv
 
 import Plugin.Trans.Type
 import Plugin.Trans.Class

@@ -19,13 +19,15 @@ module Plugin.Trans.FunWiredIn
 
 import Data.List
 
-import GhcPlugins
-import TcRnTypes
-import IfaceEnv
-import PrelNames
-import TcRnMonad
-import Class
-import Finder
+import GHC.Types.Name.Occurrence hiding (varName)
+import GHC.Plugins
+import GHC.Unit.Finder
+import GHC.Tc.Types
+import GHC.Tc.Utils.Monad
+import GHC.Tc.Utils.Env
+import GHC.Iface.Env
+import GHC.Builtin.Names
+import GHC.Core.Class
 
 import Plugin.Trans.TysWiredIn
 
@@ -40,13 +42,13 @@ lookupDefaultReplacement tc tc' oldnm = do
            find (defLike oldnm) (classOpItems newCls)
     -- Categorize the class and function and check if it has a replacement.
     case lookup (categorize (className oldCls) oldnm) defaultReplacements of
-      Nothing -> lookupId newnm
+      Nothing -> tcLookupId newnm
       -- Create the required replacement variable and get its type.
       Just nm -> do
         hscEnv <- getTopEnv
         Found _ mdl <- liftIO $
           findImportedModule hscEnv (mkModuleName builtInModule) Nothing
-        lookupId =<< lookupOrig mdl nm
+        tcLookupId =<< lookupOrig mdl nm
   where
     defLike n (_ , Just (n', _)) = occName n == occName n'
     defLike _ _                  = False
@@ -62,7 +64,7 @@ lookupWiredInFunc v = do
       hscEnv <- getTopEnv
       Found _ mdl <- liftIO $
         findImportedModule hscEnv (mkModuleName builtInModule) Nothing
-      lookupId =<< lookupOrig mdl (occName n)
+      tcLookupId =<< lookupOrig mdl (occName n)
 
 -- | Enumeration of all type class function classifications with respect to the
 -- replacement of a default method.

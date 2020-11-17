@@ -957,7 +957,7 @@ mkErrorWith ty s = do
   hscEnv <- getTopEnv
   Found _ mdl <- liftIO $
     findImportedModule hscEnv (mkModuleName builtInModule) Nothing
-  errId <- lookupId =<< lookupOrig mdl ( mkVarOcc "pE" )
+  errId <- tcLookupId =<< lookupOrig mdl ( mkVarOcc "pE" )
   return (noLoc (HsApp noExtField
     (noLoc (HsWrap noExtField (WpTyApp ty) (HsVar noExtField (noLoc errId))))
     (mkErrorLit s)))

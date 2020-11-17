@@ -18,10 +18,10 @@ import Data.List
 import Control.Monad
 import Control.Exception
 
-import GhcPlugins
-import UniqMap
-import MkId
-import PatSyn
+import GHC.Plugins
+import GHC.Types.Id.Make
+import GHC.Core.TyCo.Rep
+import GHC.Core.PatSyn
 
 import Plugin.Trans.Type
 import Plugin.Trans.Var
@@ -50,13 +50,13 @@ instance Exception RecordLiftingException
 
 -- | Lift a value constructor definition.
 -- Note that this is part of a fixed-point computation, where the
--- 'UniqMap' in the fifth parameter and the
+-- 'UniqFM' in the fifth parameter and the
 -- 'TyCon' in the seventh parameter depend on the output of the computation.
 liftConstr :: Bool                -- ^ True iff the type constructor stems from a newtype declaration
            -> Bool                -- ^ True iff the type constructor should not be renamed
            -> TyCon               -- ^ 'Shareable' type constructor
            -> TyCon               -- ^ 'Nondet' type constructor
-           -> UniqMap TyCon TyCon -- ^ Map of old TyCon's from this module to lifted ones
+           -> UniqFM TyCon TyCon -- ^ Map of old TyCon's from this module to lifted ones
            -> TyConMap            -- ^ Map of imported old TyCon's to lifted ones
            -> TyCon               -- ^ Lifted declaration type constructor
            -> UniqSupply          -- ^ Supply of fresh unique keys
@@ -104,11 +104,13 @@ liftConstr normalNewty noRename stycon mtycon tcs tcsM tycon s cn = do
     mty = mkTyConTy mtycon
     -- Use the inner type lifting for constructors from newtype declarations,
     -- because we otherwise get a 'Nondet' too much if we coerce its type.
-    liftAndReplaceType us
-      | normalNewty = fmap (replaceTyconTyPure tcs)
-                    . liftInnerTy stycon mty us tcsM
-      | otherwise   = fmap (replaceTyconTyPure tcs)
-                    . liftType    stycon mty us tcsM
+    liftAndReplaceType us (Scaled m ty )
+      | normalNewty = Scaled <$>
+          (replaceTyconTyPure tcs <$> replaceTyconTy tcsM m) <*>
+          (replaceTyconTyPure tcs <$> liftInnerTy stycon mty us tcsM ty)
+      | otherwise   = Scaled <$>
+          (replaceTyconTyPure tcs <$> replaceTyconTy tcsM m) <*>
+          (replaceTyconTyPure tcs <$> liftType    stycon mty us tcsM ty)
     replaceCon = fmap (replaceTyconTyPure tcs) . replaceTyconTy tcsM
 
 -- | Lift a record field by renaming its labels.
