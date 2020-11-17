@@ -10,9 +10,8 @@ that is introduced for each record label.
 {-# LANGUAGE RankNTypes #-}
 module Plugin.Trans.Record (liftRecordSel) where
 
-import Data.Typeable
-import Data.Data
 import Data.Tuple
+import Data.Syb
 
 import GHC.Plugins
 import GHC.Hs.Binds
@@ -109,31 +108,3 @@ replaceVarExpr :: [(Var, Var)] -> HsExpr GhcTc -> HsExpr GhcTc
 replaceVarExpr vs (HsVar _ (L l v))
   | Just v' <- lookup v vs = HsVar noExtField (L l v')
 replaceVarExpr _  e        = e
-
-everywhere :: (forall a. Data a => a -> a)
-           -> (forall a. Data a => a -> a)
-everywhere f = go
-  where
-    go :: forall a. Data a => a -> a
-    go = f . gmapT go
-
-mkT :: ( Typeable a
-       , Typeable b
-       )
-    => (b -> b)
-    -> a
-    -> a
-mkT = extT id
-
--- | Extend a generic transformation by a type-specific case
-extT :: ( Typeable a
-        , Typeable b
-        )
-     => (a -> a)
-     -> (b -> b)
-     -> a
-     -> a
-extT def ext = unT ((T def) `ext0` (T ext))
-
--- | The type constructor for transformations
-newtype T x = T { unT :: x -> x }

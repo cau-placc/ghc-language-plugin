@@ -1,7 +1,5 @@
 {-# LANGUAGE ViewPatterns        #-}
 {-# LANGUAGE LambdaCase          #-}
-{-# LANGUAGE RankNTypes          #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-|
 Module      : Plugin.Trans.Type
 Description : Various functions to get or lift type-related things
@@ -16,9 +14,7 @@ module Plugin.Trans.Type where
 import Data.IORef
 import Data.List
 import Data.Maybe
-import Data.Data (Typeable, Data, gcast, gmapM)
---import Data.Generics.Aliases
---import Data.Generics.Schemes
+import Data.Syb
 
 import GHC.Types.Name.Occurrence hiding (varName)
 import GHC.Plugins hiding (substTy, extendTvSubst)
@@ -614,46 +610,3 @@ mkEvWrapSimilar = go []
 
     gos []     _  _  = WpHole
     gos (w:ws) vs cs = go ws w vs cs
-
--- | Make a generic monadic transformation;
---   start from a type-specific case;
---   resort to return otherwise
---
-mkM :: ( Monad m
-       , Typeable a
-       , Typeable b
-       )
-    => (b -> m b)
-    -> a
-    -> m a
-mkM = extM return
-
--- | Extend a generic monadic transformation by a type-specific case
-extM :: ( Monad m
-        , Typeable a
-        , Typeable b
-        )
-     => (a -> m a) -> (b -> m b) -> a -> m a
-extM def ext = unM ((M def) `ext0` (M ext))
-
-
--- | The type constructor for transformations
-newtype M m x = M { unM :: x -> m x }
-
--- | Flexible type extension
-ext0 :: (Typeable a, Typeable b) => c a -> c b -> c a
-ext0 def ext = maybe def id (gcast ext)
-
--- | Monadic variation on everywhere
-everywhereM :: forall m. Monad m => GenericM m -> GenericM m
-everywhereM f = go
-  where
-    go :: GenericM m
-    go x = do
-      x' <- gmapM go x
-      f x'
-
--- | Generic monadic transformations,
---   i.e., take an \"a\" and compute an \"a\"
---
-type GenericM m = forall a. Data a => a -> m a

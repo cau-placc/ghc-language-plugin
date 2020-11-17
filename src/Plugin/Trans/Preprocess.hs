@@ -11,18 +11,18 @@ rewrites of selected expressions.
 -}
 module Plugin.Trans.Preprocess (preprocessBinding) where
 
-import Data.Generics (everywhereM, mkM)
+import Data.Syb
 
+import GHC.Plugins
 import GHC.Hs.Binds
 import GHC.Hs.Extension
 import GHC.Hs.Expr
 import GHC.Hs.Pat
 import GHC.Hs.Lit
-import TcRnMonad
-import TcEvidence
-import SrcLoc
-import GhcPlugins
-import ErrUtils
+import GHC.Tc.Types
+import GHC.Tc.Types.Evidence
+import GHC.Tc.Utils.Monad
+import GHC.Utils.Error
 
 import Plugin.Trans.Util
 import Plugin.Trans.PatternMatching
@@ -36,14 +36,14 @@ preprocessBinding lcl (AbsBinds a b c d e f g)
   -- Rreprocess each binding seperate.
   bs <- liftBag (preprocessBinding lcl) f
   return (AbsBinds a b c d e bs g)
-preprocessBinding lcl (FunBind a (L b name) eqs c ticks) = do
+preprocessBinding lcl (FunBind a (L b name) eqs ticks) = do
   -- Compile pattern matching first, but only use matchExpr
   -- if this is a top-level binding to avoid doing this multiple times.
   Left matchedGr <- compileMatchGroup eqs
   matched <- (if lcl then return else everywhereM (mkM matchExpr)) matchedGr
   -- Preprocess the inner part of the declaration afterwards.
   eqs' <- preprocessEquations matched
-  return (FunBind a (L b name) eqs' c ticks)
+  return (FunBind a (L b name) eqs' ticks)
 preprocessBinding _ a = return a
 
 preprocessEquations :: MatchGroup GhcTc (LHsExpr GhcTc)
@@ -51,36 +51,33 @@ preprocessEquations :: MatchGroup GhcTc (LHsExpr GhcTc)
 preprocessEquations (MG a (L b alts) c) = do
   alts' <- mapM preprocessAlt alts
   return (MG a (L b alts') c)
-preprocessEquations a = return a
 
 preprocessAlt :: LMatch GhcTc (LHsExpr GhcTc)
               -> TcM (LMatch GhcTc (LHsExpr GhcTc))
 preprocessAlt (L a (Match b c d rhs)) = do
   rhs' <- preprocessRhs rhs
   return (L a (Match b c d rhs'))
-preprocessAlt a = return a
 
 preprocessRhs :: GRHSs GhcTc (LHsExpr GhcTc)
               -> TcM (GRHSs GhcTc (LHsExpr GhcTc))
 preprocessRhs (GRHSs a grhs b) = do
   grhs' <- mapM preprocessGRhs grhs
   return (GRHSs a grhs' b)
-preprocessRhs a = return a
 
 preprocessGRhs :: LGRHS GhcTc (LHsExpr GhcTc)
                -> TcM (LGRHS GhcTc (LHsExpr GhcTc))
 preprocessGRhs (L a (GRHS b c body)) = do
   body' <- preprocessExpr body
   return (L a (GRHS b c body'))
-preprocessGRhs a = return a
 
 -- preprocessExpr traverses the AST to reach all local function definitions
 -- and removes some ExplicitTypeApplications.
 -- Some HsWrapper might be split into two halves on each side of an
 -- explicit type applications. We have to fuse those wrappers.
 preprocessExpr :: LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
-preprocessExpr (L l (HsWrap _ w1 (HsAppType _ (L _ (HsWrap _ w2 e)) _))) =
-  return (L l (HsWrap noExtField (w1 <.> w2) e))
+preprocessExpr (L l (XExpr (WrapExpr (HsWrap w1
+                 (HsAppType _ (L _ (XExpr (WrapExpr (HsWrap w2 e)))) _))))) =
+  return (L l (XExpr (WrapExpr (HsWrap (w1 <.> w2) e))))
 preprocessExpr e@(L _ (HsVar _ (L _ _))) =
   return e
 preprocessExpr e@(L _ HsLit{}) =
@@ -136,17 +133,11 @@ preprocessExpr (L l (HsCase x sc br)) = do
   br' <- preprocessEquations br
   sc' <- preprocessExpr sc
   return (L l (HsCase x sc' br'))
-preprocessExpr (L l (HsIf x Nothing e1 e2 e3)) = do
+preprocessExpr (L l (HsIf x e1 e2 e3)) = do
   e1' <- preprocessExpr e1
   e2' <- preprocessExpr e2
   e3' <- preprocessExpr e3
-  return (L l (HsIf x Nothing e1' e2' e3'))
-preprocessExpr (L l (HsIf x (Just se) e1 e2 e3)) = do
-  se' <- preprocessSynExpr se
-  e1' <- preprocessExpr e1
-  e2' <- preprocessExpr e2
-  e3' <- preprocessExpr e3
-  return (L l (HsIf x (Just se') e1' e2' e3'))
+  return (L l (HsIf x e1' e2' e3'))
 preprocessExpr e@(L _ (HsMultiIf _ _)) =
   panicAny "Multi-way if should have been desugared before lifting" e
 preprocessExpr (L l (HsLet x bs e)) = do
@@ -185,12 +176,9 @@ preprocessExpr e@(L l (ArithSeq _ (Just _) _)) = do
     "Overloaded lists are not supported by the plugin")
   failIfErrsM
   return e
-preprocessExpr (L l (HsSCC a b c e)) = do
+preprocessExpr (L l (HsPragE x (HsPragSCC a b c) e)) = do
   e' <- preprocessExpr e
-  return (L l (HsSCC a b c e'))
-preprocessExpr (L l (HsCoreAnn a b c e)) = do
-  e' <- preprocessExpr e
-  return (L l (HsCoreAnn a b c e'))
+  return (L l (HsPragE x (HsPragSCC a b c) e'))
 preprocessExpr e@(L l (HsBracket _ _)) = do
   flags <- getDynFlags
   reportError (mkErrMsg flags l neverQualify
@@ -203,7 +191,7 @@ preprocessExpr e@(L l (HsSpliceE _ _)) =  do
     "Template Haskell and Quotation are not supported by the plugin")
   failIfErrsM
   return e
-preprocessExpr e@(L l (HsTcBracketOut _ _ _)) = do
+preprocessExpr e@(L l (HsTcBracketOut _ _ _ _)) = do
   flags <- getDynFlags
   reportError (mkErrMsg flags l neverQualify
     "Template Haskell and Quotation are not supported by the plugin")
@@ -223,12 +211,9 @@ preprocessExpr (L l (HsTick a tick e)) = do
 preprocessExpr (L l (HsBinTick a b c e)) = do
   e' <- preprocessExpr e
   return (L l (HsBinTick a b c e'))
-preprocessExpr (L l (HsTickPragma a b c d e)) = do
-  e' <- preprocessExpr e
-  return (L l (HsTickPragma a b c d e'))
-preprocessExpr (L l (HsWrap x w e)) = do
+preprocessExpr (L l (XExpr (WrapExpr (HsWrap w e)))) = do
   e' <- unLoc <$> preprocessExpr (noLoc e)
-  return (L l (HsWrap x w e'))
+  return (L l (XExpr (WrapExpr (HsWrap w e'))))
 preprocessExpr e = panicAny "This expression should not occur after TC" e
 
 preprocessArithExpr :: ArithSeqInfo GhcTc -> TcM (ArithSeqInfo GhcTc)
@@ -258,11 +243,11 @@ preprocessStmts (s:ss) = do
       e' <- preprocessExpr e
       r' <- preprocessSynExpr r
       return (L l (LastStmt x e' a r'))
-    preprocessStmt (L l (BindStmt x p e b f)) = do
+    preprocessStmt (L l (BindStmt (XBindStmtTc b m ty f) p e)) = do
       e' <- preprocessExpr e
       b' <- preprocessSynExpr b
-      f'  <- preprocessSynExpr f
-      return (L l (BindStmt x p e' b' f'))
+      f'  <- maybe (return Nothing) (fmap Just . preprocessSynExpr) f
+      return (L l (BindStmt (XBindStmtTc b' m ty f') p e'))
     preprocessStmt (L l (ApplicativeStmt _ _ _)) = do
       flags <- getDynFlags
       reportError (mkErrMsg flags l neverQualify
@@ -295,12 +280,12 @@ preprocessStmts (s:ss) = do
         "Recursive do-notation is not supported by the plugin")
       failIfErrsM
       return s
-    preprocessStmt s' = return s'
 
-preprocessSynExpr :: SyntaxExpr GhcTc -> TcM (SyntaxExpr GhcTc)
-preprocessSynExpr (SyntaxExpr e ws w) = do
+preprocessSynExpr :: SyntaxExprTc -> TcM (SyntaxExpr GhcTc)
+preprocessSynExpr (SyntaxExprTc e ws w) = do
   e' <- unLoc <$> preprocessExpr (noLoc e)
-  return (SyntaxExpr e' ws w)
+  return (SyntaxExprTc e' ws w)
+preprocessSynExpr NoSyntaxExprTc = return NoSyntaxExprTc
 
 preprocessField :: Located (HsRecField' a (LHsExpr GhcTc))
                 -> TcM (Located (HsRecField' a (LHsExpr GhcTc)))
@@ -327,7 +312,7 @@ preprocessLocalBinds b = return b
 
 preprocessValBinds :: HsValBindsLR GhcTc GhcTc
                    -> TcM (HsValBindsLR GhcTc GhcTc)
-preprocessValBinds bs@ValBinds {} = 
+preprocessValBinds bs@ValBinds {} =
   panicAny "Untyped bindings are not expected after TC" bs
 preprocessValBinds (XValBindsLR (NValBinds bs sigs)) = do
   bs' <- mapM preprocessNV bs

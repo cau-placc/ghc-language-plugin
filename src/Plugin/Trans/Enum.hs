@@ -16,14 +16,14 @@ module Plugin.Trans.Enum
 
 import Data.List
 
+import GHC.Plugins
 import GHC.Hs.Binds
 import GHC.Hs.Extension
 import GHC.Hs.Pat
 import GHC.Hs.Expr
-import SrcLoc
-import GhcPlugins
-import Bag
-import TcRnMonad
+import GHC.Tc.Types
+import GHC.Core.TyCo.Rep
+import GHC.Data.Bag
 
 import Plugin.Trans.Type
 import Plugin.Trans.Util
@@ -32,7 +32,7 @@ import Plugin.Trans.CreateSyntax
 -- | Check if a given binding is an instance function created by a
 -- GHC deriving clause for 'Enum'.
 isDerivedEnumBind :: HsBindLR GhcTc GhcTc -> Bool
-isDerivedEnumBind (FunBind _ _ eqs _ _) =
+isDerivedEnumBind (FunBind _ _ eqs _) =
   isDerivedEnum eqs
 isDerivedEnumBind (AbsBinds _ _ _ _ _ bs _) =
   anyBag (isDerivedEnumBind . unLoc) bs
@@ -54,10 +54,10 @@ isDerivedEnum (MG (MatchGroupTc [] _) (L _ [L _ (Match _ _ []            -- 1.
   case unLoc (getBodyExpr e) of                                          -- 3.
     HsLet _ (L _ (HsValBinds _ (XValBindsLR (NValBinds [(_, bs)] _)))) _
       | [L _ (FunBind _ _ (MG _ (L _ [L _ (Match _ _ [] (GRHSs _
-          [L _ (GRHS _ [] (L _ (HsPar _ e1)))] _))]) _) _ _)] <- bagToList bs
-                     -> isDerivedEnumExpr "$con2tag_" e1                 -- 4.a
-    HsIf _ _ _ e1 e2 -> any (isDerivedEnumExpr "$tag2con_") [e1, e2]     -- 4.b
-    _                -> False
+          [L _ (GRHS _ [] (L _ (HsPar _ e1)))] _))]) _) _)] <- bagToList bs
+                   -> isDerivedEnumExpr "$con2tag_" e1                 -- 4.a
+    HsIf _ _ e1 e2 -> any (isDerivedEnumExpr "$tag2con_") [e1, e2]     -- 4.b
+    _              -> False
 isDerivedEnum _ = False
 
 -- | Check if the given expression is a call to a function that matches the
@@ -94,7 +94,6 @@ liftDerivedEnumRhs :: TyConMap -> GRHSs GhcTc (LHsExpr GhcTc)
 liftDerivedEnumRhs tcs (GRHSs a grhs b) = do
   grhs' <- mapM (liftDerivedEnumGRhs tcs) grhs
   return (GRHSs a grhs' b)
-liftDerivedEnumRhs _ a = return a
 
 -- | Lift a given guarded right side of a rule
 -- that stems from an instance function created by a
@@ -103,7 +102,6 @@ liftDerivedEnumGRhs :: TyConMap -> LGRHS GhcTc (LHsExpr GhcTc)
                     -> TcM (LGRHS GhcTc (LHsExpr GhcTc))
 liftDerivedEnumGRhs tcs (L a (GRHS b c body)) =
   L a . GRHS b c <$> liftDerivedEnumExpr tcs body
-liftDerivedEnumGRhs _ a = return a
 
 
 -- | Lift a given expression that stems from an instance function created by a
@@ -117,8 +115,8 @@ liftDerivedEnumGRhs _ a = return a
 --    ~> liftE (return e)
 liftDerivedEnumExpr :: TyConMap -> LHsExpr GhcTc
                     -> TcM (LHsExpr GhcTc)
-liftDerivedEnumExpr tcs (L l1 (HsLam x1 (MG (MatchGroupTc [arg] res) (L l2
-  [L l3 (Match x2 ctxt [L l4 (VarPat x3 (L l5 v))]
+liftDerivedEnumExpr tcs (L l1 (HsLam x1 (MG (MatchGroupTc [Scaled m arg] res)
+  (L l2 [L l3 (Match x2 ctxt [L l4 (VarPat x3 (L l5 v))]
   (GRHSs x4 [L l6 (GRHS x5 g e)] lcl))]) orig))) = do
     -- create the new pattern variable
     u <- getUniqueM
@@ -132,7 +130,7 @@ liftDerivedEnumExpr tcs (L l1 (HsLam x1 (MG (MatchGroupTc [arg] res) (L l2
     arg' <- liftTypeTcM tcs arg
     res' <- liftTypeTcM tcs res
     -- create the lambda
-    let e''' = L l1 (HsLam x1 (MG (MatchGroupTc [arg'] res') (L l2
+    let e''' = L l1 (HsLam x1 (MG (MatchGroupTc [Scaled m arg'] res') (L l2
                  [L l3 (Match x2 ctxt [L l4 (VarPat x3 (L l5 v'))]
                  (GRHSs x4 [L l6 (GRHS x5 g e'')] lcl))]) orig))
     let ty = mkVisFunTyMany arg' res'

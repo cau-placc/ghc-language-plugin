@@ -68,6 +68,7 @@ common deps
     MultiParamTypeClasses,
     TemplateHaskell
   other-modules:
+    Data.Syb
     Plugin.Dump
     Plugin.CurryPlugin.ForeignExport
     Plugin.Effect.Tree

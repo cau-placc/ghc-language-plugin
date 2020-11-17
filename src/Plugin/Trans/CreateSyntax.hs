@@ -38,7 +38,7 @@ import Plugin.Trans.Var
 -- | Create the lambda functions used to lift value constructors.
 -- Newtypes have to be treated differently.
 -- Look at their lifting for details.
-mkConLam :: Maybe HsWrapper -> DataCon -> [Type] -> [Id]
+mkConLam :: Maybe HsWrapper -> DataCon -> [Scaled Type] -> [Id]
      -> TcM (LHsExpr GhcTc, Type)
 -- list of types is empty -> apply the collected variables.
 mkConLam mw c [] vs
@@ -75,29 +75,29 @@ mkConLam mw c [] vs
     mty <- mkTyConTy <$> getMonadTycon
     return (e', mkAppTy mty ty)
 -- Create lambdas for the remaining types.
-mkConLam w c (ty:tys) vs = do
+mkConLam w c (Scaled m ty : tys) vs = do
   mtc <- getMonadTycon
   -- Despite the argument being unlifted for newtypes, we want to create
   -- a lifted function to replace the constructor.
   -- This is why we manually lift the parameter for newtypes.
   let ty' = if isNewTyCon (dataConTyCon c) then mkTyConApp mtc [ty] else ty
   -- Create the new variable for the lambda.
-  v <- freshVar ty'
+  v <- freshVar (Scaled m ty')
   -- Create the inner part of the term with the remaining type arguments.
   (e, resty) <- mkConLam w c tys (v:vs)
   -- Make the lambda for this variable
   let e' = mkLam (noLoc v) ty' e resty
-  let lamty = mkVisFunTyMany ty' resty
+  let lamty = mkVisFunTy m ty' resty
   -- Wrap the whole term in a 'return'.
   e'' <- mkApp mkNewReturnTh lamty [noLoc $ HsPar noExtField e']
   let mty = mkTyConTy mtc
   return (e'', mkAppTy mty lamty)
 
 -- | Create the lambda to be used after '(>>=)'.
-mkBindLam :: Type -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
-mkBindLam ty e1' = do
+mkBindLam :: Scaled Type -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
+mkBindLam (Scaled m ty) e1' = do
   let ty' = bindingType ty
-  v <- noLoc <$> freshVar ty'
+  v <- noLoc <$> freshVar (Scaled m ty')
   let bdy = noLoc $ HsApp noExtField (noLoc (HsVar noExtField v)) e1'
   resty <- getTypeOrPanic bdy
   return (mkLam v ty' bdy resty)
@@ -371,5 +371,8 @@ toLetExpr :: (RecFlag, LHsBinds GhcTc) -> LHsExpr GhcTc -> LHsExpr GhcTc
 toLetExpr b e = noLoc
   (HsLet noExtField (noLoc
     (HsValBinds noExtField (XValBindsLR (NValBinds [b] [])))) e)
+
+mkHsWrap :: HsWrapper -> HsExpr GhcTc -> HsExpr GhcTc
+mkHsWrap w e = XExpr (WrapExpr (HsWrap w e))
 
 {- HLINT ignore "Reduce duplication "-}

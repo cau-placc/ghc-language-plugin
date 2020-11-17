@@ -7,12 +7,9 @@ Maintainer  : kai.prott@hotmail.de
 This module contains various functions to generate fresh variables and other
 stuff to deal with variables.
 -}
-{-# LANGUAGE RankNTypes          #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 module Plugin.Trans.Var where
 
-import Data.Data     (Data, Typeable, gmapQ)
-import Data.Typeable (cast)
+import Data.Syb
 
 import GHC.Types.Name.Occurrence
 import GHC.Plugins
@@ -35,11 +32,11 @@ freshMonadTVar = do
     (mkFunTy VisArg Many k k)
 
 -- | Create a fresh variable of the given type.
-freshVar :: Type -> TcM Var
-freshVar ty = do
+freshVar :: Scaled Type -> TcM Var
+freshVar (Scaled m ty) = do
   u <- getUniqueM
   let name = mkSystemName u (mkVarOcc "f")
-  return $ mkLocalVar VanillaId name Many ty vanillaIdInfo
+  return $ mkLocalVar VanillaId name m ty vanillaIdInfo
 
 -- | Create a fresh dictionary variable of the given type.
 freshDictId :: Type -> TcM Var
@@ -59,26 +56,3 @@ liftName n u =
   let occ = occName n
       occ' = mkOccName (occNameSpace occ) (occNameString occ ++ "ND")
   in tidyNameOcc (setNameUnique n u) occ'
-
-type GenericQ r = forall a. Data a => a -> r
-
--- | Get a list of all entities that meet a predicate
-listify :: Typeable r => (r -> Bool) -> GenericQ [r]
-listify p = everything (++) ([] `mkQ` (\x -> if p x then [x] else []))
-
-everything :: forall r. (r -> r -> r) -> GenericQ r -> GenericQ r
-everything k f = go
-  where
-    go :: GenericQ r
-    go x = foldl k (f x) (gmapQ go x)
-
-mkQ :: ( Typeable a
-       , Typeable b
-       )
-    => r
-    -> (b -> r)
-    -> a
-    -> r
-(r `mkQ` br) a = case cast a of
-                        Just b  -> br b
-                        Nothing -> r

@@ -17,30 +17,32 @@ before lifting a function.
 module Plugin.Trans.PatternMatching (compileMatchGroup, matchExpr) where
 
 import Data.List
-import Data.Data     (Data)
-import Data.Typeable (Typeable)
+import Data.Syb
 import Data.Tuple.Extra
-import Data.Generics (mkT, everywhere, listify)
 import Control.Monad
 
+import GHC.Plugins
 import GHC.Hs.Binds
 import GHC.Hs.Extension
 import GHC.Hs.Pat
 import GHC.Hs.Lit
 import GHC.Hs.Expr
-import GHC.Hs.Types
-import SrcLoc
-import GhcPlugins
-import ConLike
-import Finder
-import IfaceEnv
-import TcRnMonad
-import TcEvidence
-import TcHsSyn
-import PatSyn
-import PrelNames
-import Bag
-import ErrUtils
+import GHC.Hs.Type
+import GHC.Builtin.Names
+import GHC.Unit.Finder
+import GHC.Types.SourceText
+import GHC.Types.Fixity
+import GHC.Tc.Types
+import GHC.Tc.Types.Evidence
+import GHC.Tc.Utils.Monad
+import GHC.Tc.Utils.Env
+import GHC.Tc.Utils.Zonk
+import GHC.Utils.Error
+import GHC.Iface.Env
+import GHC.Core.TyCo.Rep
+import GHC.Core.PatSyn
+import GHC.Core.ConLike
+import GHC.Data.Bag
 
 import Plugin.Trans.Var
 import Plugin.Trans.Type
@@ -81,10 +83,11 @@ matchExpr (HsCase _ (L _ (HsVar _ (L _ v)))
   (MG (MatchGroupTc _ res) (L _ alts) _)) = do
   e <- errorExpr CaseAlt res >>= compileMatching [v] res alts
   return (unLoc e)
-matchExpr (HsCase _ scr (MG (MatchGroupTc (~[a]) res) (L _ alts) _)) = do
+matchExpr (HsCase _ scr (MG (MatchGroupTc (~[a@(Scaled _ ty)]) res)
+                            (L _ alts) _)) = do
   v <- freshVar a
   e <- errorExpr CaseAlt res >>= compileMatching [v] res alts
-  return (mkSimpleLet NonRecursive scr e v a)
+  return (mkSimpleLet NonRecursive scr e v ty)
 matchExpr (HsMultiIf ty grhs) = do
   err <- errorExpr IfAlt ty
   unLoc <$> foldM compileGuard err grhs
@@ -93,14 +96,14 @@ matchExpr (HsLet _ bs e) = do
   return (unLoc (foldr toLetExpr e bs'))
 matchExpr (HsDo x ctxt (L l stmts)) = do
   (stmts', swapCtxt) <- compileDo x ctxt stmts
-  let ctxt' = if swapCtxt then DoExpr else ctxt
+  let ctxt' = if swapCtxt then DoExpr Nothing else ctxt
   return (HsDo x ctxt' (L l stmts'))
 matchExpr e = return e
 
 -- | Translate any pattern in do-notation or comprehensions.
 -- Also transforms list comprehensions into monad comprehensions and
 -- fills any annotated functions that are missing because of that conversion.
-compileDo :: Type -> HsStmtContext Name -> [ExprLStmt GhcTc]
+compileDo :: Type -> HsStmtContext GhcRn -> [ExprLStmt GhcTc]
           -> TcM ([ExprLStmt GhcTc], Bool)
 compileDo _ GhciStmtCtxt _ = failWithTc $ text
   "Do-Notation in GHCi is not supported with the Curry-Plugin"
@@ -114,10 +117,10 @@ compileDo ty ctxt [L l (LastStmt x e b r)] = do
   return ([L l (LastStmt x e b r')], False)
 compileDo _ _ (s@(L _ (LastStmt _ _ _ _)) : _) =
   panicAny "Unexpected last statement in do notation" s
-compileDo ty ctxt (L l (BindStmt _ p e b' f') : stmts) = do
+compileDo ty ctxt (L l (BindStmt (XBindStmtTc b' _ _ f') p e) : stmts) = do
   -- Compile the rest of the statements and create a do-expression.
   (stmts', swapCtxt) <- compileDo ty ctxt stmts
-  let ctxt' = if swapCtxt then DoExpr else ctxt
+  let ctxt' = if swapCtxt then DoExpr Nothing else ctxt
   let rest = noLoc (HsDo ty ctxt' (noLoc stmts'))
 
   emty <- getTypeOrPanic e
@@ -127,25 +130,26 @@ compileDo ty ctxt (L l (BindStmt _ p e b' f') : stmts) = do
   let ty' = fst (splitAppTy ty)
   (b, f) <- case ctxt of
     ListComp -> (,) <$> mkListBind ety ty' <*> mkListFail ty'
-    _        -> return (b', f')
+    _        -> return (b', maybe NoSyntaxExprTc id f')
 
   -- Create the regular and fail alternatatives
   -- (if f is not noSynExpr, the fail one never gets used).
-  v <- noLoc <$> freshVar ety
+  v <- noLoc <$> freshVar (Scaled Many ety)
   let alt = mkSimpleAlt CaseAlt rest [p]
-      fe = HsWrap noExtField (syn_res_wrap f)
+      fe = mkHsWrap (syn_res_wrap f)
         (HsApp noExtField (noLoc (syn_expr f))
-          (fmap (HsWrap noExtField (head (syn_arg_wraps f)))
+          (fmap (mkHsWrap (head (syn_arg_wraps f)))
             (errorStrStmt ctxt)))
       altFail = mkSimpleAlt CaseAlt (noLoc fe) [noLoc (WildPat ety)]
-      -- Check if fail is "noSyntaxExpr" (represented by HsLit).
-      alts | HsLit _ _ <- syn_expr f    = [noLoc alt]
-           | otherwise                  = [noLoc alt, noLoc altFail]
-      mgtc = MatchGroupTc [ety] ty
+      alts = case f of
+               NoSyntaxExprTc -> [noLoc alt]
+               _              -> [noLoc alt, noLoc altFail]
+      mgtc = MatchGroupTc [Scaled Many ety] ty
       mg = MG mgtc (noLoc alts) Generated
   e' <- matchExpr (HsCase noExtField (noLoc (HsVar noExtField v)) mg)
-  return ([L l (BindStmt ty (noLoc (VarPat noExtField v)) e b noSyntaxExpr),
-          noLoc (LastStmt noExtField (noLoc e') False noSyntaxExpr)],
+  return ([L l (BindStmt (XBindStmtTc b ty Many Nothing)
+                 (noLoc (VarPat noExtField v)) e),
+          noLoc (LastStmt noExtField (noLoc e') Nothing NoSyntaxExprTc)],
           -- Normally ListCompr creates a return around LastStmt.
           -- Prevent creation of duplicate return for MonadCompr
           -- due to nested LastStmt by changing the context.
@@ -187,8 +191,6 @@ compileDo _ _ (L l (RecStmt _ _ _ _ _ _ _) : _) =  do
     "Recursive do-notation is not supported by the plugin")
   failIfErrsM
   return ([], False)
-compileDo ty ctxt (L _ (XStmtLR _) : ss) =
-  compileDo ty ctxt ss
 
 -- | Desugars pattern bindings in the given let-bindings.
 -- This is done by introducing selector functions for each of them.
@@ -213,7 +215,7 @@ compileLetBind :: LHsBindLR GhcTc GhcTc -> TcM [LHsBindLR GhcTc GhcTc]
 compileLetBind (L l (AbsBinds x tvs evs ex ev bs sig)) = do
   bs' <- listToBag <$> concatMapM compileLetBind (bagToList bs)
   return [L l (AbsBinds x tvs evs ex ev bs' sig)]
-compileLetBind (L _ (PatBind (NPatBindTc ns ty) p grhss _)) = do
+compileLetBind (L _ (PatBind ty p grhss _)) = do
   (b, fname) <- createOrdinaryFun
   (p', vs) <- prepareSelPat p
   let pe = noLoc (HsVar noExtField (noLoc fname))
@@ -223,19 +225,19 @@ compileLetBind (L _ (PatBind (NPatBindTc ns ty) p grhss _)) = do
     -- create:
     -- fname = grhss
     createOrdinaryFun = do
-      fname <- freshVar ty
+      fname <- freshVar (Scaled Many ty)
       let ctxt = FunRhs (noLoc (varName fname)) Prefix NoSrcStrict
           alt = Match noExtField ctxt [] grhss
           mgtc = MatchGroupTc [] ty
           mg = MG mgtc (noLoc [noLoc alt]) Generated
-      return (noLoc (FunBind ns (noLoc fname) mg WpHole []), fname)
+      return (noLoc (FunBind WpHole (noLoc fname) mg []), fname)
     -- create:
     -- old = (\p' -> new) pe
     mkSelFun p' pe (old, new) = do
       let altLam = mkSimpleAlt LambdaExpr
             (noLoc (HsVar noExtField (noLoc new)))
               [removeOtherPatterns new p']
-          mgtcLam = MatchGroupTc [ty] (varType new)
+          mgtcLam = MatchGroupTc [Scaled Many ty] (varType new)
           mgLam = MG mgtcLam (noLoc [noLoc altLam]) Generated
       lam <- matchExpr (HsLam noExtField mgLam)
       let bdy = HsApp noExtField (noLoc (HsPar noExtField (noLoc lam))) pe
@@ -246,14 +248,14 @@ compileLetBind (L _ (PatBind (NPatBindTc ns ty) p grhss _)) = do
           alt = Match noExtField ctxt [] grhssSel
           mgtc = MatchGroupTc [] (varType new)
           mg = MG mgtc (noLoc [noLoc alt]) Generated
-      return (noLoc (FunBind ns (noLoc old) mg WpHole []))
+      return (noLoc (FunBind WpHole (noLoc old) mg []))
 
     -- rename all variables in the pattern and remove all laziness in pattern
     prepareSelPat (L l1 p1) = first (L l1) <$> case p1 of
-      VarPat x (L l2 v)   -> do v' <- freshVar (varType v)
+      VarPat x (L l2 v)   -> do v' <- freshVar (Scaled (varMult v) (varType v))
                                 return (VarPat x (L l2 v'), [(v,v')])
       LazyPat _ p2        -> first unLoc <$> prepareSelPat p2
-      AsPat x (L l2 v) p2 -> do v' <- freshVar (varType v)
+      AsPat x (L l2 v) p2 -> do v' <- freshVar (Scaled (varMult v) (varType v))
                                 (p3, vs') <- prepareSelPat p2
                                 return (AsPat x (L l2 v') p3, (v,v') : vs')
       ParPat _ p2         -> first unLoc <$> prepareSelPat p2
@@ -263,16 +265,16 @@ compileLetBind (L _ (PatBind (NPatBindTc ns ty) p grhss _)) = do
       TuplePat x ps b     -> do (ps', vss) <- unzip <$> mapM prepareSelPat ps
                                 return (TuplePat x ps' b, concat vss)
       SumPat x p2 t b     -> first (\p3 -> SumPat x p3 t b) <$> prepareSelPat p2
-      p2@ConPatOut{ pat_args = args } ->
+      p2@ConPat { pat_args = args } ->
         first (\args' -> p2 { pat_args = args'}) <$> prepareSelDetails args
       ViewPat x e p2 -> first (ViewPat x e) <$> prepareSelPat p2
       NPlusKPat x (L l2 v) lit1 lit2 se1 se2 -> do
-        v' <- freshVar (varType v)
+        v' <- freshVar (Scaled (varMult v) (varType v))
         return (NPlusKPat x (L l2 v') lit1 lit2 se1 se2, [(v,v')])
       SigPat x p2 ty' -> first (flip (SigPat x) ty') <$> prepareSelPat p2
-      CoPat a b p2 c -> do (L _ p3, vs) <- prepareSelPat (noLoc p2)
-                           return (CoPat a b p3 c, vs)
-      p2             -> return (p2, [])
+      XPat (CoPat b p2 c) -> do (L _ p3, vs) <- prepareSelPat (noLoc p2)
+                                return (XPat (CoPat b p3 c), vs)
+      p2              -> return (p2, [])
 
     prepareSelDetails (PrefixCon ps) = do
       (ps', vss) <- unzip <$> mapM prepareSelPat ps
@@ -309,7 +311,7 @@ compileLetBind (L _ (PatBind (NPatBindTc ns ty) p grhss _)) = do
       SumPat x p2 t b
         | p2 `contains` new -> SumPat x (removeOtherPatterns new p2) t b
         | otherwise         -> WildPat (hsLPatType p0)
-      p2@ConPatOut{ pat_args = args }
+      p2@ConPat { pat_args = args }
         | p2 `contains` new -> p2 { pat_args = removeOtherDetails new args }
         | otherwise         -> WildPat (hsLPatType p0)
       ViewPat x e p2
@@ -318,8 +320,8 @@ compileLetBind (L _ (PatBind (NPatBindTc ns ty) p grhss _)) = do
         | v == new          -> NPlusKPat x (L l2 v) lit1 lit2 se1 se2
         | otherwise         -> WildPat (hsLPatType p0)
       SigPat x p2 ty'       -> flip (SigPat x) ty' $ removeOtherPatterns new p2
-      CoPat a b p2 c        -> CoPat a b
-                                 (unLoc (removeOtherPatterns new (noLoc p2))) c
+      XPat (CoPat b p2 c)   -> XPat (CoPat b
+                                 (unLoc (removeOtherPatterns new (noLoc p2))) c)
       _                     -> WildPat (hsLPatType p0)
 
     removeOtherDetails new (PrefixCon ps) =
@@ -359,7 +361,7 @@ compileMatchGroup mg = return (Left mg)
 
 -- | Transform any multi-arity match group
 -- into multiple lambdas and case expressions
-makeUnaryBindings :: HsMatchContext Name -> [Var]
+makeUnaryBindings :: HsMatchContext (NoGhcTc GhcTc) -> [Var]
                   -> MatchGroup GhcTc (LHsExpr GhcTc) -> LHsExpr GhcTc
                   -> TcM (Either (MatchGroup GhcTc (LHsExpr GhcTc))
                                  (LHsExpr GhcTc))
@@ -379,7 +381,8 @@ makeUnaryBindings ctxt vs (MG (MatchGroupTc args res) (L l alts) _) e =
             Left  mg -> noLoc (HsLam noExtField mg)
             Right ex -> ex
 
-      let mgtcLam = MatchGroupTc [x] (foldr mkVisFunTyMany res xs)
+      let mgtcLam = MatchGroupTc [x]
+                      (foldr (\(Scaled a b) -> mkVisFunTy a b) res xs)
       let patLam = VarPat noExtField (noLoc v)
       let innerCtxt = if isFunCtxt ctxt then LambdaExpr else ctxt
       let altLam = mkSimpleAlt innerCtxt bdy1 [noLoc patLam]
@@ -387,14 +390,14 @@ makeUnaryBindings ctxt vs (MG (MatchGroupTc args res) (L l alts) _) e =
 
       if isFunCtxt ctxt
         then do
-          let mgtcTop = MatchGroupTc [] (foldr mkVisFunTyMany res args)
+          let mgtcTop = MatchGroupTc []
+                          (foldr (\(Scaled a b) -> mkVisFunTy a b) res args)
           let bdy2 = HsLam noExtField mgLam
           let altTop = mkSimpleAlt ctxt (noLoc bdy2) []
           let mgTop = MG mgtcTop (noLoc [noLoc altTop]) Generated
           return (Left mgTop)
         else
           return (Left mgLam)
-makeUnaryBindings _ _ x _  = return (Left x)
 
 -- | Compile all matchings of a specific match group to nested cases.
 compileMatching :: [Var] -> Type -> [LMatch GhcTc (LHsExpr GhcTc)]
@@ -419,22 +422,22 @@ compileGuard :: LHsExpr GhcTc -> LGRHS GhcTc (LHsExpr GhcTc)
              -> TcM (LHsExpr GhcTc)
 compileGuard err (L _ (GRHS _ stmts e)) =
   foldM (compileGuardStmt err) e (reverse stmts)
-compileGuard err (L _ (XGRHS _)) = return err
 
 -- | Compile a single statement from a guard.
 compileGuardStmt :: LHsExpr GhcTc -> LHsExpr GhcTc -> GuardLStmt GhcTc
                  -> TcM (LHsExpr GhcTc)
-compileGuardStmt err e (L _ (BindStmt resty p (L _ (HsVar _ (L _ v))) _ _)) = do
+compileGuardStmt err e (L _ (BindStmt (XBindStmtTc _ resty _ _) p
+                              (L _ (HsVar _ (L _ v))))) = do
   let alt = mkSimpleAlt CaseAlt e [p]
   compileMatching [v] resty [noLoc alt] err
-compileGuardStmt err e (L _ (BindStmt resty p g _ _)) = do
+compileGuardStmt err e (L _ (BindStmt (XBindStmtTc _ resty _ _) p g)) = do
   let alt = mkSimpleAlt CaseAlt e [p]
   ty <- getTypeOrPanic g
-  v <- freshVar ty
+  v <- freshVar (Scaled Many ty)
   e' <- compileMatching [v] resty [noLoc alt] err
   return (noLoc (mkSimpleLet Recursive g e' v ty))
 compileGuardStmt err e (L _ (BodyStmt _   g _ _)) =
-  return (noLoc (HsIf noExtField Nothing g e err))
+  return (noLoc (HsIf noExtField g e err))
 compileGuardStmt _   e (L _ (LetStmt  _ b      )) =
   return (noLoc (HsLet noExtField b e))
 compileGuardStmt _   _ s =
@@ -477,13 +480,13 @@ mkVarMatch n vs ty err eqs = do
 
 bindVarAlt :: Var -> (LPat GhcTc, LMatch GhcTc (LHsExpr GhcTc))
            -> TcM (LMatch GhcTc (LHsExpr GhcTc))
-bindVarAlt v (L _ (VarPat _ (L _ v')), m) = return (substitute v v' m)
-bindVarAlt _ (L _ (WildPat _    ), m) = return m
-bindVarAlt v (L _ (BangPat _ p  ), m) = bindVarAlt v (p, m)
-bindVarAlt v (L _ (LazyPat _ p  ), m) = bindVarAlt v (p, m)
-bindVarAlt v (L _ (ParPat _ p   ), m) = bindVarAlt v (p, m)
-bindVarAlt v (L _ (SigPat _ p _ ), m) = bindVarAlt v (p, m)
-bindVarAlt v (L _ (CoPat _ _ p _), m) = bindVarAlt v (noLoc p, m)
+bindVarAlt v (L _ (VarPat _ (L _ v') ), m) = return (substitute v v' m)
+bindVarAlt _ (L _ (WildPat _         ), m) = return m
+bindVarAlt v (L _ (BangPat _ p       ), m) = bindVarAlt v (p, m)
+bindVarAlt v (L _ (LazyPat _ p       ), m) = bindVarAlt v (p, m)
+bindVarAlt v (L _ (ParPat _ p        ), m) = bindVarAlt v (p, m)
+bindVarAlt v (L _ (SigPat _ p _      ), m) = bindVarAlt v (p, m)
+bindVarAlt v (L _ (XPat (CoPat _ p _)), m) = bindVarAlt v (noLoc p, m)
 bindVarAlt _ (_,m) = return m
 
 mkSeq :: Var -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
@@ -515,7 +518,7 @@ mkConMatch n vs ty2 err eqs = do
   let noAs = map (preprocessAs v) eqs
   alts <- mkAlts v vs' ty1 ty2 err noAs
   case alts of
-    Left as -> let mgtc = MatchGroupTc [ty1] ty2
+    Left as -> let mgtc = MatchGroupTc [Scaled Many ty1] ty2
                    mg = MG mgtc (noLoc as) Generated
                    e = HsCase noExtField (noLoc (HsVar noExtField (noLoc v))) mg
                in return (noLoc e)
@@ -573,7 +576,7 @@ mkNaturalOrSimpleAlt ty1 ty2 v e1 (L l (LitPat _ lit)) alts
         (HsIsString (stringLitSourceText lit) (stringLitFastString lit))
         (HsLit noExtField lit)))
       Nothing
-      (SyntaxExpr
+      (SyntaxExprTc
         (HsVar noExtField (noLoc (mkGlobalVar
            VanillaId eqStringName
            (mkVisFunTyMany strTy (mkVisFunTyMany strTy boolTy))
@@ -582,26 +585,26 @@ mkNaturalOrSimpleAlt ty1 ty2 v e1 (L l (LitPat _ lit)) alts
         WpHole))) alts
   where strTy = mkTyConApp listTyCon [mkTyConTy charTyCon]
 mkNaturalOrSimpleAlt ty1 ty2 v e1 (L _ (NPat _ (L _ (OverLit _ _ l)) neg
-  (SyntaxExpr eq [argWQ1, argWQ2] resWQ))) alts =
+  (SyntaxExprTc eq [argWQ1, argWQ2] resWQ))) alts =
   let ve = HsVar noExtField (noLoc v)
       l' = case neg of
-             Just (SyntaxExpr en [argWN] resWN) ->
-               HsWrap noExtField resWN (HsApp noExtField (noLoc en)
-                                          (noLoc (HsWrap noExtField argWN l)))
+             Just (SyntaxExprTc en [argWN] resWN) ->
+               mkHsWrap resWN (HsApp noExtField (noLoc en)
+                                (noLoc (mkHsWrap argWN l)))
              _ -> l
-      if1 = noLoc (HsWrap noExtField resWQ
+      if1 = noLoc (mkHsWrap resWQ
               (HsApp noExtField (noLoc (HsApp noExtField
                 (noLoc eq)
-                (noLoc (HsWrap noExtField argWQ1 l'))))
-                (noLoc (HsWrap noExtField argWQ2 ve))))
+                (noLoc (mkHsWrap argWQ1 l'))))
+                (noLoc (mkHsWrap argWQ2 ve))))
       if2 = e1
       if3 = case alts of
               Left as ->
-                let mgtc = MatchGroupTc [ty1] ty2
+                let mgtc = MatchGroupTc [Scaled Many ty1] ty2
                     mg = MG mgtc (noLoc as) Generated
                 in noLoc (HsCase noExtField (noLoc ve) mg)
               Right e2 -> e2
-  in Right (noLoc (HsIf noExtField Nothing if1 if2 if3))
+  in Right (noLoc (HsIf noExtField if1 if2 if3))
 mkNaturalOrSimpleAlt _ _ _ e1 p (Left as) =
   Left (noLoc (mkSimpleAlt CaseAlt e1 [p]) : as)
 mkNaturalOrSimpleAlt ty1 _ _ e1 p (Right e2) =
@@ -628,7 +631,6 @@ flattenEq :: (LPat GhcTc, LMatch GhcTc (LHsExpr GhcTc))
 flattenEq (p, L l (Match a b ps c)) = do
   (_,_,ps') <- flattenPat p
   return (L l (Match a b (ps' ++ ps) c))
-flattenEq (_,b) = return b
 
 -- Flatten a pattern into the top constructor pattern
 -- and the sub-patterns with their new variables
@@ -651,26 +653,25 @@ flattenPat p@(L l (ListPat (ListPatTc _ (Just _)) _ )) = do
   return (p, [], [])
 flattenPat (L l (ListPat (ListPatTc ty Nothing) [] )) = do
   let dc = noLoc (RealDataCon nilDataCon)
-  let res = L l (ConPatOut dc [ty] [] [] (EvBinds emptyBag) (PrefixCon []) WpHole)
+  let res = L l (ConPat (ConPatTc [ty] [] [] (EvBinds emptyBag) WpHole)
+                   dc (PrefixCon []))
   return (res, [], [])
 flattenPat (L l (ListPat tc@(ListPatTc ty Nothing) (x:xs))) = do
-  v1 <- mkVar ty
-  v2 <- mkVar (mkTyConApp listTyCon [ty])
+  v1 <- mkVar (Scaled Many ty)
+  v2 <- mkVar (Scaled Many (mkTyConApp listTyCon [ty]))
   let dc = noLoc (RealDataCon consDataCon)
   let c  = PrefixCon [ noLoc (VarPat noExtField (noLoc v1))
                      , noLoc (VarPat noExtField (noLoc v2))]
-  let res = L l (ConPatOut dc [ty] [] [] (EvBinds emptyBag) c WpHole)
+  let res = L l (ConPat (ConPatTc [ty] [] [] (EvBinds emptyBag) WpHole) dc c)
   return (res, [v1, v2], [x, noLoc (ListPat tc xs)])
 flattenPat (L l (TuplePat tys ps b)) =
   (\vs -> (L l (TuplePat tys (map mkVarPat vs) b), vs, ps))
-  <$> mapM mkVar tys
+  <$> mapM (mkVar . Scaled Many) tys
 flattenPat (L l (SumPat tys p t a)) =
   (\v -> (L l (SumPat tys (noLoc (VarPat noExtField (noLoc v))) t a), [v], [p]))
-  <$> mkVar (tys !! t)
-flattenPat p@(L _ (ConPatIn _ _)) =
-  panicAny "Untyped pattern not expected after TC" p
-flattenPat (L l cn@ConPatOut{}) =
-  let argtys = pat_arg_tys cn
+  <$> mkVar (Scaled Many (tys !! t))
+flattenPat (L l cn@ConPat {}) =
+  let argtys = cpt_arg_tys (pat_con_ext cn)
       cty = conLikeInstOrigArgTys (unLoc (pat_con cn)) argtys
   in (\(args', vs, c) -> (L l (cn { pat_args = args' }), vs, c))
        <$> flattenConPatDetails (pat_args cn) cty argtys
@@ -691,11 +692,11 @@ flattenPat p@(L _ NPat {}) = return (p, [], [])
 flattenPat p@(L _ NPlusKPat {}) =  return (p, [], [])
 flattenPat (L l (SigPat x p ty)) =
   (\(a,b,c) -> (L l (SigPat x a ty), b, c)) <$> flattenPat p
-flattenPat (L l (CoPat x co p w)) =
-  (\(a,b,c) -> (L l (CoPat x co (unLoc a) w), b, c)) <$> flattenPat (noLoc p)
-flattenPat p@(L _ (XPat _)) = return (p, [], [])
+flattenPat (L l (XPat (CoPat co p w))) =
+  (\(a,b,c) -> (L l (XPat (CoPat co (unLoc a) w)), b, c))
+    <$> flattenPat (noLoc p)
 
-flattenConPatDetails :: HsConPatDetails GhcTc -> [Type] -> [Type]
+flattenConPatDetails :: HsConPatDetails GhcTc -> [Scaled Type] -> [Type]
                      -> TcM (HsConPatDetails GhcTc, [Var], [LPat GhcTc])
 flattenConPatDetails (PrefixCon args) tys _ = do
   vs <- mapM mkVar tys
@@ -712,14 +713,15 @@ flattenRecField :: [Type] -> LHsRecField GhcTc (LPat GhcTc)
                 -> TcM (LHsRecField GhcTc (LPat GhcTc), [Var], [LPat GhcTc])
 flattenRecField tys (L l (HsRecField idt p pn)) = do
   let ty = funResultTy (instantiateWith tys (varType (extFieldOcc (unLoc idt))))
-  v <- mkVar ty
+  v <- mkVar (Scaled Many ty)
   let p' = noLoc (VarPat noExtField (noLoc v))
   return (L l (HsRecField idt p' pn), [v], [p])
 
-mkVar :: Type -> TcM Var
-mkVar ty =
-  (\u -> mkLocalVar VanillaId (mkSystemName u (mkVarOcc "p")) ty vanillaIdInfo)
-  <$> getUniqueM
+mkVar :: Scaled Type -> TcM Var
+mkVar (Scaled m ty) = do
+  u <- getUniqueM
+  return $
+    mkLocalVar VanillaId (mkSystemName u (mkVarOcc "p")) m ty vanillaIdInfo
 
 substitute :: Data a => Var -> Var -> a -> a
 substitute new old = everywhere (mkT substVar)
@@ -739,7 +741,6 @@ getPatternAt :: Int -> LMatch GhcTc (LHsExpr GhcTc)
 getPatternAt n (L l (Match x c ps lcl)) =
   let (p, rs) = getAndDrop n ps
   in (p, L l (Match x c rs lcl))
-getPatternAt _ _ = panicAnyUnsafe "No pattern at the specified index" ()
 
 getAndDrop :: Int -> [a] -> (a, [a])
 getAndDrop _ []     = panicAnyUnsafe "No pattern at the specified index" ()
@@ -750,141 +751,128 @@ getAndDrop n (x:xs) =
 
 isConstrPos :: Int -> LMatch GhcTc b  -> Bool
 isConstrPos n (L _ (Match _ _ ps _)) = isConstrPat (ps !! n)
-isConstrPos _ _ = False
 
 isSamePatternType :: LPat GhcTc -> LPat GhcTc -> Bool
 isSamePatternType p1 p2 = (isConstrPat p1 && isConstrPat p2)
   || (isVarPat p1 && isVarPat p2)
 
 isConstrPat :: LPat GhcTc -> Bool
-isConstrPat (L _ (WildPat _    )) = False
-isConstrPat (L _ (VarPat _ _   )) = False
-isConstrPat (L _ (LazyPat _ p  )) = isConstrPat p
-isConstrPat (L _ (AsPat _ _ p  )) = isConstrPat p
-isConstrPat (L _ (ParPat _ p   )) = isConstrPat p
-isConstrPat (L _ (BangPat _ p  )) = isConstrPat p
-isConstrPat (L _ (ListPat _ _  )) = True
-isConstrPat (L _ TuplePat {}    ) = True
-isConstrPat (L _ SumPat {}      ) = True
-isConstrPat (L _ (ConPatIn _ _ )) = True
-isConstrPat (L _ ConPatOut{}    ) = True
-isConstrPat (L _ ViewPat{}      ) = False
-isConstrPat (L _ (SplicePat _ _)) = False
-isConstrPat (L _ (LitPat _ _   )) = True
-isConstrPat (L _ NPat{}         ) = True
-isConstrPat (L _ NPlusKPat{}    ) = False
-isConstrPat (L _ (SigPat _ p _ )) = isConstrPat p
-isConstrPat (L _ (CoPat _ _ p _)) = isConstrPat (noLoc p)
-isConstrPat (L _ (XPat _       )) = False
+isConstrPat (L _ (WildPat _    ))      = False
+isConstrPat (L _ (VarPat _ _   ))      = False
+isConstrPat (L _ (LazyPat _ p  ))      = isConstrPat p
+isConstrPat (L _ (AsPat _ _ p  ))      = isConstrPat p
+isConstrPat (L _ (ParPat _ p   ))      = isConstrPat p
+isConstrPat (L _ (BangPat _ p  ))      = isConstrPat p
+isConstrPat (L _ (ListPat _ _  ))      = True
+isConstrPat (L _ TuplePat {}    )      = True
+isConstrPat (L _ SumPat {}      )      = True
+isConstrPat (L _ ConPat {}      )      = True
+isConstrPat (L _ ViewPat {}     )      = False
+isConstrPat (L _ (SplicePat _ _))      = False
+isConstrPat (L _ (LitPat _ _   ))      = True
+isConstrPat (L _ NPat {}        )      = True
+isConstrPat (L _ NPlusKPat {}   )      = False
+isConstrPat (L _ (SigPat _ p _ ))      = isConstrPat p
+isConstrPat (L _ (XPat (CoPat _ p _))) = isConstrPat (noLoc p)
 
 isVarPat :: LPat GhcTc -> Bool
-isVarPat (L _ (WildPat _    )) = True
-isVarPat (L _ (VarPat _ _   )) = True
-isVarPat (L _ (LazyPat _ p  )) = isVarPat p
-isVarPat (L _ (AsPat _ _ p  )) = isVarPat p
-isVarPat (L _ (ParPat _ p   )) = isVarPat p
-isVarPat (L _ (BangPat _ p  )) = isVarPat p
-isVarPat (L _ (ListPat _ _  )) = False
-isVarPat (L _ TuplePat {}    ) = False
-isVarPat (L _ SumPat {}      ) = False
-isVarPat (L _ (ConPatIn _ _ )) = False
-isVarPat (L _ ConPatOut{}    ) = False
-isVarPat (L _ ViewPat{}      ) = False
-isVarPat (L _ (SplicePat _ _)) = False
-isVarPat (L _ (LitPat _ _   )) = False
-isVarPat (L _ NPat{}         ) = False
-isVarPat (L _ NPlusKPat{}    ) = False
-isVarPat (L _ (SigPat _ p _ )) = isVarPat p
-isVarPat (L _ (CoPat _ _ p _)) = isVarPat (noLoc p)
-isVarPat (L _ (XPat _       )) = False
+isVarPat (L _ (WildPat _    ))      = True
+isVarPat (L _ (VarPat _ _   ))      = True
+isVarPat (L _ (LazyPat _ p  ))      = isVarPat p
+isVarPat (L _ (AsPat _ _ p  ))      = isVarPat p
+isVarPat (L _ (ParPat _ p   ))      = isVarPat p
+isVarPat (L _ (BangPat _ p  ))      = isVarPat p
+isVarPat (L _ (ListPat _ _  ))      = False
+isVarPat (L _ TuplePat {}    )      = False
+isVarPat (L _ SumPat {}      )      = False
+isVarPat (L _ ConPat {}      )      = False
+isVarPat (L _ ViewPat {}     )      = False
+isVarPat (L _ (SplicePat _ _))      = False
+isVarPat (L _ (LitPat _ _   ))      = False
+isVarPat (L _ NPat {}        )      = False
+isVarPat (L _ NPlusKPat {}   )      = False
+isVarPat (L _ (SigPat _ p _ ))      = isVarPat p
+isVarPat (L _ (XPat (CoPat _ p _))) = isVarPat (noLoc p)
 
 isBangPat :: LPat GhcTc -> Bool
-isBangPat (L _ (WildPat _    )) = False
-isBangPat (L _ (VarPat _ _   )) = False
-isBangPat (L _ (LazyPat _ p  )) = isBangPat p
-isBangPat (L _ (AsPat _ _ p  )) = isBangPat p
-isBangPat (L _ (ParPat _ p   )) = isBangPat p
-isBangPat (L _ (BangPat _ _  )) = True
-isBangPat (L _ (ListPat _ _  )) = False
-isBangPat (L _ TuplePat {}    ) = False
-isBangPat (L _ SumPat {}      ) = False
-isBangPat (L _ (ConPatIn _ _ )) = False
-isBangPat (L _ ConPatOut{}    ) = False
-isBangPat (L _ ViewPat{}      ) = False
-isBangPat (L _ (SplicePat _ _)) = False
-isBangPat (L _ (LitPat _ _   )) = False
-isBangPat (L _ NPat{}         ) = False
-isBangPat (L _ NPlusKPat{}    ) = False
-isBangPat (L _ (SigPat _ p _ )) = isBangPat p
-isBangPat (L _ (CoPat _ _ p _)) = isBangPat (noLoc p)
-isBangPat (L _ (XPat _       )) = False
+isBangPat (L _ (WildPat _         )) = False
+isBangPat (L _ (VarPat _ _        )) = False
+isBangPat (L _ (LazyPat _ p       )) = isBangPat p
+isBangPat (L _ (AsPat _ _ p       )) = isBangPat p
+isBangPat (L _ (ParPat _ p        )) = isBangPat p
+isBangPat (L _ (BangPat _ _       )) = True
+isBangPat (L _ (ListPat _ _       )) = False
+isBangPat (L _ TuplePat {}         ) = False
+isBangPat (L _ SumPat {}           ) = False
+isBangPat (L _ ConPat {}           ) = False
+isBangPat (L _ ViewPat {}          ) = False
+isBangPat (L _ (SplicePat _ _     )) = False
+isBangPat (L _ (LitPat _ _        )) = False
+isBangPat (L _ NPat {}             ) = False
+isBangPat (L _ NPlusKPat {}        ) = False
+isBangPat (L _ (SigPat _ p _      )) = isBangPat p
+isBangPat (L _ (XPat (CoPat _ p _))) = isBangPat (noLoc p)
 
 isNoLazyPat :: LPat GhcTc -> Bool
-isNoLazyPat (L _ (WildPat _    )) = True
-isNoLazyPat (L _ (VarPat _ _   )) = True
-isNoLazyPat (L _ (LazyPat _ _  )) = False
-isNoLazyPat (L _ (AsPat _ _ p  )) = isNoLazyPat p
-isNoLazyPat (L _ (ParPat _ p   )) = isNoLazyPat p
-isNoLazyPat (L _ (BangPat _ p  )) = isNoLazyPat p
-isNoLazyPat (L _ (ListPat _ _  )) = True
-isNoLazyPat (L _ TuplePat {}    ) = True
-isNoLazyPat (L _ SumPat {}      ) = True
-isNoLazyPat (L _ (ConPatIn _ _ )) = True
-isNoLazyPat (L _ ConPatOut{}    ) = True
-isNoLazyPat (L _ ViewPat{}      ) = True
-isNoLazyPat (L _ (SplicePat _ _)) = True
-isNoLazyPat (L _ (LitPat _ _   )) = True
-isNoLazyPat (L _ NPat{}         ) = True
-isNoLazyPat (L _ NPlusKPat{}    ) = True
-isNoLazyPat (L _ (SigPat _ p _ )) = isNoLazyPat p
-isNoLazyPat (L _ (CoPat _ _ p _)) = isNoLazyPat (noLoc p)
-isNoLazyPat (L _ (XPat _       )) = True
+isNoLazyPat (L _ (WildPat _         )) = True
+isNoLazyPat (L _ (VarPat _ _        )) = True
+isNoLazyPat (L _ (LazyPat _ _       )) = False
+isNoLazyPat (L _ (AsPat _ _ p       )) = isNoLazyPat p
+isNoLazyPat (L _ (ParPat _ p        )) = isNoLazyPat p
+isNoLazyPat (L _ (BangPat _ p       )) = isNoLazyPat p
+isNoLazyPat (L _ (ListPat _ _       )) = True
+isNoLazyPat (L _ TuplePat {}         ) = True
+isNoLazyPat (L _ SumPat {}           ) = True
+isNoLazyPat (L _ ConPat {}           ) = True
+isNoLazyPat (L _ ViewPat {}          ) = True
+isNoLazyPat (L _ (SplicePat _ _     )) = True
+isNoLazyPat (L _ (LitPat _ _        )) = True
+isNoLazyPat (L _ NPat {}             ) = True
+isNoLazyPat (L _ NPlusKPat {}        ) = True
+isNoLazyPat (L _ (SigPat _ p _      )) = isNoLazyPat p
+isNoLazyPat (L _ (XPat (CoPat _ p _))) = isNoLazyPat (noLoc p)
 
 -- this is more delicate than it seems,
 -- as we have to make sure that ListPat and TuplePat are "the same" as their
 -- explicit constructors
 sameTopCon :: LPat GhcTc -> LPat GhcTc -> Bool
-sameTopCon (L _ (WildPat _    )) (L _ (WildPat _    ))  = True
-sameTopCon (L _ (VarPat _ _   )) (L _ (VarPat _ _   ))  = True
-sameTopCon (L _ (LazyPat _ _  )) (L _ (LazyPat _ _  ))  = True
-sameTopCon (L _ AsPat {}       ) (L _ AsPat {}       )  = True
-sameTopCon (L _ (ParPat _ p1  )) p2                     = sameTopCon p1 p2
-sameTopCon p1                    (L _ (ParPat _ p2  ))  = sameTopCon p1 p2
-sameTopCon (L _ (BangPat _ _  )) (L _ (BangPat _ _  ))  = True
-sameTopCon (L _ (ListPat _ ps1)) (L _ (ListPat _ ps2))  = null ps1 == null ps2
+sameTopCon (L _ (WildPat _    )) (L _ (WildPat _    ))    = True
+sameTopCon (L _ (VarPat _ _   )) (L _ (VarPat _ _   ))    = True
+sameTopCon (L _ (LazyPat _ _  )) (L _ (LazyPat _ _  ))    = True
+sameTopCon (L _ AsPat {}       ) (L _ AsPat {}       )    = True
+sameTopCon (L _ (ParPat _ p1  )) p2                       = sameTopCon p1 p2
+sameTopCon p1                    (L _ (ParPat _ p2  ))    = sameTopCon p1 p2
+sameTopCon (L _ (BangPat _ _  )) (L _ (BangPat _ _  ))    = True
+sameTopCon (L _ (ListPat _ ps1)) (L _ (ListPat _ ps2))    = null ps1 == null ps2
 sameTopCon (L _ (ListPat _ ps1))
-           (L _ ConPatOut
-             { pat_con = L _ (RealDataCon c) })         = null ps1 ==
-                                                          (c == nilDataCon)
-sameTopCon (L _ ConPatOut { pat_con = L _ (RealDataCon c) })
-           (L _ (ListPat _ ps1))                        = null ps1 ==
-                                                          (c == nilDataCon)
-sameTopCon (L _ TuplePat {}    ) (L _ TuplePat {}    )  = True
+           (L _ ConPat { pat_con = L _ (RealDataCon c) }) = null ps1 ==
+                                                            (c == nilDataCon)
+sameTopCon (L _ ConPat { pat_con = L _ (RealDataCon c) })
+           (L _ (ListPat _ ps1))                          = null ps1 ==
+                                                            (c == nilDataCon)
+sameTopCon (L _ TuplePat {}    ) (L _ TuplePat {}    )    = True
 sameTopCon (L _ (TuplePat _ ps b))
-           (L _ ConPatOut
-             { pat_con = L _ (RealDataCon c) })         = c == tc
+           (L _ ConPat { pat_con = L _ (RealDataCon c) }) = c == tc
   where tc = tupleDataCon b (length ps)
-sameTopCon (L _ ConPatOut
-             { pat_con = L _ (RealDataCon c) })
-           (L _ (TuplePat _ ps b))                      = c == tc
+sameTopCon (L _ ConPat { pat_con = L _ (RealDataCon c) })
+           (L _ (TuplePat _ ps b))                        = c == tc
     where tc = tupleDataCon b (length ps)
 sameTopCon (L _ (SumPat _ _ t1 _))
-           (L _ (SumPat _ _ t2 _))                      = t1 == t2
-sameTopCon (L _ (ConPatIn v1 _)) (L _ (ConPatIn v2 _))  = v1 == v2
-sameTopCon (L _ (ConPatOut (L _ c1) _ _ _ _ _ _))
-           (L _ (ConPatOut (L _ c2) _ _ _ _ _ _))       = sameConLike c1 c2
-sameTopCon (L _ ViewPat{}      ) (L _ ViewPat{}      )  = False
-sameTopCon (L _ (SplicePat _ _)) (L _ (SplicePat _ _))  = False
-sameTopCon (L _ (LitPat _ l1  )) (L _ (LitPat _ l2  ))  = l1 == l2
+           (L _ (SumPat _ _ t2 _))                        = t1 == t2
+sameTopCon (L _ (ConPat _ (L _ c1) _))
+           (L _ (ConPat _ (L _ c2) _))                    = sameConLike c1 c2
+sameTopCon (L _ ViewPat{}      ) (L _ ViewPat{}      )    = False
+sameTopCon (L _ (SplicePat _ _)) (L _ (SplicePat _ _))    = False
+sameTopCon (L _ (LitPat _ l1  )) (L _ (LitPat _ l2  ))    = l1 == l2
 sameTopCon (L _ (NPat _ (L _ l1) _ _ ))
-           (L _ (NPat _ (L _ l2) _ _ ))                 = l1 == l2
+           (L _ (NPat _ (L _ l2) _ _ ))                   = l1 == l2
 sameTopCon (L _ (NPlusKPat _ _ (L _ l1) _ _ _))
-           (L _ (NPlusKPat _ _ (L _ l2) _ _ _))         = l1 == l2
-sameTopCon (L _ (SigPat _ p1 _)) p2                     = sameTopCon p1 p2
-sameTopCon p1                    (L _ (SigPat _ p2 _))  = sameTopCon p1 p2
-sameTopCon p1                    (L _ (CoPat _ _ p2 _)) = sameTopCon p1 p2'
+           (L _ (NPlusKPat _ _ (L _ l2) _ _ _))           = l1 == l2
+sameTopCon (L _ (SigPat _ p1 _)) p2                       = sameTopCon p1 p2
+sameTopCon p1 (L _ (SigPat _ p2 _))                       = sameTopCon p1 p2
+sameTopCon p1 (L _ (XPat (CoPat _ p2 _)))                 = sameTopCon p1 p2'
   where p2' = noLoc p2
-sameTopCon (L _ (CoPat _ _ p1 _)) p2                    = sameTopCon p1' p2
+sameTopCon (L _ (XPat (CoPat _ p1 _))) p2                 = sameTopCon p1' p2
   where p1' = noLoc p1
 sameTopCon _ _ = False
 
@@ -893,15 +881,14 @@ sameConLike (RealDataCon c1) (RealDataCon c2) = dataConName c1 == dataConName c2
 sameConLike (PatSynCon   c1) (PatSynCon   c2) = patSynName  c1 == patSynName  c2
 sameConLike _ _ = False
 
-isFunCtxt :: HsMatchContext Name -> Bool
+isFunCtxt :: HsMatchContext a -> Bool
 isFunCtxt FunRhs {} = True
 isFunCtxt _         = False
 
-getMatchingArity :: LMatch a b -> Int
+getMatchingArity :: LMatch GhcTc a -> Int
 getMatchingArity (L _ (Match _ _ xs _)) = length xs
-getMatchingArity _                      = 0
 
-errorExpr :: HsMatchContext Name -> Type -> TcM (LHsExpr GhcTc)
+errorExpr :: HsMatchContext GhcRn -> Type -> TcM (LHsExpr GhcTc)
 errorExpr (FunRhs (L _ idt) _ _) ty =
   mkErrorWith ty $ "Non-exhaustive patterns in function: " ++
     occNameString (occName idt)
@@ -929,15 +916,19 @@ errorExpr RecUpd _ =
   panicAny "Unexpected RecUpd context of a pattern matching" ()
   -- Introduced in dsExpr only
 
-errorStrStmt :: HsStmtContext Name -> LHsExpr GhcTc
+errorStrStmt :: HsStmtContext GhcRn -> LHsExpr GhcTc
 errorStrStmt ListComp =
   mkErrorLit "Non-exhaustive patterns in a List comprehension"
 errorStrStmt MonadComp =
   mkErrorLit "Non-exhaustive patterns in a Monad comprehension"
-errorStrStmt DoExpr =
+errorStrStmt (DoExpr Nothing) =
   mkErrorLit "Non-exhaustive patterns in a do expression"
-errorStrStmt MDoExpr =
+errorStrStmt (DoExpr (Just _)) =
+  mkErrorLit "Non-exhaustive patterns in a qualified do expression"
+errorStrStmt (MDoExpr Nothing) =
   mkErrorLit "Non-exhaustive patterns in a recursive do expression"
+errorStrStmt (MDoExpr (Just _)) =
+  mkErrorLit "Non-exhaustive patterns in a qualified, recursive do expression"
 errorStrStmt ArrowExpr =
   mkErrorLit "Non-exhaustive patterns in an arrow expression"
 errorStrStmt GhciStmtCtxt =
@@ -959,5 +950,5 @@ mkErrorWith ty s = do
     findImportedModule hscEnv (mkModuleName builtInModule) Nothing
   errId <- tcLookupId =<< lookupOrig mdl ( mkVarOcc "pE" )
   return (noLoc (HsApp noExtField
-    (noLoc (HsWrap noExtField (WpTyApp ty) (HsVar noExtField (noLoc errId))))
+    (noLoc (mkHsWrap (WpTyApp ty) (HsVar noExtField (noLoc errId))))
     (mkErrorLit s)))
