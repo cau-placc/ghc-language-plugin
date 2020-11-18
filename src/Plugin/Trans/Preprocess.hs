@@ -214,7 +214,12 @@ preprocessExpr (L l (HsBinTick a b c e)) = do
 preprocessExpr (L l (XExpr (WrapExpr (HsWrap w e)))) = do
   e' <- unLoc <$> preprocessExpr (noLoc e)
   return (L l (XExpr (WrapExpr (HsWrap w e'))))
-preprocessExpr e = panicAny "This expression should not occur after TC" e
+preprocessExpr (L _ (HsUnboundVar _ _)) = undefined
+preprocessExpr (L _ (HsRecFld _ _)) = undefined
+preprocessExpr (L _ (HsOverLabel _ _ _)) = undefined
+preprocessExpr (L _ (HsIPVar _ _)) = undefined
+preprocessExpr (L _ (HsRnBracketOut _ _ _)) = undefined
+preprocessExpr (L _ (XExpr (ExpansionExpr _))) = undefined
 
 preprocessArithExpr :: ArithSeqInfo GhcTc -> TcM (ArithSeqInfo GhcTc)
 preprocessArithExpr (From e1) = From <$> preprocessExpr e1

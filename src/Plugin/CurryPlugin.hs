@@ -18,24 +18,23 @@ import Data.Maybe
 import Control.Exception
 import Language.Haskell.TH (Extension(..))
 
+import GHC.Plugins
 import GHC.Hs.Binds
 import GHC.Hs.Extension
-import Plugins
-import TcRnTypes
-import TcEvidence
-import GhcPlugins
-import TcDeriv
-import TcBinds
-import TcInstDcls
-import Bag
-import TcSimplify
-import TcEnv
-import TcMType
-import TcHsSyn
-import TcRnMonad
-import UniqFM
-import InstEnv
-import ErrUtils
+import GHC.Types.TypeEnv
+import GHC.Tc.Types
+import GHC.Tc.Solver
+import GHC.Tc.Types.Evidence
+import GHC.Tc.TyCl.Instance
+import GHC.Tc.Deriv
+import GHC.Tc.Gen.Bind
+import GHC.Tc.Utils.Monad
+import GHC.Tc.Utils.Env
+import GHC.Tc.Utils.Zonk
+import GHC.Tc.Utils.TcMType
+import GHC.Utils.Error
+import GHC.Core.InstEnv
+import GHC.Data.Bag
 
 import Plugin.Dump
 import Plugin.Trans.Expr
@@ -94,9 +93,10 @@ liftMonadPlugin mdopts env = do
   s <- getUniqueSupplyM
   mtycon <- getMonadTycon
   stycon <- getShareClassTycon
+  flags <- getDynFlags
   res <- liftIO ((mdo
     liftedTycns <- snd <$>
-      mapAccumM (\s' t -> liftTycon stycon mtycon s' tnsM tyconsMap t)
+      mapAccumM (\s' t -> liftTycon flags stycon mtycon s' tnsM tyconsMap t)
         s (tcg_tcs env)
     let tycns = mapMaybe (\(a,b) -> fmap (a,) b) liftedTycns
     let tnsM = listToUFM tycns
@@ -107,14 +107,12 @@ liftMonadPlugin mdopts env = do
   (tycons, liftedTycons) <- case res of
     Left e | Just (ClassLiftingException cls reason) <- fromException e
             -> do
-              flags <- getDynFlags
               let l = srcLocSpan (nameSrcLoc (getName cls))
               reportError (mkErrMsg flags l neverQualify (text reason))
               failIfErrsM
               return ([], [])
            | Just (RecordLiftingException _ p reason) <- fromException e
             -> do
-              flags <- getDynFlags
               let l = srcLocSpan (nameSrcLoc (getName p))
               reportError (mkErrMsg flags l neverQualify (text reason))
               failIfErrsM
@@ -157,7 +155,6 @@ liftMonadPlugin mdopts env = do
 
     -- set temporary flags needed for all further steps
     -- (enable some language extentions and disable all warnings)
-    flags <- getDynFlags
     setDynFlags (flip (foldl wopt_unset) [toEnum 0 ..] $
                  flip (foldl xopt_set) requiredExtensions $
                  (flags { cachedPlugins = [], staticPlugins = [] })) $ do
@@ -288,8 +285,8 @@ insertNewTycons :: [(TyCon, Maybe TyCon)]
 insertNewTycons = flip (foldr insertNew)
   where
     insertNew (tc, mbtc) (m1, m2, s1, s2) =
-      (maybe m1 (addToUniqFM m1 tc) mbtc,
-       maybe m2 (flip (addToUniqFM m2) tc) mbtc,
+      (maybe m1 (addToUFM m1 tc) mbtc,
+       maybe m2 (flip (addToUFM m2) tc) mbtc,
        addOneToUniqSet s1 tc,
        maybe s2 (addOneToUniqSet s2) mbtc)
 
