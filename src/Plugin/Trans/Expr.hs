@@ -64,15 +64,32 @@ import Plugin.Trans.Enum
 liftMonadicBinding :: Bool -> Bool -> [Ct] -> TyConMap -> [ClsInst]
                    -> HsBindLR GhcTc GhcTc
                    -> TcM ([HsBindLR GhcTc GhcTc], [(Var,Var)])
-liftMonadicBinding _ _ given tcs _ (FunBind c (L b name) eqs ticks) = do
-  let derEnum = isDerivedEnum eqs
-  eqs' <- if derEnum
-    then liftDerivedEnumEquation tcs eqs
-    else liftMonadicEquation given tcs eqs
+liftMonadicBinding _ _ given tcs _ (FunBind wrap (L b name) eqs ticks) = do
+  -- create the dictionary variables
+  let (tvs, c) = collectTyDictArgs wrap
+  stc <- getShareClassTycon
+  mty <- mkTyConTy <$> getMonadTycon
+  uss <- replicateM (length tvs) getUniqueSupplyM
+  let mkShareTy ty = mkTyConApp stc [mty, ty]
+  let evsty = zipWith ((. flip Bndr Inferred) . mkShareable mkShareTy) uss tvs
+  evs <- mapM freshDictId evsty
+  lclEnv <- getLclEnv
+  let ctloc = mkGivenLoc topTcLevel UnkSkol lclEnv
+
+  allEvs <- (++evs) <$> liftIO (mapM replaceEv c)
+  let cts = mkGivens ctloc allEvs
+  let given' = given ++ cts
   ty <- liftTypeTcM tcs (varType name)
+  let fullwrap = createWrapperLike ty tvs allEvs
+
+  eqs' <- if isDerivedEnum eqs
+    then liftDerivedEnumEquation tcs eqs
+    else liftMonadicEquation given' tcs eqs
   ticks' <- mapM (liftTick tcs) ticks
   let name' = setVarType name ty
-  return ([FunBind c (L b name') eqs' ticks'], [])
+  return ([FunBind fullwrap (L b name') eqs' ticks'], [])
+  where
+    replaceEv ev = setVarType ev <$> replaceTyconTy tcs (varType ev)
 liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
   -- we do not want to lift dicts or record selectors or other system stuff here
   | all (noSystemNameOrRec . abe_poly) d = do

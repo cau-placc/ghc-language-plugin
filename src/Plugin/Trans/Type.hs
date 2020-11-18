@@ -592,6 +592,22 @@ createWrapperFor ty apps evids =
     wrapperArg _             _      _     =
       WpHole
 
+createWrapperLike :: Type -> [Var] -> [Var] -> HsWrapper
+createWrapperLike (ForAllTy _ ty) (v:vs) es =
+  WpTyLam v <.> createWrapperLike ty vs es
+createWrapperLike (FunTy InvisArg _ _ ty) vs (e:es) =
+  WpEvLam e <.> createWrapperLike ty vs es
+createWrapperLike _ _ _ = WpHole
+
+collectTyDictArgs :: HsWrapper -> ([TyVar], [EvVar])
+collectTyDictArgs (WpCompose w1 w2) =
+  let (t1, e1) = collectTyDictArgs w1
+      (t2, e2) = collectTyDictArgs w2
+  in (t1 ++ t2, e1 ++ e2)
+collectTyDictArgs (WpTyLam v) = ([v], [])
+collectTyDictArgs (WpEvLam v) = ([], [v])
+collectTyDictArgs _           = ([], [])
+
 -- | Tries to create a wrapper of evidence applications,
 -- using an entry from the type-indexed list
 -- if the type matches that of the wrapper.
