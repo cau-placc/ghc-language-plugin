@@ -76,8 +76,14 @@ preprocessGRhs (L a (GRHS b c body)) = do
 -- explicit type applications. We have to fuse those wrappers.
 preprocessExpr :: LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
 preprocessExpr (L l (XExpr (WrapExpr (HsWrap w1
-                 (HsAppType _ (L _ (XExpr (WrapExpr (HsWrap w2 e)))) _))))) =
-  return (L l (XExpr (WrapExpr (HsWrap (w1 <.> w2) e))))
+                 (HsAppType ty (L _ (XExpr (WrapExpr (HsWrap w2 e)))) _))))) =
+  return (L l (XExpr (WrapExpr (HsWrap (w1 <.> WpTyApp ty <.> w2) e))))
+preprocessExpr (L l (XExpr (WrapExpr (HsWrap w1 (HsAppType ty e _))))) = do
+  e' <- preprocessExpr e
+  return (L l (XExpr (WrapExpr (HsWrap (w1 <.> WpTyApp ty) (unLoc e')))))
+preprocessExpr (L l (HsAppType ty (L _ (XExpr (WrapExpr (HsWrap w2 e)))) _)) = do
+  e' <- preprocessExpr (noLoc e)
+  return (L l (XExpr (WrapExpr (HsWrap (WpTyApp ty <.> w2) (unLoc e')))))
 preprocessExpr e@(L _ (HsVar _ (L _ _))) =
   return e
 preprocessExpr e@(L _ HsLit{}) =
@@ -102,9 +108,9 @@ preprocessExpr (L l (HsApp x e1 e2)) = do
   e1' <- preprocessExpr e1
   e2' <- preprocessExpr e2
   return (L l (HsApp x e1' e2'))
-preprocessExpr (L l (HsAppType x e ty)) = do
+preprocessExpr (L l (HsAppType ty e _)) = do
   e' <- preprocessExpr e
-  return (L l (HsAppType x e' ty))
+  return (L l (XExpr (WrapExpr (HsWrap (WpTyApp ty) (unLoc e')))))
 preprocessExpr (L l (NegApp x e1 e2)) = do
   e1' <- preprocessExpr e1
   e2' <- preprocessSynExpr e2
