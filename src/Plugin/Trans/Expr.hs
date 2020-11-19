@@ -387,8 +387,9 @@ liftMonadicExpr _ tcs (L _ (HsConLikeOut _ (RealDataCon c))) = do
 liftMonadicExpr _ tcs (L _ (XExpr (WrapExpr (HsWrap w (HsConLikeOut _ (RealDataCon c)))))) = do
   c' <- liftIO (getLiftedCon c tcs)
   w' <- liftWrapperTcM tcs w
-  let apps = collectTyApps w'
-  let tys = conLikeInstOrigArgTys (RealDataCon c') apps
+  let (apps, absts) = collectTyApps w'
+      realApps = drop (length absts) apps
+  let tys = conLikeInstOrigArgTys (RealDataCon c') realApps
   e <- fst <$> mkConLam (Just w') c' tys []
   return $ noLoc $ HsPar noExtField e
 liftMonadicExpr given tcs (L _ (OpApp _ e1 op e2)) = do
@@ -688,7 +689,8 @@ liftVarWithWrapper given tcs w v
     us <- getUniqueSupplyM
 
     let (apps, abstrs) = collectTyApps w'
-    let (arg, res) = splitFunTy (instantiateWith apps (varType v))
+    let realApps = drop (length abstrs) apps
+    let (_, arg, res) = splitFunTy (instantiateWith realApps (varType v))
 
     let p = sel_tycon (idDetails v)
     v' <- liftIO (getLiftedRecSel stc mty us tcs p v)
@@ -751,7 +753,7 @@ liftVarWithWrapper given tcs w v
   v' <- mv'
 
   let monotype = instantiateWith apps (varType v')
-      getPred (Anon _ t)
+      getPred (Anon _ (Scaled _ t))
         | all (\cv -> countVarOcc cv t == 0) absts
                 = Just t
       getPred _ = Nothing
@@ -760,7 +762,7 @@ liftVarWithWrapper given tcs w v
   if null preds
     then do
       let newWrap = abstsWrap <.> createWrapperFor (varType v') apps []
-      return (noLoc (HsWrap noExtField newWrap (HsVar noExtField (noLoc v'))))
+      return (noLoc (mkHsWrap newWrap (HsVar noExtField (noLoc v'))))
     else do
       -- construct wanted constraints
       wanted <- newWanteds (OccurrenceOf (varName v')) preds
@@ -768,12 +770,12 @@ liftVarWithWrapper given tcs w v
       let cts = map CNonCanonical wanted
       -- solve them
       evidence <- mkWpLet . EvBinds <$>
-        simplifyTop (WC (listToBag (cts ++ given)) emptyBag)
+        simplifyTop (WC (listToBag (cts ++ given)) emptyBag emptyBag)
 
       -- create the new wrapper, with the new dicts and the type applications
       let wdict = createWrapperFor (varType v') apps evvars
-      let wall = HsWrap noExtField (abstsWrap <.> (evidence <.> wdict))
-      zonkTopLExpr (noLoc $ wall $ HsVar noExtField $ noLoc v')
+      let wall = abstsWrap <.> (evidence <.> wdict)
+      zonkTopLExpr (noLoc $ mkHsWrap wall $ HsVar noExtField $ noLoc v')
 
 -- (,b,) = return $ \x1 -> return $ \x2 -> return (x1, b, x2)
 liftExplicitTuple :: [Ct] -> TyConMap -> [LHsTupArg GhcTc]
@@ -825,8 +827,9 @@ liftNewConExpr mw tcs dc = do
     Nothing -> return WpHole
 
   -- get the argument type
-  let apps = collectTyApps w'
-  let [Scaled _ ty] = conLikeInstOrigArgTys (RealDataCon dc) apps
+  let (apps, absts) = collectTyApps w'
+  let realApps = drop (length absts) apps
+  let [Scaled _ ty] = conLikeInstOrigArgTys (RealDataCon dc) realApps
   let ty' = mkAppTy mty ty
 
   -- create a fresh var with that type

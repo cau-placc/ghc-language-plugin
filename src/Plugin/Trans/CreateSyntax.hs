@@ -373,6 +373,7 @@ toLetExpr b e = noLoc
     (HsValBinds noExtField (XValBindsLR (NValBinds [b] [])))) e)
 
 mkHsWrap :: HsWrapper -> HsExpr GhcTc -> HsExpr GhcTc
-mkHsWrap w e = XExpr (WrapExpr (HsWrap w e))
+mkHsWrap WpHole e = e
+mkHsWrap w      e = XExpr (WrapExpr (HsWrap w e))
 
 {- HLINT ignore "Reduce duplication "-}

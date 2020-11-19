@@ -403,6 +403,7 @@ liftWrapper stc mty us tcs = liftWrapper'
       WpCast . SubCo . Refl <$> replaceTyconTy tcs ty
     liftWrapper' (WpTyApp app) =
       WpTyApp <$> liftInnerTy stc mty us tcs app
+    liftWrapper' (WpTyLam v)  = return (WpTyLam v)
     -- remove any other thing that was here after typechecking
     liftWrapper' _ = return WpHole
 
