@@ -1,7 +1,11 @@
-resolver: nightly-2020-08-10
+resolver: ghc-9.1
 packages:
   - .
   - sandbox
 extra-deps:
+  - extra-1.7.8
+  - clock-0.8
 ghc-options :
   "$everything": -Wall
+system-ghc: true
+allow-newer: true
