@@ -687,8 +687,8 @@ liftVarWithWrapper given tcs w v
     w' <- liftWrapperTcM tcs w
     us <- getUniqueSupplyM
 
-    let apps = collectTyApps w'
-    let (_, arg, res) = splitFunTy (instantiateWith apps (varType v))
+    let (apps, abstrs) = collectTyApps w'
+    let (arg, res) = splitFunTy (instantiateWith apps (varType v))
 
     let p = sel_tycon (idDetails v)
     v' <- liftIO (getLiftedRecSel stc mty us tcs p v)
@@ -711,7 +711,8 @@ liftVarWithWrapper given tcs w v
   us <- getUniqueSupplyM
   ty' <- liftIO (liftTypeIfRequired stc mtc us tcs (varType v))
 
-  let apps = collectTyApps w'
+  let (apps, absts) = collectTyApps w'
+  let abstsWrap = foldr ((<.>) . WpTyLam) WpHole absts
 
   -- 1. If it is a typeclass operation, we re-create it from scratch to get
   --    the unfolding information right.
@@ -750,26 +751,28 @@ liftVarWithWrapper given tcs w v
   v' <- mv'
 
   let monotype = instantiateWith apps (varType v')
-      getPred (Anon _ (Scaled _ t)) = Just t
-      getPred _                     = Nothing
+      getPred (Anon _ t)
+        | all (\cv -> countVarOcc cv t == 0) absts
+                = Just t
+      getPred _ = Nothing
       preds = mapMaybe getPred (fst (splitPiTysInvisible monotype))
 
   if null preds
     then do
-      let newWrap = createWrapperFor (varType v') apps []
-      return (noLoc (mkHsWrap newWrap (HsVar noExtField (noLoc v'))))
+      let newWrap = abstsWrap <.> createWrapperFor (varType v') apps []
+      return (noLoc (HsWrap noExtField newWrap (HsVar noExtField (noLoc v'))))
     else do
       -- construct wanted constraints
-      wanteds <- newWanteds (OccurrenceOf (varName v')) preds
-      let evvars = map (\a -> let EvVarDest d = ctev_dest a in d) wanteds
-      let cts = map CNonCanonical wanteds
+      wanted <- newWanteds (OccurrenceOf (varName v')) preds
+      let evvars = map (\a -> let EvVarDest d = ctev_dest a in d) wanted
+      let cts = map CNonCanonical wanted
       -- solve them
       evidence <- mkWpLet . EvBinds <$>
-        simplifyTop (WC (listToBag (cts ++ given)) emptyBag emptyBag)
+        simplifyTop (WC (listToBag (cts ++ given)) emptyBag)
 
       -- create the new wrapper, with the new dicts and the type applications
       let wdict = createWrapperFor (varType v') apps evvars
-      let wall = mkHsWrap (evidence <.> wdict)
+      let wall = HsWrap noExtField (abstsWrap <.> (evidence <.> wdict))
       zonkTopLExpr (noLoc $ wall $ HsVar noExtField $ noLoc v')
 
 -- (,b,) = return $ \x1 -> return $ \x2 -> return (x1, b, x2)

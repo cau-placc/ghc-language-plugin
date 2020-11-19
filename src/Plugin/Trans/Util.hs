@@ -17,7 +17,7 @@ import Data.ByteString                ( unpack )
 
 import GHC.HsToCore
 import GHC.ThToHs
-import GHC.Plugins 
+import GHC.Plugins
 import GHC.Hs.Extension
 import GHC.Hs.Expr
 import GHC.Hs.Lit
@@ -128,15 +128,16 @@ setDynFlags f = updEnv (\(Env a b c d) -> Env (a { hsc_dflags = f }) b c d)
 
 -- | Collect all type applications that are performed
 -- by the given wrapper expression.
-collectTyApps :: HsWrapper -> [Type]
-collectTyApps = flip collectTyApps' []
+collectTyApps :: HsWrapper -> ([Type], [Var])
+collectTyApps = flip collectTyApps' ([], [])
   where
     -- (w1 `compose` w2) e --> w1 (w2 e)
     -- => every type application in w2 is applied before w1,
     -- hence the "reversed" order here
     collectTyApps' (WpCompose w1 w2) = collectTyApps' w2 . collectTyApps' w1
-    collectTyApps' (WpTyApp      ty) = (ty:)
-    collectTyApps' _                 = id
+    collectTyApps' (WpTyApp      ty) = first (ty:)
+    collectTyApps' (WpTyLam       v) = second (v:)
+    collectTyApps'  _                = id
 
 -- | Get a list of all arguments of the given arithmetic sequence.
 arithSeqArgs :: ArithSeqInfo GhcTc -> [LHsExpr GhcTc]
