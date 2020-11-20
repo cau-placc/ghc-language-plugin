@@ -398,7 +398,7 @@ liftWrapper stc mty us tcs = liftWrapper'
     liftWrapper' (WpFun w1 w2 (Scaled m ty) sd) =
       (\w1' w2' m' ty' -> WpFun w1' w2' (Scaled m' ty') sd)
             <$> liftWrapper' w1 <*> liftWrapper' w2
-            <*> replaceTyconTy tcs m <*> replaceTyconTy tcs ty
+            <*> replaceTyconTy tcs m <*> liftTypeNoShareable stc mty us tcs ty
     liftWrapper' (WpCast (SubCo (Refl ty))) =
       WpCast . SubCo . Refl <$> replaceTyconTy tcs ty
     liftWrapper' (WpTyApp app) =

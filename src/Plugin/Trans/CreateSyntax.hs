@@ -75,19 +75,19 @@ mkConLam mw c [] vs
     mty <- mkTyConTy <$> getMonadTycon
     return (e', mkAppTy mty ty)
 -- Create lambdas for the remaining types.
-mkConLam w c (Scaled m ty : tys) vs = do
+mkConLam w c (Scaled _ ty : tys) vs = do
   mtc <- getMonadTycon
   -- Despite the argument being unlifted for newtypes, we want to create
   -- a lifted function to replace the constructor.
   -- This is why we manually lift the parameter for newtypes.
   let ty' = if isNewTyCon (dataConTyCon c) then mkTyConApp mtc [ty] else ty
   -- Create the new variable for the lambda.
-  v <- freshVar (Scaled m ty')
+  v <- freshVar (Scaled Many ty')
   -- Create the inner part of the term with the remaining type arguments.
   (e, resty) <- mkConLam w c tys (v:vs)
   -- Make the lambda for this variable
   let e' = mkLam (noLoc v) ty' e resty
-  let lamty = mkVisFunTy m ty' resty
+  let lamty = mkVisFunTyMany ty' resty
   -- Wrap the whole term in a 'return'.
   e'' <- mkApp mkNewReturnTh lamty [noLoc $ HsPar noExtField e']
   let mty = mkTyConTy mtc
