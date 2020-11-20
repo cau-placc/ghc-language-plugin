@@ -385,20 +385,23 @@ liftResultTy stc mty us tcs = liftResultTy'
 -- Thus, we use liftInnerTy
 -- | Lift the type applications and update type constructors inside a wrapper.
 -- Reomves any evidence applications.
-liftWrapper :: TyCon         -- ^ 'Shareable' type constructor
-             -> Type         -- ^ 'Nondet' type
-             -> UniqSupply   -- ^ Fresh supply of unique keys
-             -> TyConMap     -- ^ Type constructor map
-             -> HsWrapper    -- ^ Wrapper to be lifted
-             -> IO HsWrapper -- ^ Lifted wrapper
-liftWrapper stc mty us tcs = liftWrapper'
+liftWrapper :: Bool         -- ^ inner lifting or not
+            -> TyCon        -- ^ 'Shareable' type constructor
+            -> Type         -- ^ 'Nondet' type
+            -> UniqSupply   -- ^ Fresh supply of unique keys
+            -> TyConMap     -- ^ Type constructor map
+            -> HsWrapper    -- ^ Wrapper to be lifted
+            -> IO HsWrapper -- ^ Lifted wrapper
+liftWrapper b stc mty us tcs = liftWrapper'
   where
     liftWrapper' (WpCompose w1 w2) =
       WpCompose <$> liftWrapper' w1 <*> liftWrapper' w2
     liftWrapper' (WpFun w1 w2 (Scaled m ty) sd) =
       (\w1' w2' m' ty' -> WpFun w1' w2' (Scaled m' ty') sd)
             <$> liftWrapper' w1 <*> liftWrapper' w2
-            <*> replaceTyconTy tcs m <*> liftTypeNoShareable stc mty us tcs ty
+            <*> replaceTyconTy tcs m
+            <*> (if b then liftTypeNoShareable else liftInnerTy)
+                  stc mty us tcs ty
     liftWrapper' (WpCast (SubCo (Refl ty))) =
       WpCast . SubCo . Refl <$> replaceTyconTy tcs ty
     liftWrapper' (WpTyApp app) =
@@ -409,12 +412,12 @@ liftWrapper stc mty us tcs = liftWrapper'
 
 -- | Lift the type applications and update type constructors inside a wrapper.
 -- Reomves any evidence applications.
-liftWrapperTcM :: TyConMap -> HsWrapper -> TcM HsWrapper
-liftWrapperTcM tcs w = do
+liftWrapperTcM :: Bool -> TyConMap -> HsWrapper -> TcM HsWrapper
+liftWrapperTcM b tcs w = do
   stc <- getShareClassTycon
   mty <- mkTyConTy <$> getMonadTycon
   us <- getUniqueSupplyM
-  liftIO (liftWrapper stc mty us tcs w)
+  liftIO (liftWrapper b stc mty us tcs w)
 
 -- | Update type constructors inside a wrapper.
 replaceWrapper :: TyConMap -> HsWrapper -> IO HsWrapper

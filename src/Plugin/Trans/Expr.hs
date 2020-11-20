@@ -386,7 +386,7 @@ liftMonadicExpr _ tcs (L _ (HsConLikeOut _ (RealDataCon c))) = do
   return $ noLoc $ HsPar noExtField e
 liftMonadicExpr _ tcs (L _ (XExpr (WrapExpr (HsWrap w (HsConLikeOut _ (RealDataCon c)))))) = do
   c' <- liftIO (getLiftedCon c tcs)
-  w' <- liftWrapperTcM tcs w
+  w' <- liftWrapperTcM (not $ isNewTyCon (dataConTyCon c')) tcs w
   let (apps, absts) = collectTyApps w'
       realApps = drop (length absts) apps
   let tys = conLikeInstOrigArgTys (RealDataCon c') realApps
@@ -569,7 +569,7 @@ liftMonadicExpr given tcs (L l (HsBinTick a b c e)) =
   L l . HsBinTick a b c <$> liftMonadicExpr given tcs e
 liftMonadicExpr given tcs (L l (XExpr (WrapExpr (HsWrap w e)))) = do
   e' <- unLoc <$> liftMonadicExpr given tcs (L l e)
-  w' <- liftWrapperTcM tcs w
+  w' <- liftWrapperTcM True tcs w
   return (L l (mkHsWrap w' e'))
 liftMonadicExpr _ _ (L _ (HsUnboundVar _ _)) = undefined
 liftMonadicExpr _ _ (L _ (HsRecFld _ _)) = undefined
@@ -649,7 +649,7 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
       e1ty <- getTypeOrPanic e1
       let (_, ty1, ty2) = splitFunTy (bindingType e1ty)
       e2 <- mkApp (mkNewApply1 (bindingType ty1)) (bindingType ty2) [e1]
-      ws' <- mapM (liftWrapperTcM tcs) ws
+      ws' <- mapM (liftWrapperTcM True tcs) ws
       return (SyntaxExprTc (unLoc e2) ws' WpHole)
     trans1 NoSyntaxExprTc = return NoSyntaxExprTc
 
@@ -660,7 +660,7 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
       let (_, ty2, ty3) = splitFunTy (bindingType restty)
       e2 <- mkApp (mkNewApply2Unlifted (bindingType ty1) (bindingType ty2))
                   (bindingType ty3) [e1]
-      ws' <- mapM (liftWrapperTcM tcs) ws
+      ws' <- mapM (liftWrapperTcM True tcs) ws
       return (SyntaxExprTc (unLoc e2) ws' WpHole)
     transBind NoSyntaxExprTc = return NoSyntaxExprTc
 
@@ -671,7 +671,7 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
       let (_, ty2, ty3) = splitFunTy (bindingType restty)
       e2 <- mkApp (mkNewApply2 (bindingType ty1) (bindingType ty2))
                   (bindingType ty3) [e1]
-      ws' <- mapM (liftWrapperTcM tcs) ws
+      ws' <- mapM (liftWrapperTcM True tcs) ws
       return (SyntaxExprTc (unLoc e2) ws' WpHole)
     trans2 NoSyntaxExprTc = return NoSyntaxExprTc
 
@@ -685,7 +685,7 @@ liftVarWithWrapper given tcs w v
     -- lift type
     mty <- mkTyConTy <$> getMonadTycon
     stc <- getShareClassTycon
-    w' <- liftWrapperTcM tcs w
+    w' <- liftWrapperTcM True tcs w
     us <- getUniqueSupplyM
 
     let (apps, abstrs) = collectTyApps w'
@@ -707,7 +707,7 @@ liftVarWithWrapper given tcs w v
     mkApp mkNewReturnTh ety [noLoc (HsPar noExtField e)]
   | otherwise          = do
   -- lift type
-  w' <- liftWrapperTcM tcs w
+  w' <- liftWrapperTcM True tcs w
   stc <- getShareClassTycon
   mtc <- getMonadTycon
   us <- getUniqueSupplyM
@@ -812,7 +812,7 @@ liftConExpr :: TyConMap -> DataCon -> PostTcExpr -> TcM PostTcExpr
 liftConExpr tcs dc (XExpr (WrapExpr (HsWrap w _)))
   | isNewTyCon (dataConTyCon dc) = liftNewConExpr (Just w) tcs dc
   | otherwise = do
-    w' <- liftWrapperTcM tcs w
+    w' <- liftWrapperTcM True tcs w
     return (mkHsWrap w' (HsConLikeOut noExtField (RealDataCon dc)))
 liftConExpr tcs dc _
   | isNewTyCon (dataConTyCon dc) = liftNewConExpr Nothing tcs dc
@@ -823,7 +823,7 @@ liftNewConExpr mw tcs dc = do
   -- lift wrapper
   mty <- mkTyConTy <$> getMonadTycon
   w' <- case mw of
-    Just w  -> liftWrapperTcM tcs w
+    Just w  -> liftWrapperTcM False tcs w
     Nothing -> return WpHole
 
   -- get the argument type
@@ -857,7 +857,7 @@ liftMonadicRecordUpd tcs (RecordUpdTc cs intys outtys wrap) = do
   RecordUpdTc <$> mapM conLike cs
               <*> mapM (liftInnerTyTcM tcs) intys
               <*> mapM (liftInnerTyTcM tcs) outtys
-              <*> liftWrapperTcM tcs wrap
+              <*> liftWrapperTcM True tcs wrap
   where
     conLike (RealDataCon c) = RealDataCon <$> liftIO (getLiftedCon c tcs)
     conLike p@(PatSynCon _) = do
