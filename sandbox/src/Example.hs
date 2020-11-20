@@ -1,5 +1,5 @@
+{-# OPTIONS_GHC -fplugin Plugin.CurryPlugin #-}
 {-# LANGUAGE NoImplicitPrelude              #-}
-{-# LANGUAGE RankNTypes #-}
 module Example where
 
 import Plugin.CurryPlugin.Prelude
