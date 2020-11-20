@@ -16,7 +16,7 @@ import Data.IORef
 import Data.Tuple.Extra
 import Control.Monad.IO.Class
 
-import GHC.Types.Name.Occurrence  
+import GHC.Types.Name.Occurrence
 import GHC.Plugins
 import GHC.Builtin.Types.Prim
 import GHC.Tc.Types
@@ -69,7 +69,7 @@ transformWanted :: TyConMap -> Class -> Ct
 -- "t1 ~# t2" via a transformation to irreducible constraints.
 -- The irreducible constraints are handled by the same function below.
 transformWanted m c (CNonCanonical (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
-  (HoleDest (CoercionHole var NoBlockSubst href)) si loc))
+  (HoleDest (CoercionHole var _ href)) si loc))
     | tc == eqPrimTyCon = do
       res <- transformWanted m c (CIrredCan
                (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
@@ -82,7 +82,7 @@ transformWanted m c (CNonCanonical (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
 -- Transform irreducible constraints like
 -- "(Nondet t1) ~# (Nondet t2)" to "t1 ~# t2".
 transformWanted m _ w@(CIrredCan (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
-  (HoleDest (CoercionHole var NoBlockSubst href)) si loc) _)
+  (HoleDest (CoercionHole var _ href)) si loc) _)
     | tc == eqPrimTyCon
     = unsafeTcPluginTcM $ do
       mtc <- getMonadTycon
