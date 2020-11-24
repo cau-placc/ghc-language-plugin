@@ -101,6 +101,7 @@ originalNamesToLoad = names
       , (applicativeClassName , "ApplicativeND")
       , (monadClassName       , "MonadND")
       , (monadFailClassName   , "MonadFailND")
+      , (isStringClassName    , "IsStringND")
       , (listTyConName        , "ListND")
       , (rationalTyConName    , "RationalND")
       , (ratioTyConName       , "RatioND")

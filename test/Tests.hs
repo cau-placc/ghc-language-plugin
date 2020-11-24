@@ -22,6 +22,7 @@ tests = do
     , Test (mkCompileTest Succeed    "InstanceImport.hs")
     , Test (mkCompileTest Succeed    "PolyFailed.hs")
     , Test (mkCompileTest Succeed    "Typeclass.hs")
+    , Test (mkCompileTest Succeed    "OverloadedStrings.hs")
 
     , Test (mkSemanticTest letPattern)
     , Test (mkSemanticTest unknownNat)

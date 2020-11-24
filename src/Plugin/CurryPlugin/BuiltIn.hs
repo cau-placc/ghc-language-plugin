@@ -5,6 +5,7 @@
 {-# LANGUAGE RankNTypes             #-}
 {-# LANGUAGE PolyKinds              #-}
 {-# LANGUAGE DataKinds              #-}
+{-# LANGUAGE GADTs                  #-}
 {-# LANGUAGE QuantifiedConstraints  #-}
 {-# LANGUAGE UndecidableInstances   #-}
 {-# LANGUAGE ConstraintKinds        #-}
@@ -754,6 +755,12 @@ class BoundedND a where
 instance BoundedND Int where
   minBound = P.return P.minBound
   maxBound = P.return P.maxBound
+
+class IsStringND a where
+  fromString :: Nondet (StringND --> a)
+
+instance (a ~ Char) => IsStringND (ListND a) where
+  fromString = P.return $ \x -> x
 
 {-
 
