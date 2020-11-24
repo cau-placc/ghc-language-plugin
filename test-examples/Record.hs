@@ -1,5 +1,6 @@
 {-# OPTIONS_GHC -fplugin Plugin.CurryPlugin #-}
 {-# LANGUAGE NoImplicitPrelude              #-}
+{-# LANGUAGE RecordWildCards                #-}
 module Record where
 
 import Plugin.CurryPlugin.Prelude
@@ -15,10 +16,15 @@ test1 :: Rec -> Int
 test1 Rec { fromRec = x } = x
 test1 NoRec               = 0
 
+-- Record patterns
+test2 :: Rec -> Int
+test2 Rec { .. } = fromRec
+test2 NoRec      = 0
+
 -- Record constructors
-test2 :: Rec
-test2 = Rec { fromRec = 1 }
+test3 :: Rec
+test3 = Rec { fromRec = 1 }
 
 -- Record updates
-test3 :: Rec
-test3 = test2 { fromRec = 2 }
+test4 :: Rec
+test4 = test3 { fromRec = 2 }
