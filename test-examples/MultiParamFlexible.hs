@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts       #-}
 {-# LANGUAGE FlexibleInstances      #-}
 {-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE UndecidableInstances   #-}
 {-# OPTIONS_GHC -fplugin Plugin.CurryPlugin #-}
 module MultiParamFlexible where
 
@@ -21,3 +22,8 @@ instance ListLike a [a] where
 
 nilList :: ListLike e [e] => [e]
 nilList = nil
+
+-- Test undecidable instances
+class M a b
+class C a
+instance M a a => C a
