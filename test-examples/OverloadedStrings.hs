@@ -1,7 +1,7 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -fplugin Plugin.CurryPlugin #-}
-module InstanceExport where
+module OverloadedStrings where
 
 import Plugin.CurryPlugin.Prelude
 
