@@ -90,7 +90,7 @@ mkConLam w c (Scaled _ ty : tys) vs = do
   -- Create the inner part of the term with the remaining type arguments.
   (e, resty) <- mkConLam w c tys (v:vs)
   -- Make the lambda for this variable
-  let e' = mkLam (noLoc v) ty' e resty
+  let e' = mkLam (noLoc v) (Scaled Many ty') e resty
   let lamty = mkVisFunTyMany ty' resty
   -- Wrap the whole term in a 'return'.
   e'' <- mkApp mkNewReturnTh lamty [noLoc $ HsPar noExtField e']
@@ -104,7 +104,7 @@ mkBindLam (Scaled m ty) e1' = do
   v <- noLoc <$> freshVar (Scaled m ty')
   let bdy = noLoc $ HsApp noExtField (noLoc (HsVar noExtField v)) e1'
   resty <- getTypeOrPanic bdy
-  return (mkLam v ty' bdy resty)
+  return (mkLam v (Scaled m ty') bdy resty)
 
 -- | Create a '(>>=)' for the given arguments and apply them.
 mkBind :: LHsExpr GhcTc -> Type -> LHsExpr GhcTc -> Type
@@ -148,9 +148,9 @@ mkNewBindTh etype btype = do
   th_expr <- liftQ [| (>>=) |]
   let mty = mkTyConTy mtycon
   let resty = mkAppTy mty btype
-  let expType = mkVisFunTyMany (mkAppTy mty etype) $    -- m 'e ->
+  let expType = mkVisFunTyMany (mkAppTy mty etype) $        -- m 'e ->
                 mkVisFunTyMany (mkVisFunTyMany etype resty) -- (e' -> m b) ->
-                  resty                             -- m b
+                  resty                                     -- m b
   mkNewAny th_expr expType
 
 -- | Create a 'fmap' for the given argument types.
@@ -332,13 +332,13 @@ mkConsList ty tcs = do
 
 
 -- | Create a general lambda that binds one variable on its left side.
-mkLam :: Located Id -> Type -> LHsExpr GhcTc -> Type -> LHsExpr GhcTc
+mkLam :: Located Id -> Scaled Type -> LHsExpr GhcTc -> Type -> LHsExpr GhcTc
 mkLam v ty' bdy resty =
   let pat = VarPat noExtField v
       grhs = GRHS noExtField ([] :: [GuardLStmt GhcTc]) bdy
       rhs = GRHSs noExtField [noLoc grhs] (noLoc (EmptyLocalBinds noExtField))
       match = Match noExtField LambdaExpr [noLoc pat] rhs
-      mgtc = MatchGroupTc [Scaled Many ty'] resty
+      mgtc = MatchGroupTc [ty'] resty
       mg = MG mgtc (noLoc [noLoc match]) Generated
   in noLoc $ HsPar noExtField $ noLoc $ HsLam noExtField mg
 

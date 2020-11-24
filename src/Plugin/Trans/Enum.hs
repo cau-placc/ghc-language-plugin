@@ -150,9 +150,10 @@ mkNFVar vn vo e = do
   let vne = noLoc (HsVar noExtField (noLoc vn))
   let vnty = varType vn
   let voty = varType vo
+  let vom = varMult vo
   s <- mkApp (mkNewNfTh (bindingType vnty)) voty [vne]
   ety <- getTypeOrPanic e
-  let l = noLoc (HsPar noExtField (mkLam (noLoc vo) voty e ety))
+  let l = noLoc (HsPar noExtField (mkLam (noLoc vo) (Scaled vom voty) e ety))
   mtc <- getMonadTycon
   mkBind s (mkTyConApp mtc [voty]) l ety
 

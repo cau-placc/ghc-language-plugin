@@ -433,7 +433,8 @@ liftMonadicExpr given tcs (L _ (SectionR _ e1 e2)) = do
   let (_ , _   , res) = splitFunTy ty'
   v <- noLoc <$> freshVar (Scaled m1 arg1)
   liftMonadicExpr given tcs
-    (mkLam v ty (mkHsApp (mkHsApp e1 (noLoc (HsVar noExtField v))) e2) res)
+    (mkLam v (Scaled Many ty)
+    (mkHsApp (mkHsApp e1 (noLoc (HsVar noExtField v))) e2) res)
 liftMonadicExpr given tcs (L _ (ExplicitTuple _ args b)) =
   liftExplicitTuple given tcs args b
 liftMonadicExpr _    _   e@(L l ExplicitSum {}) = do
@@ -524,7 +525,7 @@ liftMonadicExpr given tcs (L l (RecordUpd rtc e fs)) = do
   v <- noLoc <$> freshVar (Scaled Many vty)
   let upd = L l (RecordUpd rtc' (noLoc (HsVar noExtField v)) fs')
   let updTy = conLikeResTy c outty
-  let updLam = mkLam v vty upd updTy
+  let updLam = mkLam v (Scaled Many vty) upd updTy
   mkApp (mkNewFmapTh vty) updTy [updLam, e']
 liftMonadicExpr given tcs (L _ (ExprWithTySig _ e _)) =
   liftMonadicExpr given tcs e
@@ -795,7 +796,7 @@ liftExplicitTuple given tcs args b = liftExplicitTuple' [] WpHole args
       let arg = noLoc (HsVar noExtField v)
       inner <- liftExplicitTuple' (arg:col) (WpTyApp (bindingType ty') <.> w) xs
       resty <- getTypeOrPanic inner
-      let lam = mkLam v ty inner resty
+      let lam = mkLam v (Scaled m ty') inner resty
       mkApp mkNewReturnTh (mkVisFunTyMany ty' resty) [lam]
     liftExplicitTuple' col w [] = do
       let exprArgs = reverse col
@@ -830,7 +831,7 @@ liftNewConExpr mw tcs dc = do
   -- get the argument type
   let (apps, absts) = collectTyApps w'
   let realApps = drop (length absts) apps
-  let [Scaled _ ty] = conLikeInstOrigArgTys (RealDataCon dc) realApps
+  let [Scaled m ty] = conLikeInstOrigArgTys (RealDataCon dc) realApps
   let ty' = mkAppTy mty ty
 
   -- create a fresh var with that type
@@ -845,7 +846,7 @@ liftNewConExpr mw tcs dc = do
   e <- mkApp (mkNewFmapTh argtype) cetype [ce, arg]
 
   -- return lambda abstraction
-  return (unLoc (mkLam (noLoc v) ty' e (mkAppTy mty cetype)))
+  return (unLoc (mkLam (noLoc v) (Scaled m ty') e (mkAppTy mty cetype)))
 
 liftMonadicRecFields :: [Ct] -> TyConMap
                      -> HsRecordBinds GhcTc
@@ -936,7 +937,9 @@ shareVars tcs vs evs e' = do
           <$> mkAppWith (mkNewShareTh tcs) evs v1ty [v1e]
         mtycon <- getMonadTycon
         let sty = mkTyConApp mtycon [v1ty]
-        let l = noLoc (HsPar noExtField (mkLam (noLoc v2) (varType v2) e ty))
+        let v2ty = Scaled Many (varType v2)
+        let v2Fixed = setIdMult v2 Many
+        let l = noLoc (HsPar noExtField (mkLam (noLoc v2Fixed) v2ty e ty))
         ety <- getTypeOrPanic e
         mkBind s sty l ety
 
