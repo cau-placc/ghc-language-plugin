@@ -9,7 +9,7 @@ solves any conflicts that arise from lifted imported definitions during
 GHC's type checking.
 This plugin is disabled automatically during lifting.
 -}
-module Plugin.Trans.ConstraintSolver (tcPluginSolver) where
+module Plugin.Trans.ConstraintSolver (tcPluginSolver, removeNondet) where
 
 import Data.Maybe
 import Data.IORef
@@ -86,15 +86,16 @@ transformWanted m _ w@(CIrredCan (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
     | tc == eqPrimTyCon
     = unsafeTcPluginTcM $ do
       mtc <- getMonadTycon
+      stc <- getShareClassTycon
       -- Un-lift both sides of the equality.
-      (ty1', b1) <- liftIO (removeNondet m mtc ty1)
-      (ty2', b2) <- liftIO (removeNondet m mtc ty2)
+      (ty1', b1) <- liftIO (removeNondet m mtc stc ty1)
+      (ty2', b2) <- liftIO (removeNondet m mtc stc ty2)
       -- As long as one of the sides changed,
       -- return the constraint as solved and create a new one
       if b1 || b2
         then do
               -- Un-lift any information about the origin of the constraint.
-              origin' <- liftIO (transformOrigin m mtc (ctl_origin loc))
+              origin' <- liftIO (transformOrigin m mtc stc (ctl_origin loc))
               -- Create the new IORef that will be filled with the evidence
               -- for the new equality later.
               newhref <- liftIO (newIORef Nothing)
@@ -181,19 +182,22 @@ liftClassConstraint m pty xi cls f = unsafeTcPluginTcM $ do
 
 -- | Transform the origin of a constraint
 -- to remove any mention of a Nondet type constructor.
-transformOrigin :: TyConMap -> TyCon -> CtOrigin -> IO CtOrigin
-transformOrigin tcs mtc (TypeEqOrigin act ex th vis) = do
-  act' <- fst <$> removeNondet tcs mtc act
-  ex' <- fst <$> removeNondet tcs mtc ex
+transformOrigin :: TyConMap -> TyCon -> TyCon -> CtOrigin -> IO CtOrigin
+transformOrigin tcs mtc stc (TypeEqOrigin act ex th vis) = do
+  act' <- fst <$> removeNondet tcs mtc stc act
+  ex' <- fst <$> removeNondet tcs mtc stc ex
   return (TypeEqOrigin act' ex' th vis)
-transformOrigin _ _ o = return o
+transformOrigin _ _ _ o = return o
 
 -- | Un-lift a given type. Returns the new type and True iff the type changed.
-removeNondet :: TyConMap -> TyCon -> Type -> IO (Type, Bool)
-removeNondet tcs mtc = removeNondet' . expandTypeSynonyms
+removeNondet :: TyConMap -> TyCon -> TyCon -> Type -> IO (Type, Bool)
+removeNondet tcs mtc stc = removeNondet' . expandTypeSynonyms
   where
     removeNondet' (ForAllTy b ty) =
       first (ForAllTy b) <$> removeNondet' ty
+    removeNondet' (FunTy InvisArg _ (TyConApp tc [_,_]) ty)
+      | tc == stc =
+        second (const True) <$> removeNondet' ty
     removeNondet' (FunTy f m ty1 ty2) = do
       (ty1', b1) <- removeNondet' ty1
       (ty2', b2) <- removeNondet' ty2

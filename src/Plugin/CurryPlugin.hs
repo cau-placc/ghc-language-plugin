@@ -303,4 +303,5 @@ requiredExtensions =
   , MultiParamTypeClasses
   , TypeFamilies
   , QuantifiedConstraints
+  , ImpredicativeTypes
   , RankNTypes ]

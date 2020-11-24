@@ -1,4 +1,5 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell   #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-|
 Module      : Plugin.Trans.CreateSyntax
 Description : Helper functions to create parts of GHC's AST
@@ -12,7 +13,7 @@ module Plugin.Trans.CreateSyntax where
 
 import Control.Monad
 
-import GHC.Plugins
+import GHC.Plugins hiding (getSrcSpanM)
 import GHC.Hs.Binds
 import GHC.Hs.Extension
 import GHC.Hs.Pat
@@ -24,7 +25,9 @@ import GHC.Tc.Types.Evidence
 import GHC.Tc.Types.Constraint
 import GHC.Tc.Utils.Monad
 import GHC.Tc.Utils.Zonk
+import GHC.Tc.Utils.Env
 import GHC.Types.Fixity
+import GHC.Types.Error
 import GHC.Core.TyCo.Rep
 import GHC.Core.ConLike
 import GHC.Data.Bag
@@ -34,6 +37,7 @@ import Plugin.Trans.Constr
 import Plugin.Trans.Type
 import Plugin.Trans.Util
 import Plugin.Trans.Var
+import Plugin.Trans.ConstraintSolver
 
 -- | Create the lambda functions used to lift value constructors.
 -- Newtypes have to be treated differently.
@@ -160,11 +164,29 @@ mkNewFmapTh etype btype = do
   mkNewAny th_expr expType
 
 -- | Create a 'share' for the given argument types.
-mkNewShareTh :: Type -> TcM (LHsExpr GhcTc)
-mkNewShareTh ty = do
+mkNewShareTh :: TyConMap -> Type -> TcM (LHsExpr GhcTc)
+mkNewShareTh tcs ty
+  | isForAllTy ty = do
+    sp <- getSrcSpanM
+    ctxt <- getErrCtxt
+    tidyEnv <- tcInitTidyEnv
+    errrInfo <- mkErrInfo tidyEnv ctxt
+    mtc <- getMonadTycon
+    stc <- getShareClassTycon
+    let docImportant = "Cannot share polymorphic values."
+    (ty', _) <- liftIO $ removeNondet tcs mtc stc ty
+    let docSuppl = "For a variable with type" <+> ppr ty'
+    msg <- mkErrDocAt sp (errDoc [docImportant] [docSuppl, errrInfo] [])
+    reportError msg
+    let expType = mkVisFunTyMany ty $ -- a ->
+                  mkTyConApp mtc [ty] -- m a
+    u <- getUniqueM
+    let nm = mkSystemName u $ mkVarOcc "share_hole"
+    return (noLoc $ HsVar noExtField $ noLoc $ mkVanillaGlobal nm expType)
+  | otherwise     = do
   mtycon <- getMonadTycon
   th_expr <- liftQ [| share |]
-  let expType = mkVisFunTyMany ty $        -- a ->
+  let expType = mkVisFunTyMany ty $    -- a ->
                 mkTyConApp mtycon [ty] -- m a
   mkNewAny th_expr expType
 

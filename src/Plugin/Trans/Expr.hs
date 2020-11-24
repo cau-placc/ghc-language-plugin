@@ -64,7 +64,8 @@ import Plugin.Trans.Enum
 liftMonadicBinding :: Bool -> Bool -> [Ct] -> TyConMap -> [ClsInst]
                    -> HsBindLR GhcTc GhcTc
                    -> TcM ([HsBindLR GhcTc GhcTc], [(Var,Var)])
-liftMonadicBinding _ _ given tcs _ (FunBind wrap (L b name) eqs ticks) = do
+liftMonadicBinding _ _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
+  setSrcSpan b $ addLandmarkErrCtxt ("In the definition of" <+> ppr name) $ do
   -- create the dictionary variables
   let (tvs, c) = collectTyDictArgs wrap
   stc <- getShareClassTycon
@@ -345,7 +346,7 @@ liftMonadicGRhs :: [(Var, Var)] -> [(Var, Var)] -> [Ct] -> TyConMap
                 -> TcM (LGRHS GhcTc (LHsExpr GhcTc))
 liftMonadicGRhs s n given tcs (L a (GRHS b c body)) = do
   body' <- liftMonadicExpr given tcs body
-  body'' <- shareVars s given body'
+  body'' <- shareVars tcs s given body'
   L a . GRHS b c <$> foldM liftNewTyVar body'' n
 
 liftMonadicExpr :: [Ct] -> TyConMap -> LHsExpr GhcTc
@@ -467,7 +468,7 @@ liftMonadicExpr given tcs (L l (HsLet x bs e)) = do
   -- Lift local binds first, so that they end up in the type environment.
   (bs', vs) <- liftLocalBinds given tcs bs
   e' <- liftMonadicExpr given tcs e
-  e'' <- shareVars vs given e'
+  e'' <- shareVars tcs vs given e'
   return (L l (HsLet x bs' e''))
 liftMonadicExpr given tcs (L l1 (HsDo x ctxt (L l2 stmts))) = do
   x' <- liftTypeTcM tcs x
@@ -588,7 +589,7 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
   if null vs
     then return (s':ss')
     else do
-      e <- shareVars vs given (noLoc (HsDo ty ctxt (noLoc ss')))
+      e <- shareVars tcs vs given (noLoc (HsDo ty ctxt (noLoc ss')))
       return [s', noLoc (LastStmt noExtField e Nothing NoSyntaxExprTc)]
   where
     liftMonadicStmt :: ExprLStmt GhcTc -> TcM (ExprLStmt GhcTc, [(Var, Var)])
@@ -919,8 +920,9 @@ liftNewTyVar e (old, new) = do
   ty <- flip mkTyConApp [varType old] <$> getMonadTycon
   return (noLoc (mkSimpleLet NonRecursive le e new ty))
 
-shareVars :: [(Var, Var)] -> [Ct] -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
-shareVars vs evs e' = do
+shareVars :: TyConMap -> [(Var, Var)] -> [Ct] -> LHsExpr GhcTc
+          -> TcM (LHsExpr GhcTc)
+shareVars tcs vs evs e' = do
   ty <- getTypeOrPanic e'
   foldM (shareVar ty) e' vs
   where
@@ -930,7 +932,8 @@ shareVars vs evs e' = do
       | otherwise = do
         let v1e = noLoc (HsVar noExtField (noLoc v1))
         let v1ty = varType v1
-        s <- noLoc . HsPar noExtField <$> mkAppWith mkNewShareTh evs v1ty [v1e]
+        s <- noLoc . HsPar noExtField
+          <$> mkAppWith (mkNewShareTh tcs) evs v1ty [v1e]
         mtycon <- getMonadTycon
         let sty = mkTyConApp mtycon [v1ty]
         let l = noLoc (HsPar noExtField (mkLam (noLoc v2) (varType v2) e ty))
