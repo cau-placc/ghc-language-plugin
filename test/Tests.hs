@@ -27,6 +27,7 @@ tests = do
     , Test (mkCompileTest Succeed    "ScopedTypeVariables.hs")
     , Test (mkCompileTest Succeed    "GeneralizedNewtypeDeriving.hs")
     , Test (mkCompileTest Succeed    "TypeOperatorsImport.hs")
+    , Test (mkCompileTest Succeed    "TupleSections.hs")
 
     , Test (mkSemanticTest letPattern)
     , Test (mkSemanticTest unknownNat)
