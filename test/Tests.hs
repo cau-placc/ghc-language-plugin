@@ -24,6 +24,7 @@ tests = do
     , Test (mkCompileTest Succeed    "Typeclass.hs")
     , Test (mkCompileTest Succeed    "OverloadedStrings.hs")
     , Test (mkCompileTest Succeed    "MultiParamFlexible.hs")
+    , Test (mkCompileTest Succeed    "ScopedTypeVariables.hs")
 
     , Test (mkSemanticTest letPattern)
     , Test (mkSemanticTest unknownNat)
