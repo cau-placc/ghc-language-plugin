@@ -29,6 +29,7 @@ tests = do
     , Test (mkCompileTest Succeed    "TypeOperatorsImport.hs")
     , Test (mkCompileTest Succeed    "TupleSections.hs")
     , Test (mkCompileTest Succeed    "KindSignatures.hs")
+    , Test (mkCompileTest Succeed    "DefaultSignaturesImport.hs")
 
     , Test (mkSemanticTest letPattern)
     , Test (mkSemanticTest unknownNat)
