@@ -28,6 +28,7 @@ tests = do
     , Test (mkCompileTest Succeed    "GeneralizedNewtypeDeriving.hs")
     , Test (mkCompileTest Succeed    "TypeOperatorsImport.hs")
     , Test (mkCompileTest Succeed    "TupleSections.hs")
+    , Test (mkCompileTest Succeed    "KindSignatures.hs")
 
     , Test (mkSemanticTest letPattern)
     , Test (mkSemanticTest unknownNat)
