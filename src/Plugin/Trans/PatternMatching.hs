@@ -657,8 +657,8 @@ flattenPat (L l (ListPat (ListPatTc ty Nothing) [] )) = do
                    dc (PrefixCon []))
   return (res, [], [])
 flattenPat (L l (ListPat tc@(ListPatTc ty Nothing) (x:xs))) = do
-  v1 <- mkVar (Scaled Many ty)
-  v2 <- mkVar (Scaled Many (mkTyConApp listTyCon [ty]))
+  v1 <- mkVar ty
+  v2 <- mkVar (mkTyConApp listTyCon [ty])
   let dc = noLoc (RealDataCon consDataCon)
   let c  = PrefixCon [ noLoc (VarPat noExtField (noLoc v1))
                      , noLoc (VarPat noExtField (noLoc v2))]
@@ -666,10 +666,10 @@ flattenPat (L l (ListPat tc@(ListPatTc ty Nothing) (x:xs))) = do
   return (res, [v1, v2], [x, noLoc (ListPat tc xs)])
 flattenPat (L l (TuplePat tys ps b)) =
   (\vs -> (L l (TuplePat tys (map mkVarPat vs) b), vs, ps))
-  <$> mapM (mkVar . Scaled Many) tys
+  <$> mapM mkVar tys
 flattenPat (L l (SumPat tys p t a)) =
   (\v -> (L l (SumPat tys (noLoc (VarPat noExtField (noLoc v))) t a), [v], [p]))
-  <$> mkVar (Scaled Many (tys !! t))
+  <$> mkVar (tys !! t)
 flattenPat (L l cn@ConPat {}) =
   let argtys = cpt_arg_tys (pat_con_ext cn)
       cty = conLikeInstOrigArgTys (unLoc (pat_con cn)) argtys
@@ -699,13 +699,13 @@ flattenPat (L l (XPat (CoPat co p w))) =
 flattenConPatDetails :: HsConPatDetails GhcTc -> [Scaled Type] -> [Type]
                      -> TcM (HsConPatDetails GhcTc, [Var], [LPat GhcTc])
 flattenConPatDetails (PrefixCon args) tys _ = do
-  vs <- mapM mkVar tys
+  vs <- mapM (\(Scaled _ ty) -> mkVar ty) tys
   return (PrefixCon (map (noLoc . VarPat noExtField . noLoc ) vs), vs, args)
 flattenConPatDetails (RecCon (HsRecFields flds d)) _ tys = do
   (flds', vs, args) <- unzip3 <$> mapM (flattenRecField tys) flds
   return (RecCon (HsRecFields flds' d), concat vs, concat args)
 flattenConPatDetails (InfixCon a1 a2) tys _ = do
-  [v1, v2] <- mapM mkVar tys
+  [v1, v2] <- mapM (\(Scaled _ ty) -> mkVar ty) tys
   let [p1,p2] = map mkVarPat [v1,v2]
   return (InfixCon p1 p2, [v1,v2], [a1,a2])
 
@@ -713,15 +713,15 @@ flattenRecField :: [Type] -> LHsRecField GhcTc (LPat GhcTc)
                 -> TcM (LHsRecField GhcTc (LPat GhcTc), [Var], [LPat GhcTc])
 flattenRecField tys (L l (HsRecField idt p pn)) = do
   let ty = funResultTy (instantiateWith tys (varType (extFieldOcc (unLoc idt))))
-  v <- mkVar (Scaled Many ty)
+  v <- mkVar ty
   let p' = noLoc (VarPat noExtField (noLoc v))
   return (L l (HsRecField idt p' pn), [v], [p])
 
-mkVar :: Scaled Type -> TcM Var
-mkVar (Scaled m ty) = do
+mkVar :: Type -> TcM Var
+mkVar ty = do
   u <- getUniqueM
   return $
-    mkLocalVar VanillaId (mkSystemName u (mkVarOcc "p")) m ty vanillaIdInfo
+    mkLocalVar VanillaId (mkSystemName u (mkVarOcc "p")) Many ty vanillaIdInfo
 
 substitute :: Data a => Var -> Var -> a -> a
 substitute new old = everywhere (mkT substVar)
