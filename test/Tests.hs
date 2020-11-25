@@ -12,7 +12,22 @@ tests = do
   path <- makeAbsolute "test-examples"
   setCurrentDirectory  path
   return [testGroup "Example Tests"
-    [ Test (mkCompileTest Succeed    "InstanceImport.hs")
+    [ Test (mkCompileTest Succeed    "Coin.hs")
+    , Test (mkCompileTest Succeed    "Data.hs")
+    , Test (mkCompileTest Succeed    "Import.hs")
+    , Test (mkCompileTest ExpectFail "ImportHaskell.hs")
+    , Test (mkCompileTest Succeed    "PatternMatching.hs")
+    , Test (mkCompileTest Succeed    "Wrapper.hs")
+    , Test (mkCompileTest Succeed    "Record.hs")
+    , Test (mkCompileTest Succeed    "InstanceImport.hs")
+    , Test (mkCompileTest Succeed    "PolyFailed.hs")
+    , Test (mkCompileTest Succeed    "Typeclass.hs")
+    , Test (mkCompileTest Succeed    "OverloadedStrings.hs")
+    , Test (mkCompileTest Succeed    "MultiParamFlexible.hs")
+    , Test (mkCompileTest Succeed    "ScopedTypeVariables.hs")
+    , Test (mkCompileTest Succeed    "GeneralizedNewtypeDeriving.hs")
+    , Test (mkCompileTest Succeed    "TypeOperatorsImport.hs")
+    , Test (mkCompileTest Succeed    "TupleSections.hs")
 
     , Test (mkSemanticTest letPattern)
     , Test (mkSemanticTest unknownNat)

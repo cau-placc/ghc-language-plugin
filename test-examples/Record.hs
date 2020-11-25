@@ -1,6 +1,7 @@
 {-# OPTIONS_GHC -fplugin Plugin.CurryPlugin #-}
 {-# LANGUAGE NoImplicitPrelude              #-}
 {-# LANGUAGE RecordWildCards                #-}
+{-# LANGUAGE NamedFieldPuns                 #-}
 module Record where
 
 import Plugin.CurryPlugin.Prelude
@@ -16,9 +17,14 @@ test1 :: Rec -> Int
 test1 Rec { fromRec = x } = x
 test1 NoRec               = 0
 
--- Record patterns
+-- Record patterns with RecordWildcards
 test2 :: Rec -> Int
 test2 Rec { .. } = fromRec
+test2 NoRec      = 0
+
+-- Record patterns with NamedFieldPuns
+test2 :: Rec -> Int
+test2 Rec { fromRec } = fromRec
 test2 NoRec      = 0
 
 -- Record constructors
