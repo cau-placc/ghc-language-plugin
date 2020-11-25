@@ -930,6 +930,7 @@ shareVars tcs vs evs e' = do
     -- share v1 >>= \v2 -> e
     shareVar ty e (v1,v2)
       | countVarOcc v2 e <= 1 = return (substitute v1 v2 e)
+      | One <- varMult v2     = return (substitute v1 v2 e)
       | otherwise = do
         let v1e = noLoc (HsVar noExtField (noLoc v1))
         let v1ty = varType v1
@@ -937,9 +938,8 @@ shareVars tcs vs evs e' = do
           <$> mkAppWith (mkNewShareTh tcs) evs v1ty [v1e]
         mtycon <- getMonadTycon
         let sty = mkTyConApp mtycon [v1ty]
-        let v2ty = Scaled Many (varType v2)
-        let v2Fixed = setIdMult v2 Many
-        let l = noLoc (HsPar noExtField (mkLam (noLoc v2Fixed) v2ty e ty))
+        let v2ty = Scaled (varMult v2) (varType v2)
+        let l = noLoc (HsPar noExtField (mkLam (noLoc v2) v2ty e ty))
         ety <- getTypeOrPanic e
         mkBind s sty l ety
 
