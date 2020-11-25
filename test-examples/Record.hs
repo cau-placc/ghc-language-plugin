@@ -23,14 +23,14 @@ test2 Rec { .. } = fromRec
 test2 NoRec      = 0
 
 -- Record patterns with NamedFieldPuns
-test2 :: Rec -> Int
-test2 Rec { fromRec } = fromRec
-test2 NoRec      = 0
+test3 :: Rec -> Int
+test3 Rec { fromRec } = fromRec
+test3 NoRec           = 0
 
 -- Record constructors
-test3 :: Rec
-test3 = Rec { fromRec = 1 }
+test4 :: Rec
+test4 = Rec { fromRec = 1 }
 
 -- Record updates
-test4 :: Rec
-test4 = test3 { fromRec = 2 }
+test5 :: Rec
+test5 = test4 { fromRec = 2 }
