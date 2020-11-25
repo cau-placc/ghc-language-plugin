@@ -434,8 +434,12 @@ instance (OrdND a, OrdND b, ShareableN a, ShareableN b) =>
 class NumND a where
   (+) :: Nondet (a --> a --> a)
   (-) :: Nondet (a --> a --> a)
+  (-) = P.return $ \a -> P.return $ \b ->
+    (+) P.>>= \f -> f a P.>>= \g -> g (negate P.>>= \h -> h b)
   (*) :: Nondet (a --> a --> a)
   negate :: Nondet (a --> a)
+  negate = P.return $ \a -> (-) P.>>= \f ->
+    f (fromInteger P.>>= \h -> h (P.return 0)) P.>>= \g -> g a
   abs    :: Nondet (a --> a)
   signum :: Nondet (a --> a)
   fromInteger :: Nondet (P.Integer --> a)
