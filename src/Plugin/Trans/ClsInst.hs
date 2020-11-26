@@ -11,6 +11,7 @@ The instance functions itself are not lifted here.
 module Plugin.Trans.ClsInst (liftInstance) where
 
 import Control.Monad
+import Data.Maybe
 
 import GHC.Plugins
 import GHC.Tc.Types
@@ -48,7 +49,7 @@ liftInstance tcs (ClsInst _ _ origDfn tvs origCls origTys origDf ov orp) = do
       -- Function to apply the shareable type constructor to its args.
       mkShareType t' = mkTyConApp stc [mty, t']
       -- Create Shareable constraints for all given variables.
-      cons = zipWith (mkShareable mkShareType) uss bs
+      cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
   -- Incorporate the new constraints.
   let dfType = mkPiTys pis (foldr mkInvisFunTyMany inner cons)
   let dfLifted = setVarType origDf dfType

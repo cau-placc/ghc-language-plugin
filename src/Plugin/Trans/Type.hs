@@ -156,7 +156,7 @@ liftTypeParametrized sh stc mty s tcs t
             -- Function to create 'Shareable' type
             mkShareType t' = mkTyConApp stc [mty, t']
             -- Make a 'Sharable' constraint for each variable
-            cons = zipWith (mkShareable mkShareType) uss bs
+            cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
         -- Update any type constructors of the pre-existing constraints.
         pis' <- mapM (replacePiTy tcs) pis
         -- Include 'Shareable' constraints.
@@ -210,13 +210,14 @@ replacePiTy tcs (Anon  f (Scaled m t)) =
     <$> replaceTyconTy tcs m <*> replaceTyconTy tcs t
 
 -- | Create 'Shareable' constraint for the given type variable.
-mkShareable :: (Type -> Type) -> UniqSupply -> TyCoVarBinder -> Type
+mkShareable :: (Type -> Type) -> UniqSupply -> TyCoVarBinder -> Maybe Type
 mkShareable mkShareType us b = mkShareableFor us mkShareType b Nothing
 
 -- | Create 'Shareable' constraint for the given type variable and
 -- add it as an invisible argument in front of the given type.
+-- Returns Nothing if the type variable has an incompatible result kind.
 mkShareableFor :: UniqSupply -> (Type -> Type) -> TyCoVarBinder
-               -> Maybe Type -> Type
+               -> Maybe Type -> Maybe Type
 mkShareableFor us mkShareType b@(Bndr v _) rest =
   let args = fst (splitFunTys (tyVarKind v))
       (u1, u2) = splitUniqSupply us
@@ -225,10 +226,14 @@ mkShareableFor us mkShareType b@(Bndr v _) rest =
       vskinds = map mkTyVarTy vs
       innr = map ((. Just) . mkShareableFor u2 mkShareType) bs
       -- innr = [\ty -> ForAllTy b . (Shareable bty => ty)]
-      constraint = foldr ($) (mkShareType (mkAppTys (mkTyVarTy v) vskinds)) innr
-  in case rest of
-    Nothing -> constraint
-    Just r  -> ForAllTy b (mkInvisFunTyMany constraint r)
+      current = mkShareType (mkAppTys (mkTyVarTy v) vskinds)
+      constraint = foldrM (\f c -> f c) current innr
+  in if snd (splitFunTys (tyVarKind v)) `eqType` liftedTypeKind
+      -- only include it iff the result kind of v == Type
+      then case rest of
+        Nothing -> constraint
+        Just r  -> fmap (ForAllTy b . (`mkInvisFunTyMany` r)) constraint
+      else Nothing
 
 -- | Create a type variable with the given kind and unique key.
 mkTyVarWith :: Kind -> Unique -> TyVar
@@ -380,7 +385,7 @@ liftDefaultType tcs cls ty = do
   stc <- getShareClassTycon
   let bs = map (\(Named b') -> b') named
       mkShareType t' = mkTyConApp stc [mkTyConTy mtc, t']
-      cons = zipWith (mkShareable mkShareType) uss bs
+      cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
   bs' <- liftIO (mapM (replacePiTy tcs) bs1)
   mkPiTys bs' . flip (foldr mkInvisFunTyMany) cons
     <$> liftTypeTcM tcs ty1

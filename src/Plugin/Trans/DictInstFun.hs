@@ -11,6 +11,7 @@ class. It is not lifted like a normal function.
 module Plugin.Trans.DictInstFun (liftDictInstFun) where
 
 import Data.List
+import Data.Maybe
 import Control.Monad
 
 import GHC.Plugins
@@ -59,7 +60,8 @@ liftDictInstBinding tcs cls (AbsBinds _ tvs evs ex evb bs sig)
       mty <- mkTyConTy <$> getMonadTycon
       u   <- replicateM (length tvs) getUniqueSupplyM
       let mkShareTy ty = mkTyConApp stc [mty, ty]
-      let evsty = zipWith ((. flip Bndr Inferred) . mkShareable mkShareTy) u tvs
+      let evsty = catMaybes $
+                  zipWith ((. flip Bndr Inferred) . mkShareable mkShareTy) u tvs
       newevs <- mapM freshDictId evsty
 
       -- Each function and superclass selector uses the same wrapper,
@@ -128,7 +130,7 @@ liftDictExpr cls w tcs (L l ex) = L l <$> liftDictExpr' ex
           uss <- replicateM (length named) getUniqueSupplyM
           let bs = map (\(Named b') -> b') named
               mkShareType t' = mkTyConApp stc [mkTyConTy mtc, t']
-              cons = zipWith (mkShareable mkShareType) uss bs
+              cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
           bs' <- liftIO (mapM (replacePiTy tcs) (bs1 ++ bs2))
           ty' <- mkPiTys bs' . flip (foldr mkInvisFunTyMany) cons
             <$> liftTypeTcM tcs ty2

@@ -72,7 +72,8 @@ liftMonadicBinding _ _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
   mty <- mkTyConTy <$> getMonadTycon
   uss <- replicateM (length tvs) getUniqueSupplyM
   let mkShareTy ty = mkTyConApp stc [mty, ty]
-  let evsty = zipWith ((. flip Bndr Inferred) . mkShareable mkShareTy) uss tvs
+  let evsty = catMaybes $
+              zipWith ((. flip Bndr Inferred) . mkShareable mkShareTy) uss tvs
   evs <- mapM freshDictId evsty
   lclEnv <- getLclEnv
   let ctloc = mkGivenLoc topTcLevel UnkSkol lclEnv
@@ -100,7 +101,8 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
   mty <- mkTyConTy <$> getMonadTycon
   uss <- replicateM (length b) getUniqueSupplyM
   let mkShareTy ty = mkTyConApp stc [mty, ty]
-  let evsty = zipWith ((. flip Bndr Inferred) . mkShareable mkShareTy) uss b
+  let evsty = catMaybes $
+              zipWith ((. flip Bndr Inferred) . mkShareable mkShareTy) uss b
   evs <- mapM freshDictId evsty
   lclEnv <- getLclEnv
   let ctloc = mkGivenLoc topTcLevel UnkSkol lclEnv
@@ -158,7 +160,7 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
           uss <- replicateM (length named) getUniqueSupplyM
           let bs = map (\(Named b') -> b') named
               mkShareType t' = mkTyConApp stycon [mkTyConTy mtycon, t']
-              cons = zipWith (mkShareable mkShareType) uss bs
+              cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
           bs1' <- liftIO (mapM (replacePiTy tcs) bs1)
           mkPiTys bs1' . flip (foldr mkInvisFunTyMany) cons
             <$> liftTypeTcM tcs t1
@@ -175,7 +177,7 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
           bs = map (flip Bndr Inferred) vs
           mkShareType t' = mkTyConApp stycon [mkTyConTy mtycon, t']
       uss <- replicateM (length vs) getUniqueSupplyM
-      let cons = zipWith (mkShareable mkShareType) uss bs
+      let cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
       convs <- mapM freshDictId cons
       let conwrap = foldr (flip (<.>) . WpEvLam) vswrap (reverse convs)
       -- For unused types, we can just apply GHC.Types.Any to them.
@@ -251,7 +253,7 @@ liftMonadicBinding _ _ _ tcs _ (VarBind x1 name e1)
         uss <- replicateM (length named) getUniqueSupplyM
         let bs = map (\(Named b') -> b') named
             mkShareType t' = mkTyConApp stycon [mkTyConTy mtycon, t']
-            cons = zipWith (mkShareable mkShareType) uss bs
+            cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
         bs1' <- liftIO (mapM (replacePiTy tcs) bs1)
         (,cons) . mkPiTys bs1' . flip (foldr mkInvisFunTyMany) cons
           <$> liftTypeTcM tcs ty1
