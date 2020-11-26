@@ -721,11 +721,12 @@ liftVarWithWrapper given tcs w v
 
   -- 1. If it is a typeclass operation, we re-create it from scratch to get
   --    the unfolding information right.
-  -- 2. If it is a LclId, just use the lifted type.
-  -- 3. If it is a default method
-  --    (guaranteed to be imported, otherwise 2 applies),
+  -- 2. If it is a default method,
   --    we have to set the correct type and
-  --    switch to the correct default method
+  --    switch to the correct default method.
+  --    For an imported default method,
+  --    we have to make some adjustments to the lifting.
+  -- 3. If it is a LclId, just use the lifted type.
   -- 4. If it is one of a specific set of methods from the Prelude
   --    (due to deriving), we have to switch to the correct method.
   --    This falls back to jus returning the current identifier,
@@ -739,19 +740,23 @@ liftVarWithWrapper given tcs w v
                 -- if the class happens to be OrdND, we have to add 1 to idx
                 name = sels' !! idx
             return (mkDictSelId name cls')
-          | isLocalId v =
-            return (setVarType v ty')
           | '$':'d':'m':_ <- occNameString (occName v) = do
             -- Split the type to get the class that this is the default method
             -- for, and look up the new version of that class.
             let tc = tyConAppTyCon (funArgTy (snd (splitForAllTys (varType v))))
             tc' <- liftIO (lookupTyConMap GetNew tcs tc)
             if tc == tc' -- if they are equal, this is NOT a built-in class.
-              then -- Thus, v is almost typed correctly.
-                setVarType v <$> liftIO (replaceTyconTy tcs (varType v))
+              then if isLocalId v
+                then
+                  let Just cls = tyConClass_maybe tc
+                  in setVarType v <$> liftDefaultType tcs cls (varType v)
+                else -- If imported, v is almost typed correctly.
+                  setVarType v <$> liftIO (replaceTyconTy tcs (varType v))
               -- Otherwise, look up the replacement of the default method.
               else
                 lookupDefaultReplacement tc tc' (varName v)
+          | isLocalId v =
+            return (setVarType v ty')
           | otherwise = lookupWiredInFunc v
   v' <- mv'
 

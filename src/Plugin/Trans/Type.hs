@@ -13,9 +13,9 @@ module Plugin.Trans.Type where
 
 import Data.IORef
 import Data.List
-import Debug.Trace
 import Data.Maybe
 import Data.Syb
+import Control.Monad
 
 import GHC.Types.Name.Occurrence hiding (varName)
 import GHC.Plugins hiding (substTy, extendTvSubst)
@@ -360,6 +360,30 @@ replaceTyconTy tcs = replaceTyconTy'
 replaceTyconScaled :: TyConMap -> Scaled Type -> IO (Scaled Type)
 replaceTyconScaled tcs (Scaled m ty) =
   Scaled <$> replaceTyconTy tcs m <*> replaceTyconTy tcs ty
+
+-- A default method for "Class cls" with a default type sig of
+-- DefaultConstraints => classFunTy
+-- has a type
+-- forall cls. Class cls => DefaultConstraints => classFunTy
+-- It should be lifted to
+-- forall cls. Class cls => Shareable cls => DefaultConstraints => classFunTy
+-- Whereas the normal lifting would include the Shareable after all
+-- DefaultConstraints, which we DO NOT want.
+liftDefaultType :: TyConMap -> Class -> Type -> TcM Type
+liftDefaultType tcs cls ty = do
+  -- if cls has N class type variables,
+  -- we have to split off N forall's and the class constraint.
+  let (bs1, ty1) = splitPiTysInvisibleN (classArity cls + 1) ty
+      named = filter isNamedBinder bs1
+  uss <- replicateM (length named) getUniqueSupplyM
+  mtc <- getMonadTycon
+  stc <- getShareClassTycon
+  let bs = map (\(Named b') -> b') named
+      mkShareType t' = mkTyConApp stc [mkTyConTy mtc, t']
+      cons = zipWith (mkShareable mkShareType) uss bs
+  bs' <- liftIO (mapM (replacePiTy tcs) bs1)
+  mkPiTys bs' . flip (foldr mkInvisFunTyMany) cons
+    <$> liftTypeTcM tcs ty1
 
 -- | Lift only the result type of a type.
 -- Sometimes (e.g. for records) we only need to lift the result of a type
