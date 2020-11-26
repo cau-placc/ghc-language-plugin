@@ -110,7 +110,7 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
   let given' = given ++ cts
 
 
-  (d', vs) <- unzip <$> mapM (liftEx evsty) d
+  (d', vs) <- unzip <$> mapM liftEx d
   let vs' = catMaybes vs
 
   -- lift inner bindings
@@ -133,8 +133,8 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
 
     -- Basically do the same as in liftTopTypes, but this time for
     -- both the poly and mono type and for local bindings as well
-    liftEx :: [Type] -> ABExport GhcTc -> TcM (ABExport GhcTc, Maybe (Var,Var))
-    liftEx evsty (ABE x v1 v2 w p) = do
+    liftEx :: ABExport GhcTc -> TcM (ABExport GhcTc, Maybe (Var,Var))
+    liftEx (ABE x v1 v2 w p) = do
       -- change unique only for local decls, as only those are shared
       u <- if lcl then getUniqueM else return (varUnique v1)
 
@@ -177,7 +177,7 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
       uss <- replicateM (length vs) getUniqueSupplyM
       let cons = zipWith (mkShareable mkShareType) uss bs
       convs <- mapM freshDictId cons
-      let conwrap = foldr (flip (<.>) . WpEvLam) vswrap convs
+      let conwrap = foldr (flip (<.>) . WpEvLam) vswrap (reverse convs)
       -- For unused types, we can just apply GHC.Types.Any to them.
       -- For unused evidence, we cannot do this.
       -- Instead we create dummy evidence terms that have the right type
@@ -188,8 +188,9 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
       let unsafeCoShare = Cast (mkIntExpr (targetPlatform dfl) 0)
             (mkUnivCo (PluginProv "unsafe") Representational
               intTy (mkShareType (anyTypeOfKind liftedTypeKind)))
-      let ovs = replicate (length evsty) unsafeCoShare
-      let conapp = mkEvWrapSimilar rest ovs (zipWith ((,) . mkTyVarTy) vs convs)
+      let ovs = repeat unsafeCoShare
+      let evs = reverse $ zipWith ((,) . mkTyVarTy) vs convs
+      let conapp = mkEvWrapSimilar rest ovs evs
 
       -- lift the mono type and create the new variables.
       ty2 <- liftIO (liftTypeIfRequired stycon mtycon us2 tcs (varType v2))

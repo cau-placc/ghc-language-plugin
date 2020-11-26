@@ -13,6 +13,7 @@ module Plugin.Trans.Type where
 
 import Data.IORef
 import Data.List
+import Debug.Trace
 import Data.Maybe
 import Data.Syb
 
@@ -620,7 +621,7 @@ mkEvWrapSimilar :: HsWrapper -> [CoreExpr] -> [(Type, Var)] -> HsWrapper
 mkEvWrapSimilar = go []
   where
     go _      _                 []     _             = WpHole
-    go ws     (WpTyApp _  )     (v:vs) []            =
+    go ws     (WpTyApp _  )     (v:vs) []            = trace "wtf" $
                            WpEvApp (EvExpr v)        <.> gos ws vs []
     go ws     (WpTyApp ty1)     (v:vs) ((ty2, c):cs)
       | ty1 `eqType` ty2 = WpEvApp (EvExpr (evId c)) <.> gos ws vs cs
