@@ -490,12 +490,9 @@ bindVarAlt v (L _ (XPat (CoPat _ p _)), m) = bindVarAlt v (noLoc p, m)
 bindVarAlt _ (_,m) = return m
 
 mkSeq :: Var -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
-mkSeq _ e = do
-  flags <- getDynFlags
-  reportError (mkErrMsg flags noSrcSpan neverQualify
-    "Bang patterns are not supported by the plugin")
-  failIfErrsM
-  return e
+mkSeq v e = do
+  ty <- getTypeOrPanic e
+  mkApp (mkNewSeqTh (varType v)) ty [noLoc (HsVar noExtField (noLoc v)), e]
 
 mkOtherMatch :: Int -> [Var] -> Type -> LHsExpr GhcTc
              -> [(LPat GhcTc, LMatch GhcTc (LHsExpr GhcTc))]

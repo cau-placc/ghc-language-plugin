@@ -138,6 +138,11 @@ id = P.return P.id
 not :: Nondet (Bool --> Bool)
 not = liftNondet1 P.not
 
+-- Lifted seq operator to force evaluation. Forces the effect and value.
+seq :: forall (k :: RuntimeRep) a b. Nondet (a --> b --> b)
+seq = P.return $ \a -> P.return $ \b ->
+  (a P.>>= \a' -> P.seq a' b)
+
 -- | Lifted const function
 const :: Nondet (a --> b --> a)
 const = P.return $ \a -> P.return $ \_ -> a

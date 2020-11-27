@@ -120,4 +120,5 @@ wiredIn =
   , mkOrig gHC_SHOW    (mkVarOcc "showSpace")
   , mkOrig gHC_SHOW    (mkVarOcc "showParen")
   , mkOrig gHC_BASE    (mkVarOcc ".")
+  , mkOrig gHC_PRIM    (mkVarOcc "seq")
   ]

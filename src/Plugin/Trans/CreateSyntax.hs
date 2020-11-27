@@ -153,6 +153,13 @@ mkNewBindTh etype btype = do
                   resty                                     -- m b
   mkNewAny th_expr expType
 
+mkNewSeqTh :: Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewSeqTh atype btype = do
+  th_expr <- liftQ [| seq |]
+  let expType = mkVisFunTyMany atype $     -- a ->
+                mkVisFunTyMany btype btype -- b -> b
+  mkNewAny th_expr expType
+
 -- | Create a 'fmap' for the given argument types.
 mkNewFmapTh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewFmapTh etype btype = do
