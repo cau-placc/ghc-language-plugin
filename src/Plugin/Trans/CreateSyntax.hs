@@ -38,6 +38,7 @@ import Plugin.Trans.Type
 import Plugin.Trans.Util
 import Plugin.Trans.Var
 import Plugin.Trans.ConstraintSolver
+import Plugin.Util.MonadNoinline
 
 -- | Create the lambda functions used to lift value constructors.
 -- Newtypes have to be treated differently.
@@ -135,7 +136,7 @@ mkAppWith con cts typ args = do
 mkNewReturnTh :: Type -> TcM (LHsExpr GhcTc)
 mkNewReturnTh etype = do
   mtycon <- getMonadTycon
-  th_expr <- liftQ [| return |]
+  th_expr <- liftQ [| rtrn |]
   let mty = mkTyConTy mtycon
   let expType = mkVisFunTyMany etype $ -- 'e ->
                 mkAppTy mty etype  -- m 'e
@@ -145,7 +146,7 @@ mkNewReturnTh etype = do
 mkNewBindTh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewBindTh etype btype = do
   mtycon <- getMonadTycon
-  th_expr <- liftQ [| (>>=) |]
+  th_expr <- liftQ [| bind |]
   let mty = mkTyConTy mtycon
   let resty = mkAppTy mty btype
   let expType = mkVisFunTyMany (mkAppTy mty etype) $        -- m 'e ->
@@ -164,7 +165,7 @@ mkNewSeqTh atype btype = do
 mkNewFmapTh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewFmapTh etype btype = do
   mtycon <- getMonadTycon
-  th_expr <- liftQ [| fmap |]
+  th_expr <- liftQ [| fmp |]
   let appMty = mkTyConApp mtycon . (:[])
   let expType = mkVisFunTyMany (mkVisFunTyMany etype btype) $     -- ('e -> 'b) ->
                 mkVisFunTyMany (appMty etype) (appMty btype)  -- m 'e -> m 'b

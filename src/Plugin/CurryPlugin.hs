@@ -48,6 +48,7 @@ import Plugin.Trans.TysWiredIn
 import Plugin.Trans.ConstraintSolver
 import Plugin.Trans.Preprocess
 import Plugin.Trans.Class
+import Plugin.Trans.Rule
 import Plugin.Trans.Constr
 import Plugin.Effect.Annotation
 
@@ -237,10 +238,13 @@ liftMonadPlugin mdopts env = do
                 -- finally do the monadic lifting for functions and dicts
                 tcg_binds' <- liftBindings tyconsMap newInsts prep
 
+                tcg_rules' <- mapM (liftRule tyconsMap) (tcg_rules env4)
+
                 -- create the final environment with restored plugin field
                 let finalEnv = env4 { tcg_binds      = listToBag tcg_binds'
                                     , tcg_tc_plugins = tcg_tc_plugins env
                                     , tcg_ev_binds   = emptyBag
+                                    , tcg_rules      = tcg_rules'
                                     }
                       `addTypecheckedBinds` [bs']
 

@@ -9,7 +9,7 @@ Maintainer  : kai.prott@hotmail.de
 This module provides the main transformation of our monadic lifting for
 functions and expressions to integrate our effect.
 -}
-module Plugin.Trans.Expr (liftMonadicBinding) where
+module Plugin.Trans.Expr (liftMonadicBinding, liftMonadicExpr) where
 
 import Control.Monad
 import Data.Syb
