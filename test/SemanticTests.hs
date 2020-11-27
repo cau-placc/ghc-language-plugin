@@ -50,7 +50,7 @@ mkSemanticTest (TestDescr e expected nm) = TestInstance
                                     ", but the result is: " ++ show r))
         Nothing  -> Finished (Fail "Computation timed out")
   , name = nm
-  , tags = []
+  , tags = ["Semantic"]
   , options = []
   , setOption = \_ _ -> Left "Option not supported"
   }
