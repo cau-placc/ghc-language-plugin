@@ -46,14 +46,20 @@ checkImports env = do
   let unit = moduleUnitId (tcg_semantic_mod env)
   -- Get the environment of all external annotations.
   let annEnvExt = eps_ann_env external
-  -- Get the annotations for each imported module.
-  let anns = map (uncurry (getAnnFor unit home annEnvExt)) (allImportedMdls env)
+  -- Get the annotations for each imported module, except Data.Kind.
+  -- Data.Kind is special and allowed in the Plugin
+  let mostMdls = filter (not . isDataKind) $ allImportedMdls env
+  let anns = map (uncurry (getAnnFor unit home annEnvExt)) mostMdls
   -- Check if the annotations for every module contain the correct marker
   let lds = map (uncurry3 classifyWithLoadResult) anns
   -- Create an error for each incorrect import
   mapM_ errorOnFailedLoad lds
   -- Fail if at least one error was recorded.
   failIfErrsM
+
+isDataKind :: (Module, [ImportedBy]) -> Bool
+isDataKind (Module u n, _) =
+  mkModuleName "Data.Kind" == n && u == baseUnit
 
 -- | Get any 'NondetTag' module annotations for a given module
 -- and the source span of the import declaration, if available.
