@@ -403,11 +403,11 @@ liftMonadicExpr given tcs (L _ (OpApp _ e1 op e2)) = do
   op' <- liftMonadicExpr given tcs op
   e2' <- liftMonadicExpr given tcs e2
   opty1 <- getTypeOrPanic op'
-  let (m2, _, opty2) = splitFunTy $ bindingType opty1
-  let (m3, _, opty3) = splitFunTy $ bindingType opty2
-  e1'' <- mkBindLam (Scaled m2 opty1) e1'
+  let (_, _, opty2) = splitFunTy $ bindingType opty1
+  let (_, _, opty3) = splitFunTy $ bindingType opty2
+  e1'' <- mkBindLam (Scaled Many opty1) e1'
   op'' <- mkBind op' opty1 e1'' opty2
-  e2'' <- mkBindLam (Scaled m3 opty2) e2'
+  e2'' <- mkBindLam (Scaled Many opty2) e2'
   res <- mkBind op'' opty2 e2'' opty3
   return $ noLoc $ HsPar noExtField res
 liftMonadicExpr given tcs (L _ (HsApp _ fn ex)) = do
@@ -416,8 +416,8 @@ liftMonadicExpr given tcs (L _ (HsApp _ fn ex)) = do
   fn' <- liftMonadicExpr given tcs fn
   funty <- getTypeOrPanic fn'
   ex' <- liftMonadicExpr given tcs ex
-  let (m, _, exty) = splitFunTy $ bindingType funty
-  ex'' <- mkBindLam (Scaled m funty) ex'
+  let (_, _, exty) = splitFunTy $ bindingType funty
+  ex'' <- mkBindLam (Scaled Many funty) ex'
   res <- mkBind fn' funty ex'' exty
   return $ noLoc $ HsPar noExtField res
 liftMonadicExpr given tcs (L _ (HsAppType _ e _)) =
