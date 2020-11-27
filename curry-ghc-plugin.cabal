@@ -116,6 +116,7 @@ test-suite tests
     Tests.Guards
     Tests.UnknownNat
     Tests.LetPattern
+    Tests.Bang
 
     Plugin.CurryPlugin
     Plugin.CurryPlugin.BuiltIn

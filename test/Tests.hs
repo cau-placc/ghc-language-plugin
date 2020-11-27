@@ -39,6 +39,8 @@ tests = do
     [ Test (mkSemanticTest letPattern)
     , Test (mkSemanticTest unknownNat)
     , Test (mkSemanticTest guards)
+    , Test (mkSemanticTest bangPattern)
+    , Test (mkSemanticTest noBangPattern)
     ]]
   where noTest = testGroup "Empty Group" []
 
