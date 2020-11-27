@@ -7,6 +7,7 @@
 {-# LANGUAGE UndecidableInstances   #-}
 {-# LANGUAGE DefaultSignatures      #-}
 {-# LANGUAGE LambdaCase             #-}
+{-# LANGUAGE LinearTypes            #-}
 {-|
 Module      : Plugin.Effect.Classes
 Description : Type classes used for the effect implementation
@@ -236,5 +237,5 @@ instance (Monad m) => Shareable m Double where
 instance (Monad m) => Shareable m Char where
   shareArgs _ = return
 
-instance (Monad m) => Shareable m (a -> b) where
+instance (Monad m) => Shareable m (a %n -> b) where
   shareArgs _ = return
