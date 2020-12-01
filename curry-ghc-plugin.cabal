@@ -89,6 +89,7 @@ common deps
     Plugin.Trans.FunWiredIn
     Plugin.Trans.TysWiredIn
     Plugin.Trans.Enum
+    Plugin.Trans.Warn
     Plugin.Trans.Preprocess
     Plugin.Trans.Derive
     Plugin.Trans.PatternMatching

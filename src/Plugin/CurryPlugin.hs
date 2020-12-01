@@ -32,6 +32,8 @@ import GHC.Tc.Utils.Monad
 import GHC.Tc.Utils.Env
 import GHC.Tc.Utils.Zonk
 import GHC.Tc.Utils.TcMType
+import GHC.Unit.Module.Graph
+import GHC.HsToCore
 import GHC.Utils.Error
 import GHC.Core.InstEnv
 import GHC.Data.Bag
@@ -50,6 +52,7 @@ import Plugin.Trans.Preprocess
 import Plugin.Trans.Class
 import Plugin.Trans.Rule
 import Plugin.Trans.Constr
+import Plugin.Trans.Warn
 import Plugin.Effect.Annotation
 
 -- | This GHC plugin turns GHC into a "compiler" for
@@ -83,10 +86,18 @@ liftMonadPlugin mdopts env = do
   dumpWith DumpOriginalInstEnv dopts (tcg_inst_env env)
   dumpWith DumpOriginalTypeEnv dopts (tcg_type_env env)
 
+  hsc <- getTopEnv
+  flags <- getDynFlags
+  case mgLookupModule (hsc_mod_graph hsc) (tcg_mod env) of
+    Just modSumm -> do
+      ((w,e), _) <- liftIO $ deSugar hsc (ms_location modSumm) env
+      let msgs = (mapBag addNondetWarn w, e)
+      addMessages msgs
+    Nothing -> return ()
+
   -- remove any dummy evidence introduced by the constraint solver plugin
   let tcg_ev_binds' = filterBag (not . isDummyEv) (tcg_ev_binds env)
 
-  hsc <- getTopEnv
   mapRef <- loadDefaultTyConMap
   let tyconsMap = (hsc, mapRef)
 
@@ -94,7 +105,6 @@ liftMonadPlugin mdopts env = do
   s <- getUniqueSupplyM
   mtycon <- getMonadTycon
   stycon <- getShareClassTycon
-  flags <- getDynFlags
   res <- liftIO ((mdo
     liftedTycns <- snd <$>
       mapAccumM (\s' t -> liftTycon flags stycon mtycon s' tnsM tyconsMap t)
