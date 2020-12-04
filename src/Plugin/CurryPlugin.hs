@@ -86,17 +86,21 @@ liftMonadPlugin mdopts env = do
   dumpWith DumpOriginalInstEnv dopts (tcg_inst_env env)
   dumpWith DumpOriginalTypeEnv dopts (tcg_type_env env)
 
-  hsc <- getTopEnv
-  flags <- getDynFlags
-  case mgLookupModule (hsc_mod_graph hsc) (tcg_mod env) of
-    Just modSumm -> do
-      ((w,e), _) <- liftIO $ deSugar hsc (ms_location modSumm) env
-      let msgs = (mapBag addNondetWarn w, e)
-      addMessages msgs
-    Nothing -> return ()
 
   -- remove any dummy evidence introduced by the constraint solver plugin
   let tcg_ev_binds' = filterBag (not . isDummyEv) (tcg_ev_binds env)
+
+  hsc <- getTopEnv
+  flags <- getDynFlags
+  case mgLookupModule (hsc_mod_graph hsc) (tcg_mod env) of
+    Just modSumm -> setDynFlags flags' $ do
+      ((w,e), _) <- liftIO $ deSugar hsc' (ms_location modSumm) env
+      let msgs = (mapBag addNondetWarn w, e)
+      addMessages msgs
+      where
+        flags' = gopt_unset flags Opt_DoCoreLinting
+        hsc' = hsc { hsc_dflags = flags'}
+    Nothing -> return ()
 
   mapRef <- loadDefaultTyConMap
   let tyconsMap = (hsc, mapRef)
