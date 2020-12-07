@@ -373,16 +373,10 @@ liftMonadicExpr given tcs (L l (HsOverLit _ lit)) =
         mkApp mkNewReturnTh ty [noLoc e]
     -- otherwise, just lift the witness
     _ -> liftMonadicExpr given tcs (L l (ol_witness lit))
-liftMonadicExpr given tcs (L l (HsLam x mg)) = do
-  mg'@(MG (MatchGroupTc [Scaled m arg] res) _ _) <- liftMonadicEquation given tcs mg
-  let e = L l (HsLam x mg')
-  let ty = mkVisFunTy m arg res
-  mkApp mkNewReturnTh ty [noLoc (HsPar noExtField e)]
-liftMonadicExpr given tcs (L l (HsLamCase x mg)) = do
-  mg'@(MG (MatchGroupTc [Scaled m arg] res) _ _) <- liftMonadicEquation given tcs mg
-  let e = L l (HsLamCase x mg')
-  let ty = mkVisFunTy m arg res
-  mkApp mkNewReturnTh ty [noLoc (HsPar noExtField e)]
+liftMonadicExpr given tcs (L l (HsLam _ mg)) =
+  liftLambda given tcs l Nothing mg
+liftMonadicExpr given tcs (L l (HsLamCase _ mg)) =
+  liftLambda given tcs l Nothing mg
 liftMonadicExpr _ tcs (L _ (HsConLikeOut _ (RealDataCon c))) = do
   c' <- liftIO (getLiftedCon c tcs)
   let tys = dataConOrigArgTys c'
@@ -679,6 +673,15 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
       ws' <- mapM (liftWrapperTcM True tcs) ws
       return (SyntaxExprTc (unLoc e2) ws' WpHole)
     trans2 NoSyntaxExprTc = return NoSyntaxExprTc
+
+liftLambda :: [Ct] -> TyConMap -> SrcSpan
+           -> Maybe Type -> MatchGroup GhcTc (LHsExpr GhcTc) -> TcM (LHsExpr GhcTc)
+liftLambda given tcs l mb mg = do
+  mg'@(MG (MatchGroupTc [Scaled m arg] res) _ _)
+    <- liftMonadicEquation given tcs mg
+  let e = L l (HsLam noExtField mg')
+  let ty = mkVisFunTy m arg res
+  mkApp mkNewReturnTh ty [noLoc (HsPar noExtField e)]
 
 -- We need to pay special attention to a lot of different kinds of variables.
 -- Most of those kinds can be treated sinilarly (see below), but for
