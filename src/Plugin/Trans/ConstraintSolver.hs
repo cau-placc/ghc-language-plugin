@@ -9,7 +9,8 @@ solves any conflicts that arise from lifted imported definitions during
 GHC's type checking.
 This plugin is disabled automatically during lifting.
 -}
-module Plugin.Trans.ConstraintSolver (tcPluginSolver, removeNondet) where
+module Plugin.Trans.ConstraintSolver
+  (tcPluginSolver, removeNondet, solveShareAnyPlugin) where
 
 import Data.Maybe
 import Data.IORef
@@ -28,6 +29,7 @@ import GHC.Core.Class
 import GHC.Core.TyCo.Rep
 
 import Plugin.Trans.Type
+import Plugin.Trans.Var
 
 -- | Constraint solver plugin to solve any conflicts that arise from
 -- lifted imported definitions during GHC's type checking.
@@ -54,6 +56,31 @@ tcPluginSolver m _     _  wanted = do
   hsc <- getTopEnv
   scls <- unsafeTcPluginTcM getShareClass
   runWantedPlugin (hsc, m) scls wanted
+
+-- | During the plugin run, we might need to create a dicitionary for
+-- Shareable Nondet Any.
+-- As Any is a type family, we cannot add such an instance.
+-- However, we can safely coerce it from Shareable Nondet ().
+solveShareAnyPlugin :: TcPluginSolver
+solveShareAnyPlugin _ _ wanted = do
+  scls <- unsafeTcPluginTcM getShareClass
+  uncurry TcPluginOk . unzip . catMaybes
+    <$> mapM (transformShareAny scls) wanted
+
+-- | Transforms a constraint Shareable Nondet Any to Shareable Nondet (),
+-- with an additional coercion.
+transformShareAny :: Class -> Ct -> TcPluginM (Maybe ((EvTerm, Ct), Ct))
+transformShareAny scls w@(CDictCan (CtWanted pty _ si loc)
+                            cls [mty, aty] pend)
+  | cls == scls && aty `eqType` anyTypeOfKind liftedTypeKind = do
+    let pty' = mkTyConApp (classTyCon scls) [mty, unitTy]
+    v' <- unsafeTcPluginTcM $ freshDictId pty'
+    let w' = CDictCan (CtWanted pty (EvVarDest v') si loc)
+                cls [mty, unitTy] pend
+    let coerc = mkUnivCo (PluginProv "unsafeShareAnyToUnit") Representational
+                  pty' pty
+    return (Just ((EvExpr (evId v' `Cast` coerc), w), w'))
+transformShareAny _ _ = return Nothing
 
 -- | Transform or solve wanted constraints.
 -- Collects any new or solved constraints and always returns 'TcPluginOk'.

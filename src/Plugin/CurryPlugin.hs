@@ -220,7 +220,9 @@ liftMonadPlugin mdopts env = do
             -- as they should not be lifted
             let tenv3 = plusTypeEnv tenv tenv2
             writeTcRef (tcg_type_env_var env2) tenv3
-            let env3 = env2 { tcg_ev_binds = ev', tcg_type_env = tenv3 }
+            let env3 = env2 { tcg_ev_binds = ev'
+                            , tcg_type_env = tenv3
+                            , tcg_tc_plugins = [solveShareAnyPlugin] }
             setGblEnv env3 $ setLclEnv lcl $ do
 
               -- compile pattern matching
