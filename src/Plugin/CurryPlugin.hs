@@ -211,7 +211,7 @@ liftMonadPlugin mdopts env = do
                            "definitions in this module." $+$
                            "Did you use any unsupported language extension?" $+$
                            "To see all internal errors, use the flag" $$
-                           "'-fplugin-opts" <+>
+                           "'-fplugin-opt" <+>
                            "Plugin.CurryPlugin:dump-deriving-errs'"
           -- If everything is ok, just continue as planned.
           else do

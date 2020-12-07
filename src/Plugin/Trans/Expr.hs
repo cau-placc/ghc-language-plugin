@@ -675,8 +675,9 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
     trans2 NoSyntaxExprTc = return NoSyntaxExprTc
 
 liftLambda :: [Ct] -> TyConMap -> SrcSpan
-           -> Maybe Type -> MatchGroup GhcTc (LHsExpr GhcTc) -> TcM (LHsExpr GhcTc)
-liftLambda given tcs l mb mg = do
+           -> Maybe Type -> MatchGroup GhcTc (LHsExpr GhcTc)
+           -> TcM (LHsExpr GhcTc)
+liftLambda given tcs l _ mg = do
   mg'@(MG (MatchGroupTc [Scaled m arg] res) _ _)
     <- liftMonadicEquation given tcs mg
   let e = L l (HsLam noExtField mg')
