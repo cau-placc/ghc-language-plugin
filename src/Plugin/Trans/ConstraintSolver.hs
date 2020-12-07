@@ -17,7 +17,7 @@ import Data.Tuple.Extra
 import Control.Monad.IO.Class
 
 import GHC.Types.Name.Occurrence
-import GHC.Plugins
+import GHC.Plugins hiding (substTy)
 import GHC.Builtin.Types.Prim
 import GHC.Tc.Types
 import GHC.Tc.Plugin
@@ -26,6 +26,8 @@ import GHC.Tc.Types.Constraint
 import GHC.Tc.Types.Evidence
 import GHC.Core.Class
 import GHC.Core.TyCo.Rep
+import GHC.Core.TyCo.Subst
+import GHC.Core.Unify
 
 import Plugin.Trans.Type
 
@@ -89,10 +91,18 @@ transformWanted m _ w@(CIrredCan (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
       stc <- getShareClassTycon
       -- Un-lift both sides of the equality.
       (ty1', b1) <- liftIO (removeNondet m mtc stc ty1)
-      (ty2', b2) <- liftIO (removeNondet m mtc stc ty2)
-      -- As long as one of the sides changed,
-      -- return the constraint as solved and create a new one
-      if b1 || b2
+      (ty2NoForall, b2) <- liftIO (removeNondet m mtc stc ty2)
+
+      -- If nothing changed, try to qualify ty2 like ty1 is qualified.
+      -- This is required if GHC inferred a monomorphic type
+      -- for one that should be polymorph.
+      (ty2', b3) <- if b1 || b2
+        then return (ty2NoForall, True)
+        else qualifyLike ty1' ty2NoForall
+
+      -- As long as one of the types changed,
+      -- return the constraint as solved and create a new one.
+      if b3
         then do
               -- Un-lift any information about the origin of the constraint.
               origin' <- liftIO (transformOrigin m mtc stc (ctl_origin loc))
@@ -120,7 +130,7 @@ transformWanted m _ w@(CIrredCan (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
               -- Return the old constraint as solved with its evidence
               -- and also return the new constraint.
               return (Just ((EvExpr (Coercion co), w), Just new))
-        else  return Nothing
+        else return Nothing
 -- Automatically solve (Shareable m a) constraints for every m and a.
 transformWanted _ scls w@(CDictCan (CtWanted _ (EvVarDest v) _ _) cls _ _)
   | cls == scls = do
@@ -230,3 +240,10 @@ newDummyEvId v = unsafeTcPluginTcM $ do
   u <- getUniqueM
   let name = mkSystemName u (mkVarOcc "#dummy_remove")
   return $ mkLocalVar (DFunId True) name Many (varType v) vanillaIdInfo
+
+qualifyLike :: Type -> Type -> TcM (Type, Bool)
+qualifyLike (ForAllTy (Bndr v f) ty1) ty2
+  | Just subst <- tcUnifyTy ty1 ty2,
+    Just (TyVarTy v') <- lookupTyVar subst v,
+    isTyVar v     = return (ForAllTy (Bndr v' f) (substTy subst ty2), True)
+qualifyLike _ ty2 = return (ty2, False)

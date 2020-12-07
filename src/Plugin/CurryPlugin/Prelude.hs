@@ -1,4 +1,5 @@
 {-# LANGUAGE NoImplicitPrelude              #-}
+{-# LANGUAGE RankNTypes                     #-}
 {-# OPTIONS_GHC -fplugin Plugin.CurryPlugin #-}
 {-# OPTIONS_GHC -Wno-incomplete-patterns    #-}
 {-|
@@ -146,11 +147,13 @@ asTypeOf x _ = x
 -- List operations
 ------------------------------------------
 
+{-# NOINLINE [0] map #-}
 map :: (a -> b) -> [a] -> [b]
-map = fmap
+map f xs = build mapEta
+  where
+    mapEta c n = foldr (\a b -> c (f a) b) n xs
 
 infixr 5 ++
-
 (++) :: [a] -> [a] -> [a]
 []     ++ ys = ys
 (x:xs) ++ ys = x : xs ++ ys
@@ -184,9 +187,26 @@ infixl 9 !!
     then x
     else xs !! (n - 1)
 
+{-# INLINE [0] foldr #-}
 foldr :: (a -> b -> b) -> b -> [a] -> b
 foldr _ b []     = b
 foldr f b (x:xs) = x `f` foldr f b xs
+
+{-# INLINE [1] build #-}
+build :: forall a. (forall b. (a -> b -> b) -> b -> b) -> [a]
+build g = g (:) []
+
+{-# INLINE [1] augment #-}
+augment :: forall a. (forall b. (a->b->b) -> b -> b) -> [a] -> [a]
+augment g xs = g (:) xs
+
+{-# RULES
+"fold/build"    forall k z (g::forall b. (a->b->b) -> b -> b) .
+                foldr k z (build g) = g k z
+
+"foldr/augment" forall k z xs (g::forall b. (a->b->b) -> b -> b) .
+                foldr k z (augment g xs) = g k (foldr k z xs)
+ #-}
 
 foldr1 :: (a -> a -> a) -> [a] -> a
 foldr1 f (x:xs) = foldr f x xs
@@ -262,3 +282,6 @@ unzip []            = ([], [])
 unzip ((a, b) : xs) = (a:as, b:bs)
   where
     (as, bs) = unzip xs
+
+buildWithEq :: forall a. Eq a => (forall b. Eq b => (a -> b -> b) -> b -> b) -> [a]
+buildWithEq g = g (:) []

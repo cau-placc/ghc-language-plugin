@@ -53,6 +53,7 @@ import Plugin.Trans.Class
 import Plugin.Trans.FunWiredIn
 import Plugin.Trans.CreateSyntax
 import Plugin.Trans.DictInstFun
+import Plugin.Trans.ConstraintSolver
 import Plugin.Trans.Enum
 
 -- | Transform the given binding with a monadic lifting to incorporate
@@ -404,6 +405,47 @@ liftMonadicExpr given tcs (L _ (OpApp _ e1 op e2)) = do
   e2'' <- mkBindLam (Scaled Many opty2) e2'
   res <- mkBind op'' opty2 e2'' opty3
   return $ noLoc $ HsPar noExtField res
+-- if this is an application of a function to a lambda, where
+-- the function argument has a forall'd polymorphic type,
+-- we need more than just lifting of HsApp + lifting of HsLam.
+liftMonadicExpr given tcs (L l1 (HsApp _ fn (L l2 (HsLam _ mg)))) = do
+  fn' <- liftMonadicExpr given tcs fn
+  funty <- getTypeOrPanic fn'
+  mtc <- getMonadTycon
+  stc <- getShareClassTycon
+  (unlifted, _) <- liftIO $ removeNondet tcs mtc stc funty
+  let (bs, rest) = splitPiTysInvisible unlifted
+  ex' <- if notNull bs
+    then do
+      -- TODO missing any previous constraints.
+
+      -- Get the type variable bound by each binder.
+      let anyVs = filter isTyVar $ map (\(Named (Bndr b' _)) -> b') $
+                  filter isNamedBinder bs
+      -- Create new type variables with the same kinds
+      instVs <- mapM (freshTVar . tyVarKind) anyVs
+      -- Create the type lambdas required by the forall'd variables.
+      let abstsWrap' = foldr ((<.>) . WpTyLam) WpHole instVs
+
+      -- Create a Shareable dict for each of the abstracted variables.
+      let mkShareTy ty = mkTyConApp stc [mkTyConTy mtc, ty]
+      uss <- replicateM (length instVs) getUniqueSupplyM
+      let evsty = catMaybes $
+                  zipWith ((. flip Bndr Inferred) . mkShareable mkShareTy) uss
+                    instVs
+      evs <- mapM freshDictId evsty
+      lclEnv <- getLclEnv
+      let ctloc = mkGivenLoc topTcLevel UnkSkol lclEnv
+      let given' = mkGivens ctloc evs ++ given
+
+      -- finally lift the lambda and pass the type we try to create
+      liftLambda given' tcs l2 (Just rest) mg
+    else liftLambda given tcs l2 Nothing mg
+
+  let (_, _, exty) = splitFunTy $ bindingType funty
+  ex'' <- mkBindLam (Scaled Many funty) ex'
+  res <- mkBind fn' funty ex'' exty
+  return $ noLoc $ HsPar noExtField res
 liftMonadicExpr given tcs (L _ (HsApp _ fn ex)) = do
   -- e1 e2
   -- -> e1 >>= \f -> f e2
@@ -688,7 +730,7 @@ liftLambda given tcs l mb mg = do
 -- record selectors, we need a different approach.
 liftVarWithWrapper :: [Ct] -> TyConMap -> HsWrapper -> Var
                    -> TcM (LHsExpr GhcTc)
-liftVarWithWrapper given tcs w v
+liftVarWithWrapper given' tcs w v
   | isRecordSelector v = do
     -- lift type
     mty <- mkTyConTy <$> getMonadTycon
@@ -721,8 +763,49 @@ liftVarWithWrapper given tcs w v
   us <- getUniqueSupplyM
   ty' <- liftIO (liftTypeIfRequired stc mtc us tcs (varType v))
 
-  let (apps, absts) = collectTyApps w'
-  let abstsWrap = foldr ((<.>) . WpTyLam) WpHole absts
+  let (aps, absts) = collectTyApps w'
+
+  -- In the case of higher-rank polymorphic arguments,
+  -- the constraint solver might force GHC to instantiate the forall'd variables
+  -- of the higher-rank argument with 'Any' instead of creating a proper type
+  -- abstraction.
+  -- E.g. if we use
+  -- build :: forall a. (forall b . (a -> b -> b) -> b -> b) -> [a]
+  -- and apply it to a function test, we end up with
+  -- build (testX @Any)
+  -- instead of the proper
+  -- build (/\b -> testX @b)
+
+  -- Collect any applicatons of 'Any'.
+  let (anyApps,  otherApps) = flip partition aps $ \t ->
+                                eqType t (anyTypeOfKind (typeKind t))
+  -- Get as many pi type binder (e.g. foralls) as there are 'Any' applicatons.
+  let anyPis = fst $ splitPiTysInvisibleN (length anyApps) (varType v)
+  -- Get the type variable bound by each binder.
+  let anyVs = filter isTyVar              $ map (\(Named (Bndr b' _)) -> b') $
+              filter isNamedBinder anyPis
+  -- Create new type variables with the same kinds
+  instVs <- mapM (freshTVar . tyVarKind) anyVs
+  -- Replace the applications of 'Any' with the new variables
+  let apps = map mkTyVarTy instVs ++ otherApps
+  -- Re-Create the original type lambdas and add the ones required by
+  -- the 'Any' applications.
+  let allAbsts = instVs ++ absts
+  let abstsWrap' = foldr ((<.>) . WpTyLam) WpHole allAbsts
+
+  -- Create a Shareable dict for each of the abstracted variables.
+  let mkShareTy ty = mkTyConApp stc [mkTyConTy mtc, ty]
+  uss <- replicateM (length allAbsts) getUniqueSupplyM
+  let evsty = catMaybes $
+              zipWith ((. flip Bndr Inferred) . mkShareable mkShareTy) uss
+                allAbsts
+  evs <- mapM freshDictId evsty
+  lclEnv <- getLclEnv
+  let ctloc = mkGivenLoc topTcLevel UnkSkol lclEnv
+  let given = mkGivens ctloc evs ++ given'
+
+  -- Add dicts to the abstraction wrapper
+  let abstsWrap = abstsWrap' <.> foldr ((<.>) . WpEvLam) WpHole evs
 
   -- 1. If it is a typeclass operation, we re-create it from scratch to get
   --    the unfolding information right.
