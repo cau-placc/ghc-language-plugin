@@ -32,6 +32,7 @@ import GHC.Builtin.Names
 import GHC.Unit.Finder
 import GHC.Types.SourceText
 import GHC.Types.Fixity
+import GHC.Types.Id.Make
 import GHC.Tc.Types
 import GHC.Tc.Types.Evidence
 import GHC.Tc.Utils.Monad
@@ -492,7 +493,12 @@ bindVarAlt _ (_,m) = return m
 mkSeq :: Var -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
 mkSeq v e = do
   ty <- getTypeOrPanic e -- ok
-  mkApp (mkNewSeqTh (varType v)) ty [noLoc (HsVar noExtField (noLoc v)), e]
+  return (noLoc (HsApp noExtField
+    (noLoc (mkHsWrap (WpTyApp liftedTypeKind <.> 
+                      WpTyApp (varType v) <.>
+                      WpTyApp ty)
+                     (HsVar noExtField (noLoc seqId))))
+    (noLoc (HsVar noExtField (noLoc v)))))
 
 mkOtherMatch :: Int -> [Var] -> Type -> LHsExpr GhcTc
              -> [(LPat GhcTc, LMatch GhcTc (LHsExpr GhcTc))]
