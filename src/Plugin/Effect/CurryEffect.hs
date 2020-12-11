@@ -50,25 +50,25 @@ instance Applicative Lazy where
   (<*>) = ap
 
 instance Alternative Lazy where
+  {-# INLINE empty #-}
   empty = mzero
+  {-# INLINE (<|>) #-}
   (<|>) = mplus
 
 instance Monad Lazy where
   {-# INLINE (>>=) #-}
   (>>=) = andThen
-  {-# INLINE return #-}
-  return = pureL
 
 {-# RULES
 "pure/bind"   forall f x. andThen (pureL x) f = f x
   #-}
 
-{-# INLINE[3] pureL #-}
+{-# INLINE[0] pureL #-}
 -- | Inlineable implementation of 'pure' for 'Lazy'
 pureL :: a -> Lazy a
 pureL x = Lazy (\c -> c x)
 
-{-# INLINE[3] andThen #-}
+{-# INLINE[0] andThen #-}
 -- | Inlineable implementation of '(>>=)' for 'Lazy'
 andThen :: Lazy a -> (a -> Lazy b) -> Lazy b
 andThen a k = Lazy (\c s -> fromLazy a (\x -> fromLazy (k x) c) s)

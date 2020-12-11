@@ -10,7 +10,8 @@ GHC's type checking.
 This plugin is disabled automatically during lifting.
 -}
 module Plugin.Trans.ConstraintSolver
-  (tcPluginSolver, removeNondet, solveShareAnyPlugin) where
+  ( tcPluginSolver, removeNondetShareable, removeNondet, solveShareAnyPlugin
+  ) where
 
 import Data.Maybe
 import Data.IORef
@@ -115,8 +116,8 @@ transformWanted m _ w@(CIrredCan (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
       mtc <- getMonadTycon
       stc <- getShareClassTycon
       -- Un-lift both sides of the equality.
-      (ty1', b1) <- liftIO (removeNondet m mtc stc ty1)
-      (ty2', b2) <- liftIO (removeNondet m mtc stc ty2)
+      (ty1', b1) <- liftIO (removeNondetShareable m mtc stc ty1)
+      (ty2', b2) <- liftIO (removeNondetShareable m mtc stc ty2)
       -- As long as one of the sides changed,
       -- return the constraint as solved and create a new one
       if b1 || b2
@@ -140,7 +141,7 @@ transformWanted m _ w@(CIrredCan (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
                   new = CNonCanonical newev
                   -- Create the coercion that should be used as evidence for
                   -- the old constraint.
-                  co = mkRepReflCo (expandTypeSynonyms ty1)
+                  co = mkRepReflCo (expandTypeSynonyms ty1')
               -- Fill the old coercion hole with the new coercion.
               liftIO (writeIORef href (Just co))
 
@@ -211,42 +212,48 @@ liftClassConstraint m pty xi cls f = unsafeTcPluginTcM $ do
 -- to remove any mention of a Nondet type constructor.
 transformOrigin :: TyConMap -> TyCon -> TyCon -> CtOrigin -> IO CtOrigin
 transformOrigin tcs mtc stc (TypeEqOrigin act ex th vis) = do
-  act' <- fst <$> removeNondet tcs mtc stc act
-  ex' <- fst <$> removeNondet tcs mtc stc ex
+  act' <- fst <$> removeNondetShareable tcs mtc stc act
+  ex' <- fst <$> removeNondetShareable tcs mtc stc ex
   return (TypeEqOrigin act' ex' th vis)
 transformOrigin _ _ _ o = return o
 
--- | Un-lift a given type. Returns the new type and True iff the type changed.
 removeNondet :: TyConMap -> TyCon -> TyCon -> Type -> IO (Type, Bool)
-removeNondet tcs mtc stc = removeNondet' . expandTypeSynonyms
+removeNondet = removeGeneral False
+
+removeNondetShareable :: TyConMap -> TyCon -> TyCon -> Type -> IO (Type, Bool)
+removeNondetShareable = removeGeneral True
+
+-- | Un-lift a given type. Returns the new type and True iff the type changed.
+removeGeneral :: Bool -> TyConMap -> TyCon -> TyCon -> Type -> IO (Type, Bool)
+removeGeneral remS tcs mtc stc = removeGeneral' . expandTypeSynonyms
   where
-    removeNondet' (ForAllTy b ty) =
-      first (ForAllTy b) <$> removeNondet' ty
-    removeNondet' (FunTy InvisArg _ (TyConApp tc [_,_]) ty)
-      | tc == stc =
-        second (const True) <$> removeNondet' ty
-    removeNondet' (FunTy f m ty1 ty2) = do
-      (ty1', b1) <- removeNondet' ty1
-      (ty2', b2) <- removeNondet' ty2
+    removeGeneral' (ForAllTy b ty) =
+      first (ForAllTy b) <$> removeGeneral' ty
+    removeGeneral' (FunTy InvisArg _ (TyConApp tc [_,_]) ty)
+      | tc == stc && remS =
+        second (const True) <$> removeGeneral' ty
+    removeGeneral' (FunTy f m ty1 ty2) = do
+      (ty1', b1) <- removeGeneral' ty1
+      (ty2', b2) <- removeGeneral' ty2
       return (FunTy f m ty1' ty2', b1 || b2)
-    removeNondet' (CastTy ty kc) =
-      first (flip CastTy kc) <$> removeNondet' ty
-    removeNondet' (CoercionTy c) =
+    removeGeneral' (CastTy ty kc) =
+      first (flip CastTy kc) <$> removeGeneral' ty
+    removeGeneral' (CoercionTy c) =
       return (CoercionTy c, False)
-    removeNondet' (LitTy l) =
+    removeGeneral' (LitTy l) =
       return (LitTy l, False)
-    removeNondet' (AppTy ty1 ty2) = do
-      (ty1', b1) <- removeNondet' ty1
-      (ty2', b2) <- removeNondet' ty2
+    removeGeneral' (AppTy ty1 ty2) = do
+      (ty1', b1) <- removeGeneral' ty1
+      (ty2', b2) <- removeGeneral' ty2
       return (AppTy ty1' ty2', b1 || b2)
-    removeNondet' (TyConApp tc [ty])
+    removeGeneral' (TyConApp tc [ty])
       | tc == mtc =
-        second (const True) <$> removeNondet' ty
-    removeNondet' (TyConApp tc args) = do
-      (args', bs) <- unzip <$> mapM removeNondet' args
+        second (const True) <$> removeGeneral' ty
+    removeGeneral' (TyConApp tc args) = do
+      (args', bs) <- unzip <$> mapM removeGeneral' args
       tc' <- lookupTyConMap GetOld tcs tc
       return (TyConApp tc' args', or bs)
-    removeNondet' (TyVarTy v) =
+    removeGeneral' (TyVarTy v) =
       return (TyVarTy v, False)
 
 -- | Create a dummy variable to use in place of required evidence.

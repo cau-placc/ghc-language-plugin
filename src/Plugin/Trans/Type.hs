@@ -239,6 +239,13 @@ mkShareableFor us mkShareType b@(Bndr v _) rest =
 mkTyVarWith :: Kind -> Unique -> TyVar
 mkTyVarWith k u = mkTyVar (mkSystemName u (mkTyVarOcc ("v_" ++ show u))) k
 
+liftTypeIfRequiredTcM :: TyConMap -> Type -> TcM Type
+liftTypeIfRequiredTcM tcs ty = do
+  mtc <- getMonadTycon
+  stc <- getShareClassTycon
+  us <- getUniqueSupplyM
+  liftIO $ liftTypeIfRequired stc mtc us tcs ty
+
 -- | Lift a type if it is not lifted already.
 liftTypeIfRequired :: TyCon -> TyCon -> UniqSupply -> TyConMap -> Type
                    -> IO Type

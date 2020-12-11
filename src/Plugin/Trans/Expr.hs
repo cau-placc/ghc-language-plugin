@@ -82,11 +82,15 @@ liftMonadicBinding _ _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
   let cts = mkGivens ctloc allEvs
   let given' = given ++ cts
   ty <- liftTypeTcM tcs (varType name)
-  let fullwrap = createWrapperLike ty tvs allEvs
+  let wrapLike = createWrapperLike ty tvs allEvs
 
-  eqs' <- if isDerivedEnum eqs
+  (eqs', WC simp impl holes) <- captureConstraints $ if isDerivedEnum eqs
     then liftDerivedEnumEquation tcs eqs
     else liftMonadicEquation given' tcs eqs
+
+  let constraints = WC (listToBag given' `unionBags` simp) impl holes
+  wx <- mkWpLet . EvBinds <$> simplifyTop constraints
+  let fullwrap = (wrapLike <.> wx)
   ticks' <- mapM (liftTick tcs) ticks
   let name' = setVarType name ty
   return ([FunBind fullwrap (L b name') eqs' ticks'], [])
@@ -201,7 +205,8 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
       -- also (possibly) change unique for sharing
       let v1u = setVarUnique v1' u
 
-      return (ABE x v1u v2' (conwrap <.> (conapp <.> rest)) p, Just (v1u, v1'))
+      return ( ABE x v1u v2' (conwrap <.> (conapp <.> rest)) p
+             , Just (setVarUnique v1 u, v1) )
 
     -- Do not lift any system stuff, except instance fun definitions ($c) and
     -- class default methods ($dm).
@@ -319,37 +324,38 @@ liftMonadicEquation :: [Ct] -> TyConMap
                     -> MatchGroup GhcTc (LHsExpr GhcTc)
                     -> TcM (MatchGroup GhcTc (LHsExpr GhcTc))
 liftMonadicEquation given tcs (MG a (L b alts) c) = do
-  alts' <- mapM (liftMonadicAlt given tcs) alts
-  a' <- liftMGTc tcs a
+  a'@(MatchGroupTc _ res) <- liftMGTc tcs a
+  alts' <- mapM (liftMonadicAlt given tcs res) alts
   return (MG a' (L b alts') c)
 
 liftMGTc :: TyConMap -> MatchGroupTc -> TcM MatchGroupTc
 liftMGTc tcs (MatchGroupTc args res) = do
   res' <- liftTypeTcM tcs res
-  args' <- mapM (\(Scaled m ty) -> Scaled m <$> liftTypeTcM tcs ty) args
+  args' <- mapM (\(Scaled m ty) -> Scaled m <$> liftTypeTcM tcs ty)
+            args
   return (MatchGroupTc args' res')
 
-liftMonadicAlt :: [Ct] -> TyConMap
+liftMonadicAlt :: [Ct] -> TyConMap -> Type
                -> LMatch GhcTc (LHsExpr GhcTc)
                -> TcM (LMatch GhcTc (LHsExpr GhcTc))
-liftMonadicAlt given tcs (L a (Match b c d rhs)) = do
+liftMonadicAlt given tcs resty (L a (Match b c d rhs)) = do
   (d', s, n) <- unzip3 <$> mapM (liftPattern tcs) d
-  rhs' <- liftMonadicRhs (concat s) (concat n) given tcs rhs
+  rhs' <- liftMonadicRhs (concat s) (concat n) given tcs resty rhs
   return (L a (Match b c d' rhs'))
 
-liftMonadicRhs :: [(Var, Var)] -> [(Var, Var)] -> [Ct] -> TyConMap
+liftMonadicRhs :: [(Var, Var)] -> [(Var, Var)] -> [Ct] -> TyConMap -> Type
                -> GRHSs GhcTc (LHsExpr GhcTc)
                -> TcM (GRHSs GhcTc (LHsExpr GhcTc))
-liftMonadicRhs s n given tcs (GRHSs a grhs b) = do
-  grhs' <- mapM (liftMonadicGRhs s n given tcs) grhs
+liftMonadicRhs s n given tcs resty (GRHSs a grhs b) = do
+  grhs' <- mapM (liftMonadicGRhs s n given tcs resty) grhs
   return (GRHSs a grhs' b)
 
-liftMonadicGRhs :: [(Var, Var)] -> [(Var, Var)] -> [Ct] -> TyConMap
+liftMonadicGRhs :: [(Var, Var)] -> [(Var, Var)] -> [Ct] -> TyConMap -> Type
                 -> LGRHS GhcTc (LHsExpr GhcTc)
                 -> TcM (LGRHS GhcTc (LHsExpr GhcTc))
-liftMonadicGRhs s n given tcs (L a (GRHS b c body)) = do
+liftMonadicGRhs s n given tcs bdyty (L a (GRHS b c body)) = do
   body' <- liftMonadicExpr given tcs body
-  body'' <- shareVars tcs s given body'
+  body'' <- shareVars tcs s given body' bdyty
   L a . GRHS b c <$> foldM liftNewTyVar body'' n
 
 liftMonadicExpr :: [Ct] -> TyConMap -> LHsExpr GhcTc
@@ -359,7 +365,7 @@ liftMonadicExpr given tcs (L _ (HsVar _ (L _ v))) =
 liftMonadicExpr given tcs (L _ (XExpr (WrapExpr (HsWrap w (HsVar _ (L _ v)))))) =
   liftVarWithWrapper given tcs w v
 liftMonadicExpr _    tcs e@(L _ HsLit{}) = do
-  ty <- getTypeOrPanic e
+  ty <- getTypeOrPanic e -- ok
   lifted <- mkApp mkNewReturnTh ty [e]
   ty' <- liftIO (replaceTyconTy tcs ty)
   res <- mkApp (mkNewLiftETh ty) ty' [lifted]
@@ -369,7 +375,7 @@ liftMonadicExpr given tcs (L l (HsOverLit _ lit)) =
     -- if this is geniunely a Double or Float, just wrap it with return
     e@(HsApp _ (L _ (HsConLikeOut _ (RealDataCon dc))) _)
       | dc == doubleDataCon || dc == floatDataCon -> do
-        ty <- getTypeOrPanic (noLoc e)
+        ty <- getTypeOrPanic (noLoc e) -- ok
         mkApp mkNewReturnTh ty [noLoc e]
     -- otherwise, just lift the witness
     _ -> liftMonadicExpr given tcs (L l (ol_witness lit))
@@ -393,10 +399,10 @@ liftMonadicExpr _ tcs (L _ (XExpr (WrapExpr (HsWrap w (HsConLikeOut _ (RealDataC
 liftMonadicExpr given tcs (L _ (OpApp _ e1 op e2)) = do
   -- e1 `op` e2
   -- -> op >>= \f -> f e1 >>= \f -> f e2
+  opty1 <- getTypeOrPanic op >>= liftTypeTcM tcs -- ok
   e1' <- liftMonadicExpr given tcs e1
   op' <- liftMonadicExpr given tcs op
   e2' <- liftMonadicExpr given tcs e2
-  opty1 <- getTypeOrPanic op'
   let (_, _, opty2) = splitFunTy $ bindingType opty1
   let (_, _, opty3) = splitFunTy $ bindingType opty2
   e1'' <- mkBindLam (Scaled Many opty1) e1'
@@ -408,9 +414,9 @@ liftMonadicExpr given tcs (L _ (HsApp _ fn ex)) = do
   -- e1 e2
   -- -> e1 >>= \f -> f e2
   fn' <- liftMonadicExpr given tcs fn
-  funty <- getTypeOrPanic fn'
-  ex' <- liftMonadicExpr given tcs ex
+  funty <- getTypeOrPanic fn >>= liftTypeTcM tcs
   let (_, _, exty) = splitFunTy $ bindingType funty
+  ex' <- liftMonadicExpr given tcs ex
   ex'' <- mkBindLam (Scaled Many funty) ex'
   res <- mkBind fn' funty ex'' exty
   return $ noLoc $ HsPar noExtField res
@@ -425,7 +431,7 @@ liftMonadicExpr given tcs (L l (HsPar x e)) =
 liftMonadicExpr given tcs (L l (SectionL _ e1 e2)) =
   liftMonadicExpr given tcs (L l (HsApp noExtField e2 e1))
 liftMonadicExpr given tcs (L _ (SectionR _ e1 e2)) = do
-  ty <- getTypeOrPanic e1
+  ty <- getTypeOrPanic e1 -- ok
   let (m1, arg1, ty') = splitFunTy ty
   let (_ , _   , res) = splitFunTy ty'
   v <- noLoc <$> freshVar (Scaled m1 arg1)
@@ -443,16 +449,16 @@ liftMonadicExpr _    _   e@(L l ExplicitSum {}) = do
 liftMonadicExpr given tcs (L l (HsCase _ scr br)) = do
   br'@(MG (MatchGroupTc _ ty2) _ _) <- liftMonadicEquation given tcs br
   scr' <- liftMonadicExpr given tcs scr
-  ty1 <- getTypeOrPanic scr'
+  ty1 <- getTypeOrPanic scr >>= liftTypeTcM tcs -- ok
   mkBind scr' ty1 (noLoc $ HsPar noExtField $ L l $ HsLamCase noExtField br') ty2
 liftMonadicExpr given tcs (L l (HsIf _ e1 e2 e3)) = do
   -- if e1 then e2 else e3
-  -- -> e1 >>= \case { True -> e1; _ -> e2 }
+  -- -> e1 >>= \case { True -> e2; _ -> e3 }
   e1' <- liftMonadicExpr given tcs e1
   e2' <- liftMonadicExpr given tcs e2
   e3' <- liftMonadicExpr given tcs e3
-  ty1' <- getTypeOrPanic e1'
-  ty2' <- getTypeOrPanic e2'
+  ty1' <- getTypeOrPanic e1 >>= liftTypeTcM tcs -- ok
+  ty2' <- getTypeOrPanic e2 >>= liftTypeTcM tcs -- ok
   let ty1 = bindingType ty1'
   v <- noLoc <$> freshVar (Scaled Many ty1)
   let ife = HsIf noExtField (noLoc (HsVar noExtField v)) e2' e3'
@@ -466,7 +472,8 @@ liftMonadicExpr given tcs (L l (HsLet x bs e)) = do
   -- Lift local binds first, so that they end up in the type environment.
   (bs', vs) <- liftLocalBinds given tcs bs
   e' <- liftMonadicExpr given tcs e
-  e'' <- shareVars tcs vs given e'
+  ety <- getTypeOrPanic e >>= liftTypeTcM tcs -- ok
+  e'' <- shareVars tcs vs given e' ety
   return (L l (HsLet x bs' e''))
 liftMonadicExpr given tcs (L l1 (HsDo x ctxt (L l2 stmts))) = do
   x' <- liftTypeTcM tcs x
@@ -478,11 +485,11 @@ liftMonadicExpr given tcs (L l1 (HsDo x ctxt (L l2 stmts))) = do
             | otherwise  = ctxt
   stmts' <- liftMonadicStmts ctxt' ctxtSwitch x' given tcs stmts
   return (L l1 (HsDo x' ctxt' (L l2 stmts')))
-liftMonadicExpr given tcs (L _ (ExplicitList ty Nothing es)) = do
+liftMonadicExpr given tcs e@(L _ (ExplicitList ty Nothing es)) = do
   -- [e1, ..., en]
   -- -> return (Cons e1 (return (Cons ... (return (Cons en (return Nil))))))
   em <- mkEmptyList ty tcs
-  liftedTy <- getTypeOrPanic em
+  liftedTy <- getTypeOrPanic e >>= liftTypeTcM tcs -- ok
   nil <- mkApp mkNewReturnTh liftedTy [em]
   if null es
     then return nil
@@ -507,7 +514,7 @@ liftMonadicExpr given tcs
     let e = L l1 (RecordCon (RecordConTc (RealDataCon c') ce') (L l2 cn') fs')
     if isNewTyCon (dataConTyCon c')
       then return e
-      else getTypeOrPanic e >>= flip (mkApp mkNewReturnTh) [e]
+      else getTypeOrPanic e >>= flip (mkApp mkNewReturnTh) [e] -- ok
 liftMonadicExpr _ _ e@(L l (RecordCon (RecordConTc (PatSynCon _) _) _ _)) = do
     flags <- getDynFlags
     reportError (mkErrMsg flags l neverQualify
@@ -587,7 +594,7 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
   if null vs
     then return (s':ss')
     else do
-      e <- shareVars tcs vs given (noLoc (HsDo ty ctxt (noLoc ss')))
+      e <- shareVars tcs vs given (noLoc (HsDo ty ctxt (noLoc ss'))) ty
       return [s', noLoc (LastStmt noExtField e Nothing NoSyntaxExprTc)]
   where
     liftMonadicStmt :: ExprLStmt GhcTc -> TcM (ExprLStmt GhcTc, [(Var, Var)])
@@ -645,7 +652,7 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
 
     trans1 (SyntaxExprTc e ws w) = do
       e1 <- liftMonadicExpr given tcs (noLoc (mkHsWrap w e))
-      e1ty <- getTypeOrPanic e1
+      e1ty <- getTypeOrPanic (noLoc e) >>= liftTypeTcM tcs -- ok
       let (_, ty1, ty2) = splitFunTy (bindingType e1ty)
       e2 <- mkApp (mkNewApply1 (bindingType ty1)) (bindingType ty2) [e1]
       ws' <- mapM (liftWrapperTcM True tcs) ws
@@ -654,7 +661,7 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
 
     transBind (SyntaxExprTc e ws w) = do
       e1 <- liftMonadicExpr given tcs (noLoc (mkHsWrap w e))
-      e1ty <- getTypeOrPanic e1
+      e1ty <- getTypeOrPanic (noLoc e) >>= liftTypeTcM tcs -- ok
       let (_, ty1, restty) = splitFunTy (bindingType e1ty)
       let (_, ty2, ty3) = splitFunTy (bindingType restty)
       e2 <- mkApp (mkNewApply2Unlifted (bindingType ty1) (bindingType ty2))
@@ -665,7 +672,7 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
 
     trans2 (SyntaxExprTc e ws w) = do
       e1 <- liftMonadicExpr given tcs (noLoc (mkHsWrap w e))
-      e1ty <- getTypeOrPanic e1
+      e1ty <- getTypeOrPanic (noLoc e) >>= liftTypeTcM tcs -- ok
       let (_, ty1, restty) = splitFunTy (bindingType e1ty)
       let (_, ty2, ty3) = splitFunTy (bindingType restty)
       e2 <- mkApp (mkNewApply2 (bindingType ty1) (bindingType ty2))
@@ -712,7 +719,7 @@ liftVarWithWrapper given tcs w v
         -- translate any datatype record selector "sel" to "return (>>= sel)"
       _                 -> noLoc . flip (SectionR noExtField) vExpr <$>
                              mkApp (mkNewBindTh arg) (bindingType res) []
-    ety <- getTypeOrPanic e
+    ety <- getTypeOrPanic e -- ok
     mkApp mkNewReturnTh ety [noLoc (HsPar noExtField e)]
   | otherwise          = do
   -- lift type
@@ -782,41 +789,58 @@ liftVarWithWrapper given tcs w v
       wanted <- newWanteds (OccurrenceOf (varName v')) preds
       let evvars = map (\a -> let EvVarDest d = ctev_dest a in d) wanted
       let cts = map CNonCanonical wanted
-      -- solve them
-      evidence <- mkWpLet . EvBinds <$>
-        simplifyTop (WC (listToBag (cts ++ given)) emptyBag emptyBag)
+
+      lvl <- getTcLevel
+      env <- getLclEnv
+      u <- getUniqueM
+      ref1 <- newTcRef emptyEvBindMap
+      ref2 <- newTcRef emptyVarSet
+      let bindsVar = EvBindsVar u ref1 ref2
+      -- filter is just here to be sure
+      evidence <- if null absts
+        then do
+          emitConstraints (WC (listToBag cts) emptyBag emptyBag)
+          return WpHole
+        else do
+          let givenVars = map (ctEvEvId . cc_ev) $ filter isGivenCt given
+          let i = Implic lvl absts UnkSkol givenVars False False env
+                    (WC (listToBag cts) emptyBag emptyBag) bindsVar emptyVarSet
+                    emptyVarSet IC_Unsolved
+          emitImplication i
+          return $ mkWpLet (TcEvBinds bindsVar)
 
       -- create the new wrapper, with the new dicts and the type applications
       let wdict = createWrapperFor (varType v') apps evvars
       let wall = abstsWrap <.> (evidence <.> wdict)
-      zonkTopLExpr (noLoc $ mkHsWrap wall $ HsVar noExtField $ noLoc v')
+      return $ noLoc $ mkHsWrap wall $ HsVar noExtField $ noLoc v'
 
 -- (,b,) = return $ \x1 -> return $ \x2 -> return (x1, b, x2)
 liftExplicitTuple :: [Ct] -> TyConMap -> [LHsTupArg GhcTc]
                   -> Boxity -> TcM (LHsExpr GhcTc)
-liftExplicitTuple given tcs args b = liftExplicitTuple' [] WpHole args
+liftExplicitTuple given tcs args b = do
+  resty <- getTypeOrPanic (noLoc $ ExplicitTuple noExtField args b) -- ok
+  lifted <- liftTypeTcM tcs resty
+  liftExplicitTuple' lifted [] WpHole args
   where
-    liftExplicitTuple' :: [LHsExpr GhcTc] -> HsWrapper -> [LHsTupArg GhcTc]
-                       -> TcM (LHsExpr GhcTc)
-    liftExplicitTuple' col w (L _ (Present _ e) : xs) = do
+    liftExplicitTuple' :: Type -> [LHsExpr GhcTc] -> HsWrapper
+                       -> [LHsTupArg GhcTc] -> TcM (LHsExpr GhcTc)
+    liftExplicitTuple' resty col w (L _ (Present _ e) : xs) = do
       e' <- liftMonadicExpr given tcs e
-      ty <- getTypeOrPanic e'
-      liftExplicitTuple' (e' : col) (WpTyApp (bindingType ty) <.> w) xs
-    liftExplicitTuple' col w (L _ (Missing (Scaled m ty)) : xs) = do
+      ty <- getTypeOrPanic e >>= liftTypeTcM tcs -- ok
+      liftExplicitTuple' resty (e' : col) (WpTyApp (bindingType ty) <.> w) xs
+    liftExplicitTuple' resty col w (L _ (Missing (Scaled m ty)) : xs) = do
       ty' <- liftTypeTcM tcs ty
       v <- noLoc <$> freshVar (Scaled m ty')
       let arg = noLoc (HsVar noExtField v)
-      inner <- liftExplicitTuple' (arg:col) (WpTyApp (bindingType ty') <.> w) xs
-      resty <- getTypeOrPanic inner
+      let w' = WpTyApp (bindingType ty') <.> w
+      inner <- liftExplicitTuple' resty (arg:col) w' xs
       let lam = mkLam v (Scaled m ty') inner resty
       mkApp mkNewReturnTh (mkVisFunTyMany ty' resty) [lam]
-    liftExplicitTuple' col w [] = do
+    liftExplicitTuple' resty col w [] = do
       let exprArgs = reverse col
       dc <- liftIO (getLiftedCon (tupleDataCon b (length exprArgs)) tcs)
       let ce = mkHsWrap w (HsConLikeOut noExtField (RealDataCon dc))
-      let appCe = foldl mkHsApp (noLoc ce) exprArgs
-      ty <- getTypeOrPanic appCe
-      mkApp mkNewReturnTh ty [appCe]
+      mkApp mkNewReturnTh resty [foldl mkHsApp (noLoc ce) exprArgs]
 
 -- This is for RecordConstructors only.
 -- We are interested in lifting the (potential wrapper)
@@ -853,7 +877,7 @@ liftNewConExpr mw tcs dc = do
   let de = HsConLikeOut noExtField (RealDataCon dc)
   let ce = noLoc (mkHsWrap w' de)
   let arg = noLoc (HsVar noExtField (noLoc v))
-  cetype <- funResultTy <$> getTypeOrPanic ce
+  cetype <- funResultTy <$> getTypeOrPanic ce -- ok
   let argtype = bindingType (varType v)
   e <- mkApp (mkNewFmapTh argtype) cetype [ce, arg]
 
@@ -933,11 +957,10 @@ liftNewTyVar e (old, new) = do
   ty <- flip mkTyConApp [varType old] <$> getMonadTycon
   return (noLoc (mkSimpleLet NonRecursive le e new ty))
 
-shareVars :: TyConMap -> [(Var, Var)] -> [Ct] -> LHsExpr GhcTc
+shareVars :: TyConMap -> [(Var, Var)] -> [Ct] -> LHsExpr GhcTc -> Type
           -> TcM (LHsExpr GhcTc)
-shareVars tcs vs evs e' = do
-  ty <- getTypeOrPanic e'
-  foldM (shareVar ty) e' vs
+shareVars tcs vs evs e' ety = do
+  foldM (shareVar ety) e' vs
   where
     -- share v1 >>= \v2 -> e
     shareVar ty e (v1,v2)
@@ -951,8 +974,7 @@ shareVars tcs vs evs e' = do
         let sty = mkTyConApp mtycon [v1ty]
         let v2ty = Scaled (varMult v2) (varType v2)
         let l = noLoc (HsPar noExtField (mkLam (noLoc v2) v2ty e ty))
-        ety <- getTypeOrPanic e
-        mkBind s sty l ety
+        mkBind s sty l ty
       -- Interestingly, we know that v1 and v2 do not ocurr more than once in e,
       -- as long as their multiplicity is not Many. Even if the multiplicity
       -- is polymorphic we know this, as the function could not have

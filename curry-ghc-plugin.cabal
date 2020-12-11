@@ -95,7 +95,6 @@ common deps
     Plugin.Trans.PatternMatching
     Plugin.Trans.ConstraintSolver
     Plugin.Trans.Rule
-    Plugin.Util.MonadNoinline
 
 library
   import: deps

@@ -123,7 +123,7 @@ compileDo ty ctxt (L l (BindStmt (XBindStmtTc b' _ _ f') p e) : stmts) = do
   let ctxt' = if swapCtxt then DoExpr Nothing else ctxt
   let rest = noLoc (HsDo ty ctxt' (noLoc stmts'))
 
-  emty <- getTypeOrPanic e
+  emty <- getTypeOrPanic e -- ok
   let ety = snd (splitAppTy emty)
 
   -- Create the bind and fail for ListComp.
@@ -432,7 +432,7 @@ compileGuardStmt err e (L _ (BindStmt (XBindStmtTc _ resty _ _) p
   compileMatching [v] resty [noLoc alt] err
 compileGuardStmt err e (L _ (BindStmt (XBindStmtTc _ resty _ _) p g)) = do
   let alt = mkSimpleAlt CaseAlt e [p]
-  ty <- getTypeOrPanic g
+  ty <- getTypeOrPanic g -- ok
   v <- freshVar (Scaled Many ty)
   e' <- compileMatching [v] resty [noLoc alt] err
   return (noLoc (mkSimpleLet Recursive g e' v ty))
@@ -491,7 +491,7 @@ bindVarAlt _ (_,m) = return m
 
 mkSeq :: Var -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
 mkSeq v e = do
-  ty <- getTypeOrPanic e
+  ty <- getTypeOrPanic e -- ok
   mkApp (mkNewSeqTh (varType v)) ty [noLoc (HsVar noExtField (noLoc v)), e]
 
 mkOtherMatch :: Int -> [Var] -> Type -> LHsExpr GhcTc

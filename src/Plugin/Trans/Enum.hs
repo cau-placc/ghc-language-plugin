@@ -138,7 +138,7 @@ liftDerivedEnumExpr tcs (L l1 (HsLam x1 (MG (MatchGroupTc [Scaled m arg] res)
 liftDerivedEnumExpr tcs (L l (HsPar x e)) =
   L l . HsPar x <$> liftDerivedEnumExpr tcs e
 liftDerivedEnumExpr tcs e = do
-  ty <- getTypeOrPanic e
+  ty <- getTypeOrPanic e -- ok
   lifted <- mkApp mkNewReturnTh ty [e]
   ty' <- liftIO (replaceTyconTy tcs ty)
   mkApp (mkNewLiftETh ty) ty' [lifted]
@@ -152,7 +152,7 @@ mkNFVar vn vo e = do
   let voty = varType vo
   let vom = varMult vo
   s <- mkApp (mkNewNfTh (bindingType vnty)) voty [vne]
-  ety <- getTypeOrPanic e
+  ety <- getTypeOrPanic e -- ok
   let l = noLoc (HsPar noExtField (mkLam (noLoc vo) (Scaled vom voty) e ety))
   mtc <- getMonadTycon
   mkBind s (mkTyConApp mtc [voty]) l ety

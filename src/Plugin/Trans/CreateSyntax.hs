@@ -19,12 +19,10 @@ import GHC.Hs.Extension
 import GHC.Hs.Pat
 import GHC.Hs.Utils
 import GHC.Hs.Expr
-import GHC.Tc.Solver
 import GHC.Tc.Types
 import GHC.Tc.Types.Evidence
 import GHC.Tc.Types.Constraint
 import GHC.Tc.Utils.Monad
-import GHC.Tc.Utils.Zonk
 import GHC.Tc.Utils.Env
 import GHC.Types.Fixity
 import GHC.Types.Error
@@ -38,7 +36,6 @@ import Plugin.Trans.Type
 import Plugin.Trans.Util
 import Plugin.Trans.Var
 import Plugin.Trans.ConstraintSolver
-import Plugin.Util.MonadNoinline
 
 -- | Create the lambda functions used to lift value constructors.
 -- Newtypes have to be treated differently.
@@ -57,7 +54,7 @@ mkConLam mw c [] vs
       -- Create the lambda-bound variable.
       let arg = noLoc (HsVar noExtField (noLoc v))
       -- Get the constructor result type.
-      cetype <- funResultTy <$> getTypeOrPanic ce
+      cetype <- funResultTy <$> getTypeOrPanic ce -- ok
       -- Get the lifted, but unwrapped, constructor argument type.
       let argtype = bindingType (varType v)
       -- create the term "fmap con v"
@@ -74,7 +71,7 @@ mkConLam mw c [] vs
             (noLoc (wrap (HsConLikeOut noExtField (RealDataCon c))))
             (map (noLoc . HsVar noExtField . noLoc) $ reverse vs)
     -- Get the result type of the constructor.
-    ty <- snd . splitFunTys <$> getTypeOrPanic e
+    ty <- snd . splitFunTys <$> getTypeOrPanic e -- ok
     -- Wrap the whole term in a 'return'.
     e' <- mkApp mkNewReturnTh ty [noLoc $ HsPar noExtField e]
     mty <- mkTyConTy <$> getMonadTycon
@@ -104,7 +101,7 @@ mkBindLam (Scaled m ty) e1' = do
   let ty' = bindingType ty
   v <- noLoc <$> freshVar (Scaled m ty')
   let bdy = noLoc $ HsApp noExtField (noLoc (HsVar noExtField v)) e1'
-  resty <- getTypeOrPanic bdy
+  let (_ , _, resty) = splitFunTy (varType (unLoc v))
   return (mkLam v (Scaled m ty') bdy resty)
 
 -- | Create a '(>>=)' for the given arguments and apply them.
@@ -126,11 +123,9 @@ mkApp = flip mkAppWith []
 mkAppWith :: (Type -> TcM (LHsExpr GhcTc))
           -> [Ct] -> Type -> [LHsExpr GhcTc]
           -> TcM (LHsExpr GhcTc)
-mkAppWith con cts typ args = do
-  (e', WC wanted impls holes) <- captureConstraints (con typ)
-  let constraints = WC (unionBags wanted (listToBag cts)) impls holes
-  wrapper <- mkWpLet . EvBinds <$> simplifyTop constraints
-  zonkTopLExpr (foldl mkHsApp (mkLHsWrap wrapper e') args)
+mkAppWith con _ typ args = do
+  e' <- con typ
+  return $ foldl mkHsApp e' args
 
 -- | Create a 'return' for the given argument types.
 mkNewReturnTh :: Type -> TcM (LHsExpr GhcTc)
@@ -182,7 +177,7 @@ mkNewShareTh tcs ty
     mtc <- getMonadTycon
     stc <- getShareClassTycon
     let docImportant = "Cannot share polymorphic values."
-    (ty', _) <- liftIO $ removeNondet tcs mtc stc ty
+    (ty', _) <- liftIO $ removeNondetShareable tcs mtc stc ty
     let docSuppl = "For a variable with type" <+> ppr ty'
     msg <- mkErrDocAt sp (errDoc [docImportant] [docSuppl, errrInfo] [])
     reportError msg
@@ -193,7 +188,7 @@ mkNewShareTh tcs ty
     return (noLoc $ HsVar noExtField $ noLoc $ mkVanillaGlobal nm expType)
   | otherwise     = do
   mtycon <- getMonadTycon
-  th_expr <- liftQ [| share |]
+  th_expr <- liftQ [| shre |]
   let expType = mkVisFunTyMany ty $    -- a ->
                 mkTyConApp mtycon [ty] -- m a
   mkNewAny th_expr expType

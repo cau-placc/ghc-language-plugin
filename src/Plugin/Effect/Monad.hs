@@ -1,9 +1,9 @@
 {-# LANGUAGE TypeOperators              #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE FlexibleInstances          #-}
+{-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE UndecidableInstances       #-}
 {-# LANGUAGE TypeApplications           #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveLift                 #-}
 {-|
 Module      : Plugin.Effect.Monad
@@ -22,13 +22,12 @@ module Plugin.Effect.Monad
   , Normalform(..), modeOp, allValues, allValuesNF
   , NondetTag(..)
   , liftNondet1, liftNondet2
-  , apply1, apply2, apply2Unlifted, apply3)
+  , apply1, apply2, apply2Unlifted, apply3
+  , bind, rtrn, shre)
   where
 
 import Language.Haskell.TH.Syntax
 import Control.Monad
-import Control.Applicative
-import Data.Coerce
 
 import Plugin.Effect.CurryEffect
 import Plugin.Effect.Classes     (Sharing(..), Shareable(..), Normalform(..))
@@ -36,14 +35,39 @@ import Plugin.Effect.Tree
 import Plugin.Effect.Annotation
 
 -- | The actual monad for nondeterminism used by the plugin.
-newtype Nondet a = Nondet { unNondet :: Lazy a }
-  deriving (Functor, Applicative, Alternative, Monad, MonadPlus)
+data Nondet a = Nondet { unNondet :: Lazy a }
+  deriving Functor
+
+{-# INLINE[0] bind #-}
+bind :: Nondet a -> (a -> Nondet b) -> Nondet b
+bind (Nondet a) f = Nondet (a >>= unNondet . f)
+
+{-# INLINE[0] rtrn #-}
+rtrn :: a -> Nondet a
+rtrn a = Nondet (pureL a)
+
+{-# INLINE[0] shre #-}
+shre :: Shareable Nondet a => Nondet a -> Nondet (Nondet a)
+shre m = Nondet $ fmap Nondet $ memo (unNondet (m >>= shareArgs share))
+
+{-# RULES
+"bind/rtrn"       forall f x. bind (rtrn x) f = f x
+  #-}
+  -- "bind/rtrn'let"   forall e x. let b = e in rtrn x = rtrn (let b = e in x)
+
+
+instance Applicative Nondet where
+  pure = rtrn
+  Nondet f <*> Nondet a = Nondet (f <*> a)
+
+instance Monad Nondet where
+  (>>=) = bind
 
 instance (Normalform Nondet a1 a2, Show a2) => Show (Nondet a1) where
   show = show . allValuesNF
 
 instance Sharing Nondet where
-  share m = coerce $ memo (unNondet (m >>= shareArgs share))
+  share = shre
 
 -- | Nondeterministic failure
 failed :: Nondet a

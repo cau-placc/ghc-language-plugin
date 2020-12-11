@@ -99,7 +99,7 @@ liftMonadPlugin mdopts env = do
       addMessages msgs
       where
         flags' = gopt_unset flags Opt_DoCoreLinting
-        hsc' = hsc { hsc_dflags = flags'}
+        hsc' = hsc { hsc_dflags = flags' }
     Nothing -> return ()
 
   mapRef <- loadDefaultTyConMap
@@ -227,7 +227,7 @@ liftMonadPlugin mdopts env = do
 
               -- compile pattern matching
               prep <- bagToList <$>
-                liftBag (preprocessBinding False) (tcg_binds env3)
+                liftBag (preprocessBinding tyconsMap False) (tcg_binds env3)
               dumpWith DumpPatternMatched dopts prep
 
               -- lift instance information
@@ -255,12 +255,16 @@ liftMonadPlugin mdopts env = do
                 tcg_binds' <- liftBindings tyconsMap newInsts prep
 
                 tcg_rules' <- mapM (liftRule tyconsMap) (tcg_rules env4)
+                
+                (_, finalEvBinds, finalBinds, _, _, finalRules) <-
+                  zonkTopDecls emptyBag (listToBag tcg_binds') tcg_rules'
+                    [] []
 
                 -- create the final environment with restored plugin field
-                let finalEnv = env4 { tcg_binds      = listToBag tcg_binds'
+                let finalEnv = env4 { tcg_binds      = finalBinds
                                     , tcg_tc_plugins = tcg_tc_plugins env
-                                    , tcg_ev_binds   = emptyBag
-                                    , tcg_rules      = tcg_rules'
+                                    , tcg_ev_binds   = finalEvBinds
+                                    , tcg_rules      = finalRules
                                     }
                       `addTypecheckedBinds` [bs']
 

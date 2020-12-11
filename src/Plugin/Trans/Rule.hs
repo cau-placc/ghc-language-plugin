@@ -1,48 +1,43 @@
 module Plugin.Trans.Rule (liftRule) where
 
 import Data.Maybe
-import Control.Monad
 
 import GHC.Hs
 import GHC.Plugins
 import GHC.Tc.Types
 import GHC.Tc.Utils.Monad
-import GHC.Tc.Utils.TcType
-import GHC.Tc.Types.Origin
 import GHC.Tc.Types.Constraint
+import GHC.Tc.Solver
+import GHC.Tc.Solver.Monad
+import GHC.Data.Bag
 
 import Plugin.Trans.Expr
 import Plugin.Trans.Type
 import Plugin.Trans.Util
-import Plugin.Trans.Var
 
 liftRule :: TyConMap -> LRuleDecl GhcTc -> TcM (LRuleDecl GhcTc)
-liftRule tcs (L l (HsRule x nm act tvs tmvs lhs rhs)) = do
-  let vs = mapMaybe maybeTyvar tmvs
-
-  -- create the dictionary variables
-  stc <- getShareClassTycon
-  mty <- mkTyConTy <$> getMonadTycon
-  uss <- replicateM (length vs) getUniqueSupplyM
-  let mkShareTy ty = mkTyConApp stc [mty, ty]
-  let evsty = catMaybes $
-              zipWith ((. flip Bndr Inferred) . mkShareable mkShareTy) uss vs
-  evs <- mapM freshDictId evsty
-  lclEnv <- getLclEnv
-  let ctloc = mkGivenLoc topTcLevel UnkSkol lclEnv
-  let cts = mkGivens ctloc evs
-  let evsbndr = map (noLoc . RuleBndr noExtField . noLoc) evs
-
+liftRule tcs r@(L l (HsRule x nm act tvs tmvs lhs rhs)) = do
   tmvs' <- mapM (liftRuleBndr tcs) tmvs
-  lhs' <- liftMonadicExpr cts tcs lhs
-  rhs' <- liftMonadicExpr cts tcs rhs
+  ((lhs', rhs'), constraints)
+    <- captureConstraints ((,) <$> liftMonadicExpr [] tcs lhs
+                               <*> liftMonadicExpr [] tcs rhs)
 
-  return (L l (HsRule x nm act tvs (evsbndr ++ tmvs') lhs' rhs'))
+  (simplified, _) <- runTcS (solveWantedsAndDrop constraints >>= zonkWC)
+
+  dicts <- case simplified of
+    WC wanted impl holes
+      | isEmptyBag impl && isEmptyBag holes && allBag isWantedCt wanted
+      -> return $ mapMaybe extractEvVar $ bagToList wanted
+    _ -> panicAny "Lifting of rule lead to unexpected constraints" r
+
+  return (L l (HsRule x nm act tvs (tmvs' ++ dicts) lhs' rhs'))
   where
-    maybeTyvar :: LRuleBndr GhcTc -> Maybe Id
-    maybeTyvar (L _ (RuleBndr _ (L _ v)))
-      | isTyVar v = Just v
-    maybeTyvar _  = Nothing
+    extractEvVar :: Ct -> Maybe (LRuleBndr GhcTc)
+    extractEvVar (CQuantCan _) = Nothing
+    extractEvVar ct            = case cc_ev ct of
+      CtWanted _ (EvVarDest v) _ _
+        -> Just (noLoc (RuleBndr noExtField (noLoc v)))
+      _ -> Nothing
 
 liftRuleBndr :: TyConMap -> LRuleBndr GhcTc -> TcM (LRuleBndr GhcTc)
 liftRuleBndr tcs   (L l1 (RuleBndr    x (L l2 v) ))
