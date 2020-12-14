@@ -217,28 +217,37 @@ compileLetBind (L l (AbsBinds x tvs evs ex ev bs sig)) = do
   bs' <- listToBag <$> concatMapM compileLetBind (bagToList bs)
   return [L l (AbsBinds x tvs evs ex ev bs' sig)]
 compileLetBind (L _ (PatBind ty p grhss _)) = do
-  (b, fname) <- createOrdinaryFun
+  mtc <- getMonadTycon
+  -- we do not use ConstraintSolver.removeNondet,
+  -- as TyConMap is not available and not required
+  let ty' = everywhere (mkT (rmNondet mtc)) ty
+  (b, fname) <- createOrdinaryFun ty'
   (p', vs) <- prepareSelPat p
   let pe = noLoc (HsVar noExtField (noLoc fname))
-  bs <- mapM (mkSelFun p' pe) vs
+  bs <- mapM (mkSelFun ty' p' pe) vs
   return (b : bs)
   where
+    rmNondet mtc (TyConApp tc [inner])
+      | mtc == tc    = inner
+    rmNondet _ other = other
+
     -- create:
     -- fname = grhss
-    createOrdinaryFun = do
-      fname <- freshVar (Scaled Many ty)
+    createOrdinaryFun ty' = do
+      fname <- freshVar (Scaled Many ty')
       let ctxt = FunRhs (noLoc (varName fname)) Prefix NoSrcStrict
           alt = Match noExtField ctxt [] grhss
-          mgtc = MatchGroupTc [] ty
+          mgtc = MatchGroupTc [] ty'
           mg = MG mgtc (noLoc [noLoc alt]) Generated
       return (noLoc (FunBind WpHole (noLoc fname) mg []), fname)
     -- create:
     -- old = (\p' -> new) pe
-    mkSelFun p' pe (old, new) = do
+    mkSelFun ty' p' pe (old, new) = do
+      mtc <- getMonadTycon
       let altLam = mkSimpleAlt LambdaExpr
             (noLoc (HsVar noExtField (noLoc new)))
-              [removeOtherPatterns new p']
-          mgtcLam = MatchGroupTc [Scaled Many ty] (varType new)
+              [everywhere (mkT (rmNondet mtc)) (removeOtherPatterns new p')]
+          mgtcLam = MatchGroupTc [Scaled Many ty'] (varType new)
           mgLam = MG mgtcLam (noLoc [noLoc altLam]) Generated
       lam <- matchExpr (HsLam noExtField mgLam)
       let bdy = HsApp noExtField (noLoc (HsPar noExtField (noLoc lam))) pe
@@ -273,8 +282,8 @@ compileLetBind (L _ (PatBind ty p grhss _)) = do
         v' <- freshVar (Scaled (varMult v) (varType v))
         return (NPlusKPat x (L l2 v') lit1 lit2 se1 se2, [(v,v')])
       SigPat x p2 ty' -> first (flip (SigPat x) ty') <$> prepareSelPat p2
-      XPat (CoPat b p2 c) -> do (L _ p3, vs) <- prepareSelPat (noLoc p2)
-                                return (XPat (CoPat b p3 c), vs)
+      XPat (CoPat a p2 c) -> do (L _ p3, vs) <- prepareSelPat (noLoc p2)
+                                return (XPat (CoPat a p3 c), vs)
       p2              -> return (p2, [])
 
     prepareSelDetails (PrefixCon ps) = do
