@@ -13,6 +13,7 @@ the functional-logic programming language Curry.
 module Plugin.CurryPlugin (plugin) where
 
 import Data.List
+import Data.Syb
 import Data.IORef
 import Data.Maybe
 import Control.Exception
@@ -20,6 +21,7 @@ import Language.Haskell.TH (Extension(..))
 
 import GHC.Plugins
 import GHC.Hs.Binds
+import GHC.Hs.Expr
 import GHC.Hs.Extension
 import GHC.Types.TypeEnv
 import GHC.Tc.Types
@@ -36,6 +38,7 @@ import GHC.Unit.Module.Graph
 import GHC.HsToCore
 import GHC.Utils.Error
 import GHC.Core.InstEnv
+import GHC.Core.TyCo.Rep
 import GHC.Data.Bag
 
 import Plugin.Dump
@@ -86,6 +89,7 @@ liftMonadPlugin mdopts env = do
   dumpWith DumpOriginalInstEnv dopts (tcg_inst_env env)
   dumpWith DumpOriginalTypeEnv dopts (tcg_type_env env)
 
+  mtycon <- getMonadTycon
 
   -- remove any dummy evidence introduced by the constraint solver plugin
   let tcg_ev_binds' = filterBag (not . isDummyEv) (tcg_ev_binds env)
@@ -94,12 +98,20 @@ liftMonadPlugin mdopts env = do
   flags <- getDynFlags
   case mgLookupModule (hsc_mod_graph hsc) (tcg_mod env) of
     Just modSumm -> setDynFlags flags' $ do
-      ((w,e), _) <- liftIO $ deSugar hsc' (ms_location modSumm) env
+      ((w,e), _) <- liftIO $ deSugar hsc' (ms_location modSumm) env'
       let msgs = (mapBag addNondetWarn w, e)
       addMessages msgs
       where
         flags' = gopt_unset flags Opt_DoCoreLinting
         hsc' = hsc { hsc_dflags = flags' }
+        env' = env { tcg_binds = everywhere (mkT rmNondetVar) (tcg_binds env)}
+        rmNondetVar :: HsExpr GhcTc -> HsExpr GhcTc
+        rmNondetVar (HsVar x (L l v)) = (HsVar x (L l (setVarType v
+          (everywhere (mkT rmNondet) (varType v)))))
+        rmNondetVar e = e
+        rmNondet (TyConApp tc [inner])
+          | mtycon == tc = inner
+        rmNondet other   = other
     Nothing -> return ()
 
   mapRef <- loadDefaultTyConMap
@@ -107,7 +119,6 @@ liftMonadPlugin mdopts env = do
 
   -- lift datatypes, we need the result for the lifting of datatypes itself
   s <- getUniqueSupplyM
-  mtycon <- getMonadTycon
   stycon <- getShareClassTycon
   res <- liftIO ((mdo
     liftedTycns <- snd <$>
@@ -255,7 +266,7 @@ liftMonadPlugin mdopts env = do
                 tcg_binds' <- liftBindings tyconsMap newInsts prep
 
                 tcg_rules' <- mapM (liftRule tyconsMap) (tcg_rules env4)
-                
+
                 (_, finalEvBinds, finalBinds, _, _, finalRules) <-
                   zonkTopDecls emptyBag (listToBag tcg_binds') tcg_rules'
                     [] []
