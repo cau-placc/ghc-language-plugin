@@ -828,27 +828,30 @@ liftExplicitTuple :: [Ct] -> TyConMap -> [LHsTupArg GhcTc]
 liftExplicitTuple given tcs args b = do
   resty <- getTypeOrPanic (noLoc $ ExplicitTuple noExtField args b) -- ok
   lifted <- liftTypeTcM tcs resty
-  liftExplicitTuple' lifted [] WpHole args
+  liftExplicitTuple' (bindingType lifted) [] WpHole args
   where
     liftExplicitTuple' :: Type -> [LHsExpr GhcTc] -> HsWrapper
                        -> [LHsTupArg GhcTc] -> TcM (LHsExpr GhcTc)
     liftExplicitTuple' resty col w (L _ (Present _ e) : xs) = do
       e' <- liftMonadicExpr given tcs e
       ty <- getTypeOrPanic e >>= liftTypeTcM tcs -- ok
-      liftExplicitTuple' resty (e' : col) (WpTyApp (bindingType ty) <.> w) xs
+      let w' = WpTyApp (bindingType ty) <.> w
+      liftExplicitTuple' resty (e' : col) w' xs
     liftExplicitTuple' resty col w (L _ (Missing (Scaled m ty)) : xs) = do
       ty' <- liftTypeTcM tcs ty
       v <- noLoc <$> freshVar (Scaled m ty')
       let arg = noLoc (HsVar noExtField v)
       let w' = WpTyApp (bindingType ty') <.> w
-      inner <- liftExplicitTuple' resty (arg:col) w' xs
+      let (_, _, resty') = splitFunTy resty
+      inner <- liftExplicitTuple' (bindingType resty') (arg:col) w' xs
       let lam = mkLam v (Scaled m ty') inner resty
-      mkApp mkNewReturnTh (mkVisFunTyMany ty' resty) [lam]
+      mkApp mkNewReturnTh resty [lam]
     liftExplicitTuple' resty col w [] = do
       let exprArgs = reverse col
       dc <- liftIO (getLiftedCon (tupleDataCon b (length exprArgs)) tcs)
       let ce = mkHsWrap w (HsConLikeOut noExtField (RealDataCon dc))
-      mkApp mkNewReturnTh resty [foldl mkHsApp (noLoc ce) exprArgs]
+      mkApp mkNewReturnTh resty
+        [foldl mkHsApp (noLoc ce) exprArgs]
 
 -- This is for RecordConstructors only.
 -- We are interested in lifting the (potential wrapper)
