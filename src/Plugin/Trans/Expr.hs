@@ -134,7 +134,10 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
     then return e
     else mapM (liftEvidence given' tcs)
               (filter isExportedEv (concatMap flattenEv e))
-  return ([AbsBinds a b allEvs d' e' f' g], vs')
+  vs'' <- mapM (\(v1,v2) -> (,)
+                    <$> (setVarType v1 <$> liftTypeTcM tcs (varType v1))
+                    <*> (setVarType v2 <$> liftTypeTcM tcs (varType v2))) vs'
+  return ([AbsBinds a b allEvs d' e' f' g], vs'')
   where
     replaceEv ev = setVarType ev <$> replaceTyconTy tcs (varType ev)
 
@@ -727,8 +730,8 @@ liftVarWithWrapper given tcs w v
   w' <- liftWrapperTcM True tcs w
   stc <- getShareClassTycon
   mtc <- getMonadTycon
-  ty' <- liftIO (removeNondetShareable tcs mtc stc (varType v)) >>=
-         liftTypeTcM tcs . fst
+  (unlifted, _) <- liftIO (removeNondetShareable tcs mtc stc (varType v))
+  ty' <- liftTypeTcM tcs unlifted
 
   let (apps, absts) = collectTyApps w'
   let abstsWrap = foldr ((<.>) . WpTyLam) WpHole absts
@@ -738,7 +741,7 @@ liftVarWithWrapper given tcs w v
   -- 2. If it is a default method,
   --    we have to set the correct type and
   --    switch to the correct default method.
-  --    For an imported default method,
+  --    For a non-builtin default method,
   --    we have to make some adjustments to the lifting.
   -- 3. If it is a LclId, just use the lifted type.
   -- 4. If it is one of a specific set of methods from the Prelude
