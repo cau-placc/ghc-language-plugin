@@ -146,11 +146,11 @@ asTypeOf x _ = x
 -- List operations
 ------------------------------------------
 
+{-# INLINE map #-}
 map :: (a -> b) -> [a] -> [b]
-map = fmap
+map f xs = build (\c n -> foldr (\x ys -> c (f x) ys) n xs)
 
 infixr 5 ++
-
 (++) :: [a] -> [a] -> [a]
 []     ++ ys = ys
 (x:xs) ++ ys = x : xs ++ ys
@@ -184,9 +184,26 @@ infixl 9 !!
     then x
     else xs !! (n - 1)
 
+{-# INLINE[0] foldr #-}
 foldr :: (a -> b -> b) -> b -> [a] -> b
 foldr _ b []     = b
 foldr f b (x:xs) = x `f` foldr f b xs
+
+{-# INLINE[0] build #-}
+build :: ((a -> [a] -> [a]) -> [a] -> [a]) -> [a]
+build g = g (:) []
+
+{-# INLINE[0] augment #-}
+augment :: ((a -> [a] -> [a]) -> [a] -> [a]) -> [a] -> [a]
+augment g xs = g (:) xs
+
+{-# RULES
+"fold/build"    forall k z g.
+                foldr k z (build g) = g k z
+
+"foldr/augment" forall k z xs g.
+                foldr k z (augment g xs) = g k (foldr k z xs)
+ #-}
 
 foldr1 :: (a -> a -> a) -> [a] -> a
 foldr1 f (x:xs) = foldr f x xs
