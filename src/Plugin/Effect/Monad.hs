@@ -23,7 +23,7 @@ module Plugin.Effect.Monad
   , NondetTag(..)
   , liftNondet1, liftNondet2
   , apply1, apply2, apply2Unlifted, apply3
-  , bind, rtrn, shre)
+  , bind, rtrn, fmp, shre)
   where
 
 import Language.Haskell.TH.Syntax
@@ -45,6 +45,10 @@ bind (Nondet a) f = Nondet (a >>= unNondet . f)
 {-# INLINE[0] rtrn #-}
 rtrn :: a -> Nondet a
 rtrn a = Nondet (pureL a)
+
+{-# INLINE[0] fmp #-}
+fmp :: (a -> b) -> Nondet a -> Nondet b
+fmp f (Nondet a) = Nondet (fmap f a)
 
 {-# INLINE[0] shre #-}
 shre :: Shareable Nondet a => Nondet a -> Nondet (Nondet a)
