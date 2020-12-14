@@ -493,12 +493,13 @@ bindVarAlt _ (_,m) = return m
 mkSeq :: Var -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
 mkSeq v e = do
   ty <- getTypeOrPanic e -- ok
-  return (noLoc (HsApp noExtField
-    (noLoc (mkHsWrap (WpTyApp liftedTypeKind <.>
+  return (noLoc (HsApp noExtField (noLoc (HsApp noExtField
+    (noLoc (mkHsWrap (WpTyApp ty <.>
                       WpTyApp (varType v) <.>
-                      WpTyApp ty)
+                      WpTyApp liftedRepTy)
                      (HsVar noExtField (noLoc seqId))))
     (noLoc (HsVar noExtField (noLoc v)))))
+    e))
 
 mkOtherMatch :: Int -> [Var] -> Type -> LHsExpr GhcTc
              -> [(LPat GhcTc, LMatch GhcTc (LHsExpr GhcTc))]
