@@ -494,7 +494,7 @@ mkSeq :: Var -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
 mkSeq v e = do
   ty <- getTypeOrPanic e -- ok
   return (noLoc (HsApp noExtField
-    (noLoc (mkHsWrap (WpTyApp liftedTypeKind <.> 
+    (noLoc (mkHsWrap (WpTyApp liftedTypeKind <.>
                       WpTyApp (varType v) <.>
                       WpTyApp ty)
                      (HsVar noExtField (noLoc seqId))))
@@ -951,7 +951,11 @@ mkErrorWith ty s = do
   hscEnv <- getTopEnv
   Found _ mdl <- liftIO $
     findImportedModule hscEnv (mkModuleName builtInModule) Nothing
-  errId <- tcLookupId =<< lookupOrig mdl ( mkVarOcc "pE" )
+  tv <- freshSimpleTVar
+  let ty' = mkForAllTy tv Inferred
+              (mkVisFunTyMany (mkListTy charTy) (mkTyVarTy tv))
+  errId <- flip setVarType ty' <$>
+            (tcLookupId =<< lookupOrig mdl ( mkVarOcc "pE" ))
   return (noLoc (HsApp noExtField
     (noLoc (mkHsWrap (WpTyApp ty) (HsVar noExtField (noLoc errId))))
     (mkErrorLit s)))

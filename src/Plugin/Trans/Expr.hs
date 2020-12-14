@@ -54,6 +54,7 @@ import Plugin.Trans.FunWiredIn
 import Plugin.Trans.CreateSyntax
 import Plugin.Trans.DictInstFun
 import Plugin.Trans.Enum
+import Plugin.Trans.ConstraintSolver
 
 -- | Transform the given binding with a monadic lifting to incorporate
 -- our nondeterminism as an effect.
@@ -726,8 +727,8 @@ liftVarWithWrapper given tcs w v
   w' <- liftWrapperTcM True tcs w
   stc <- getShareClassTycon
   mtc <- getMonadTycon
-  us <- getUniqueSupplyM
-  ty' <- liftIO (liftTypeIfRequired stc mtc us tcs (varType v))
+  ty' <- liftIO (removeNondetShareable tcs mtc stc (varType v)) >>=
+         liftTypeTcM tcs . fst
 
   let (apps, absts) = collectTyApps w'
   let abstsWrap = foldr ((<.>) . WpTyLam) WpHole absts
@@ -742,7 +743,7 @@ liftVarWithWrapper given tcs w v
   -- 3. If it is a LclId, just use the lifted type.
   -- 4. If it is one of a specific set of methods from the Prelude
   --    (due to deriving), we have to switch to the correct method.
-  --    This falls back to jus returning the current identifier,
+  --    This falls back to just returning the current identifier,
   --    If no replacement function is found.
   let mv' | ClassOpId cls <- idDetails v = do
             cls' <- liftIO (getLiftedClass cls tcs)
@@ -770,7 +771,11 @@ liftVarWithWrapper given tcs w v
                 lookupDefaultReplacement tc tc' (varName v)
           | isLocalId v =
             return (setVarType v ty')
-          | otherwise = lookupWiredInFunc v
+          | otherwise = do
+            mbv <- lookupWiredInFunc v
+            case mbv of
+              Nothing -> return (setVarType v ty')
+              Just v' -> return v'
   v' <- mv'
 
   let monotype = instantiateWith apps (varType v')

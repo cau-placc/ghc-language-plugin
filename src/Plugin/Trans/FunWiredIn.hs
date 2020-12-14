@@ -55,12 +55,12 @@ lookupDefaultReplacement tc tc' oldnm = do
 
 -- | look up the replacement for a wired-in function or return the original
 -- if no replacement is known or required.
-lookupWiredInFunc :: Var -> TcM Var
+lookupWiredInFunc :: Var -> TcM (Maybe Var)
 lookupWiredInFunc v = do
   wired <- mapM lookupRdrBase wiredIn
   case find (== varName v) wired of
-    Nothing -> return v
-    Just n -> do
+    Nothing -> return Nothing
+    Just n -> Just <$> do
       hscEnv <- getTopEnv
       Found _ mdl <- liftIO $
         findImportedModule hscEnv (mkModuleName builtInModule) Nothing
