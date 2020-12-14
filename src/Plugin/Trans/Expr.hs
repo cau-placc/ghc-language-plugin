@@ -763,12 +763,9 @@ liftVarWithWrapper given tcs w v
             let tc = tyConAppTyCon (funArgTy (snd (splitForAllTys (varType v))))
             tc' <- liftIO (lookupTyConMap GetNew tcs tc)
             if tc == tc' -- if they are equal, this is NOT a built-in class.
-              then if isLocalId v
-                then
-                  let Just cls = tyConClass_maybe tc
-                  in setVarType v <$> liftDefaultType tcs cls (varType v)
-                else -- If imported, v is almost typed correctly.
-                  setVarType v <$> liftIO (replaceTyconTy tcs (varType v))
+              then
+                let Just cls = tyConClass_maybe tc
+                in setVarType v <$> liftDefaultType tcs cls unlifted
               -- Otherwise, look up the replacement of the default method.
               else
                 lookupDefaultReplacement tc tc' (varName v)
