@@ -74,7 +74,7 @@ instance Sharing Nondet where
   share = shre
 
 -- | Nondeterministic failure
-failed :: Nondet a
+failed :: Shareable Nondet a => Nondet a
 failed = Nondet mzero
 
 infixr 0 ?
