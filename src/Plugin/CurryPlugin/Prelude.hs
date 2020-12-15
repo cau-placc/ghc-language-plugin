@@ -151,15 +151,13 @@ map :: (a -> b) -> [a] -> [b]
 map f xs = build (\c n -> foldr (\x ys -> c (f x) ys) n xs)
 
 infixr 5 ++
+{-# INLINE (++) #-}
 (++) :: [a] -> [a] -> [a]
-[]     ++ ys = ys
-(x:xs) ++ ys = x : xs ++ ys
+xs ++ ys = build (\c n -> foldr c (foldr c n ys) xs)
 
+{-# INLINE filter #-}
 filter :: (a -> Bool) -> [a] -> [a]
-filter _ []     = []
-filter p (x:xs)
-  | p x         = x : filter p xs
-  | otherwise   = filter p xs
+filter p xs = build (\c n -> foldr (\a b -> if p a then c a b else b) n xs)
 
 head :: [a] -> a
 head (x:_) = x
@@ -205,13 +203,15 @@ augment g xs = g (:) xs
                 foldr k z (augment g xs) = g k (foldr k z xs)
  #-}
 
+{-# INLINE foldr1 #-}
 foldr1 :: (a -> a -> a) -> [a] -> a
 foldr1 f (x:xs) = foldr f x xs
 
+{-# INLINE foldl #-}
 foldl :: (b -> a -> b) -> b -> [a] -> b
-foldl _ b []     = b
-foldl f b (x:xs) = foldl f b xs `f` x
+foldl f z xs = foldr (\b g a -> g (f a b)) id xs z
 
+{-# INLINE foldl1 #-}
 foldl1 :: (a -> a -> a) -> [a] -> a
 foldl1 f (x:xs) = foldl f x xs
 
@@ -219,6 +219,7 @@ null :: [a] -> Bool
 null [] = True
 null _  = False
 
+{-# INLINE length #-}
 length :: [a] -> Int
 length = foldl (\c _ -> c + 1) 0
 
@@ -228,20 +229,25 @@ reverse = reverse' []
     reverse' acc []     = acc
     reverse' acc (x:xs) = reverse' (x:acc) xs
 
+{-# INLINE and #-}
 and :: [Bool] -> Bool
 and = foldr (&&) True
 
+{-# INLINE or #-}
 or :: [Bool] -> Bool
 or = foldr (||) False
 
+{-# INLINE any #-}
 any :: (a -> Bool) -> [a] -> Bool
 any p = foldr (\a b -> p a || b) False
 
+{-# INLINE all #-}
 all :: (a -> Bool) -> [a] -> Bool
 all p = foldr (\a b -> p a && b) True
 
+{-# INLINE concat #-}
 concat :: [[a]] -> [a]
-concat = foldr (++) []
+concat xs = build (\c n -> foldr (\x y -> foldr c y x) n xs)
 
 concatMap :: (a -> [b]) -> [a] -> [b]
 concatMap f = foldr (\a b -> f a ++ b) []
@@ -251,8 +257,9 @@ iterate f x = x : iterate f (f x)
 
 -- a recursive definition is better than a cyclic one, as long as sharing
 -- in cyclic structures is unsupported
+{-# INLINE repeat #-}
 repeat :: a -> [a]
-repeat x = x : repeat x
+repeat x = build (\c _ -> c x (repeat x))
 
 -- same as in repeat
 cycle :: [a] -> [a]
@@ -264,10 +271,11 @@ elem a = any (a==)
 notElem :: Eq a => a -> [a] -> Bool
 notElem a = all (a/=)
 
+{-# INLINE zip #-}
 zip :: [a] -> [b] -> [(a, b)]
-zip []     _      = []
-zip _      []     = []
-zip (a:as) (b:bs) = (a, b) : zip as bs
+zip xs' ys' = build (\c n -> let zip' (x:xs) (y:ys) = c (x, y) (zip' xs ys)
+                                 zip' _      _      = n
+                             in  zip' xs' ys')
 
 zipWith :: (a -> b -> c) -> [a] -> [b] -> [c]
 zipWith _ []     _      = []
