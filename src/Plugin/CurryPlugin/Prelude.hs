@@ -1,6 +1,8 @@
 {-# LANGUAGE NoImplicitPrelude              #-}
 {-# OPTIONS_GHC -fplugin Plugin.CurryPlugin #-}
 {-# OPTIONS_GHC -Wno-incomplete-patterns    #-}
+{-# LANGUAGE RankNTypes                     #-}
+{-# LANGUAGE ScopedTypeVariables            #-}
 {-|
 Module      : Plugin.CurryPlugin.ForeignExport
 Description : Prelude for the Curry-Plugin
@@ -12,7 +14,16 @@ Most of these definitions are from Haskell's default Prelude and not from me.
 -}
 module Plugin.CurryPlugin.Prelude
  ( module Plugin.CurryPlugin.ForeignExport
- , module Plugin.CurryPlugin.Prelude
+ , (&&), (||), not, otherwise
+ , Maybe(..), maybe
+ , Either(..)
+ , fst, snd, curry, uncurry
+ , subtract
+ , id, const, (.), flip, ($), until, asTypeOf
+ , map, (++), filter, head, last, tail, init
+ , (!!), foldr, foldr1, foldl, foldl1, null, length
+ , reverse, and, or, any, all, concat, concatMap
+ , iterate, repeat, cycle, elem, notElem, zip, zipWith, unzip
  ) where
 
 import Plugin.CurryPlugin.ForeignExport
@@ -148,16 +159,24 @@ asTypeOf x _ = x
 
 {-# INLINE map #-}
 map :: (a -> b) -> [a] -> [b]
-map f xs = build (\c n -> foldr (\x ys -> c (f x) ys) n xs)
+map f xs = build map'
+  where
+    map' c n = foldr (\x ys -> c (f x) ys) n xs
 
 infixr 5 ++
 {-# INLINE (++) #-}
 (++) :: [a] -> [a] -> [a]
-xs ++ ys = build (\c n -> foldr c (foldr c n ys) xs)
+xs ++ ys = build append'
+  where
+    {-# INLINE append' #-}
+    append' c n = foldr c (foldr c n ys) xs
 
 {-# INLINE filter #-}
 filter :: (a -> Bool) -> [a] -> [a]
-filter p xs = build (\c n -> foldr (\a b -> if p a then c a b else b) n xs)
+filter p xs = build filter'
+  where
+    {-# INLINE filter' #-}
+    filter' c n = foldr (\a b -> if p a then c a b else b) n xs
 
 head :: [a] -> a
 head (x:_) = x
@@ -188,18 +207,18 @@ foldr _ b []     = b
 foldr f b (x:xs) = x `f` foldr f b xs
 
 {-# INLINE[0] build #-}
-build :: ((a -> [a] -> [a]) -> [a] -> [a]) -> [a]
+build :: forall a. (forall b. (a -> b -> b) -> b -> b) -> [a]
 build g = g (:) []
 
 {-# INLINE[0] augment #-}
-augment :: ((a -> [a] -> [a]) -> [a] -> [a]) -> [a] -> [a]
+augment :: forall a. (forall b. (a -> b -> b) -> b -> b) -> [a] -> [a]
 augment g xs = g (:) xs
 
 {-# RULES
-"fold/build"    forall k z g.
+"fold/build"    forall k z (g :: forall b. (a -> b -> b) -> b -> b).
                 foldr k z (build g) = g k z
 
-"foldr/augment" forall k z xs g.
+"foldr/augment" forall k z xs (g :: forall b. (a -> b -> b) -> b -> b).
                 foldr k z (augment g xs) = g k (foldr k z xs)
  #-}
 
@@ -247,7 +266,10 @@ all p = foldr (\a b -> p a && b) True
 
 {-# INLINE concat #-}
 concat :: [[a]] -> [a]
-concat xs = build (\c n -> foldr (\x y -> foldr c y x) n xs)
+concat xs = build concat'
+  where
+    {-# INLINE concat' #-}
+    concat' c n = foldr (\x y -> foldr c y x) n xs
 
 concatMap :: (a -> [b]) -> [a] -> [b]
 concatMap f = foldr (\a b -> f a ++ b) []
@@ -258,8 +280,14 @@ iterate f x = x : iterate f (f x)
 -- a recursive definition is better than a cyclic one, as long as sharing
 -- in cyclic structures is unsupported
 {-# INLINE repeat #-}
-repeat :: a -> [a]
-repeat x = build (\c _ -> c x (repeat x))
+repeat :: forall a. a -> [a]
+repeat x = build repeat'
+  where
+    {-# INLINE repeat' #-}
+    repeat' :: (a -> b -> b) -> b -> b
+    repeat' c _ =
+      let repeat'' x' = c x' (repeat'' x)
+      in  repeat'' x
 
 -- same as in repeat
 cycle :: [a] -> [a]
@@ -272,10 +300,15 @@ notElem :: Eq a => a -> [a] -> Bool
 notElem a = all (a/=)
 
 {-# INLINE zip #-}
-zip :: [a] -> [b] -> [(a, b)]
-zip xs' ys' = build (\c n -> let zip' (x:xs) (y:ys) = c (x, y) (zip' xs ys)
-                                 zip' _      _      = n
-                             in  zip' xs' ys')
+zip :: forall a b. [a] -> [b] -> [(a, b)]
+zip xs' ys' = build zip'
+  where
+    {-# INLINE zip' #-}
+    zip' :: ((a, b) -> c -> c) -> c -> c
+    zip' c n =
+      let zip'' (x:xs) (y:ys) = c (x, y) (zip'' xs ys)
+          zip'' _      _      = n
+      in  zip'' xs' ys'
 
 zipWith :: (a -> b -> c) -> [a] -> [b] -> [c]
 zipWith _ []     _      = []
