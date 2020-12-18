@@ -85,12 +85,23 @@ liftMonadicBinding _ _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
   ty <- liftTypeTcM tcs (varType name)
   let wrapLike = createWrapperLike ty tvs allEvs
 
-  (eqs', WC simp impl holes) <- captureConstraints $ if isDerivedEnum eqs
+  (eqs', con) <- captureConstraints $ if isDerivedEnum eqs
     then liftDerivedEnumEquation tcs eqs
     else liftMonadicEquation given' tcs eqs
+  lvl <- getTcLevel
+  env <- getLclEnv
+  u <- getUniqueM
+  ref1 <- newTcRef emptyEvBindMap
+  ref2 <- newTcRef emptyVarSet
+  let bindsVar = EvBindsVar u ref1 ref2
 
-  let constraints = WC (listToBag given' `unionBags` simp) impl holes
-  wx <- mkWpLet . EvBinds <$> simplifyTop constraints
+  let impls = mkImplications given' tvs lvl env bindsVar con
+  let constraints = WC (listToBag given') impls emptyBag
+  wx' <- mkWpLet . EvBinds <$> simplifyTop constraints
+  zEnv <- emptyZonkEnv
+  binds' <- snd <$> zonkTcEvBinds zEnv (TcEvBinds bindsVar)
+  let wx = wx' <.> mkWpLet binds'
+
   let fullwrap = (wrapLike <.> wx)
   ticks' <- mapM (liftTick tcs) ticks
   let name' = setVarType name ty

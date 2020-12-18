@@ -11,6 +11,7 @@ This plugin is disabled automatically during lifting.
 -}
 module Plugin.Trans.ConstraintSolver
   ( tcPluginSolver, removeNondetShareable, removeNondet, solveShareAnyPlugin
+  , mkImplications
   ) where
 
 import Data.Maybe
@@ -26,8 +27,10 @@ import GHC.Tc.Plugin
 import GHC.Tc.Types.Origin
 import GHC.Tc.Types.Constraint
 import GHC.Tc.Types.Evidence
+import GHC.Tc.Utils.TcType
 import GHC.Core.Class
 import GHC.Core.TyCo.Rep
+import GHC.Data.Bag
 
 import Plugin.Trans.Type
 import Plugin.Trans.Var
@@ -264,3 +267,21 @@ newDummyEvId v = unsafeTcPluginTcM $ do
   u <- getUniqueM
   let name = mkSystemName u (mkVarOcc "#dummy_remove")
   return $ mkLocalVar (DFunId True) name Many (varType v) vanillaIdInfo
+
+mkImplications :: [Ct] -> [TcTyVar] -> TcLevel -> TcLclEnv -> EvBindsVar
+               -> WantedConstraints -> Bag Implication
+mkImplications given tvs lvl env bindsVar (WC simpl impl holes) =
+  listToBag $ map mkImplication (simplSingles ++ implSingles ++ holesSingles)
+  where
+    simplSingles = bagToList $
+      mapBag (\e -> WC (listToBag [e]) emptyBag emptyBag) simpl
+    implSingles  = bagToList $
+      mapBag (\e -> WC emptyBag (listToBag [e]) emptyBag) impl
+    holesSingles =
+      bagToList $ mapBag (\e -> WC emptyBag emptyBag (listToBag [e])) holes
+
+    givenVars = map (ctEvEvId . cc_ev) $ filter isGivenCt given
+
+    mkImplication c =
+      Implic lvl tvs UnkSkol givenVars False False env c bindsVar emptyVarSet
+                emptyVarSet IC_Unsolved
