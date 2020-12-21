@@ -29,6 +29,7 @@ import GHC.Tc.Solver
 import GHC.Tc.Types.Evidence
 import GHC.Tc.TyCl.Instance
 import GHC.Tc.Deriv
+import GHC.Tc.Instance.Family
 import GHC.Tc.Gen.Bind
 import GHC.Tc.Utils.Monad
 import GHC.Tc.Utils.Env
@@ -78,7 +79,7 @@ plugin = defaultPlugin
 -- | This type checker plugin implements the lifting of declarations
 -- for the Curry plugin.
 liftMonadPlugin :: Maybe DumpOpts -> TcGblEnv -> TcM TcGblEnv
-liftMonadPlugin mdopts env = do
+liftMonadPlugin mdopts env = setGblEnv env $ do
   dopts <- case mdopts of
     Just xs -> return xs
     Nothing -> addErrTc "Error! Unrecognized plugin option" >>
@@ -120,9 +121,10 @@ liftMonadPlugin mdopts env = do
   -- lift datatypes, we need the result for the lifting of datatypes itself
   s <- getUniqueSupplyM
   stycon <- getShareClassTycon
+  instEnvs <- tcGetFamInstEnvs
   res <- liftIO ((mdo
     liftedTycns <- snd <$>
-      mapAccumM (\s' t -> liftTycon flags stycon mtycon s' tnsM tyconsMap t)
+      mapAccumM (\s' t -> liftTycon flags instEnvs stycon mtycon s' tnsM tyconsMap t)
         s (tcg_tcs env)
     let tycns = mapMaybe (\(a,b) -> fmap (a,) b) liftedTycns
     let tnsM = listToUFM tycns

@@ -40,7 +40,7 @@ import Plugin.Trans.ConstraintSolver
 -- | Create the lambda functions used to lift value constructors.
 -- Newtypes have to be treated differently.
 -- Look at their lifting for details.
-mkConLam :: Maybe HsWrapper -> DataCon -> [Scaled Type] -> [Id]
+mkConLam :: Maybe HsWrapper -> DataCon -> [(Scaled Type, HsImplBang)] -> [Id]
      -> TcM (LHsExpr GhcTc, Type)
 -- list of types is empty -> apply the collected variables.
 mkConLam mw c [] vs
@@ -77,7 +77,7 @@ mkConLam mw c [] vs
     mty <- mkTyConTy <$> getMonadTycon
     return (e', mkAppTy mty ty)
 -- Create lambdas for the remaining types.
-mkConLam w c (Scaled _ ty : tys) vs = do
+mkConLam w c ((Scaled _ ty, strictness) : tys) vs = do
   mtc <- getMonadTycon
   -- Despite the argument being unlifted for newtypes, we want to create
   -- a lifted function to replace the constructor.
@@ -87,13 +87,19 @@ mkConLam w c (Scaled _ ty : tys) vs = do
   v <- freshVar (Scaled Many ty')
   -- Create the inner part of the term with the remaining type arguments.
   (e, resty) <- mkConLam w c tys (v:vs)
+  -- Add a seq if C is strict in this arg
+  e' <- case strictness of
+    HsLazy -> return e
+    -- | strict or unpacked
+    _      -> mkApp (mkNewSeqValueTh (bindingType (varType v))) (bindingType resty)
+                [noLoc (HsVar noExtField (noLoc v)), e]
   -- Make the lambda for this variable
-  let e' = mkLam (noLoc v) (Scaled Many ty') e resty
   let lamty = mkVisFunTyMany ty' resty
+  let e'' = mkLam (noLoc v) (Scaled Many ty') e' resty
   -- Wrap the whole term in a 'return'.
-  e'' <- mkApp mkNewReturnTh lamty [noLoc $ HsPar noExtField e']
+  e''' <- mkApp mkNewReturnTh lamty [noLoc $ HsPar noExtField e'']
   let mty = mkTyConTy mtc
-  return (e'', mkAppTy mty lamty)
+  return (e''', mkAppTy mty lamty)
 
 -- | Create the lambda to be used after '(>>=)'.
 mkBindLam :: Scaled Type -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
@@ -149,11 +155,22 @@ mkNewBindTh etype btype = do
                   resty                                     -- m b
   mkNewAny th_expr expType
 
+-- | Make a seq for ordinary values (The "Prelude.seq")
 mkNewSeqTh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewSeqTh atype btype = do
   th_expr <- liftQ [| seq |]
   let expType = mkVisFunTyMany atype $     -- a ->
                 mkVisFunTyMany btype btype -- b -> b
+  mkNewAny th_expr expType
+
+-- | Make a seq for lifted values.
+mkNewSeqValueTh :: Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewSeqValueTh atype btype = do
+  mtc <- getMonadTycon
+  th_expr <- liftQ [| seqValue |]
+  let expType = mkVisFunTyMany (mkTyConApp mtc [atype]) $ -- m a ->
+                mkVisFunTyMany (mkTyConApp mtc [btype])   -- m b ->
+                (mkTyConApp mtc [btype])                  -- m b
   mkNewAny th_expr expType
 
 -- | Create a 'fmap' for the given argument types.

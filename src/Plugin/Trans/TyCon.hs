@@ -35,6 +35,7 @@ import Plugin.Trans.Util
 -- Note that this is part of a fixed-point computation, where the
 -- 'UniqFM' in the fourth parameter depends on the output of the computation.
 liftTycon :: DynFlags            -- ^ Compiler flags
+          -> FamInstEnvs         -- ^ Family Instance Environments, both home and external
           -> TyCon               -- ^ 'Shareable' type constructor
           -> TyCon               -- ^ 'Monad' type constructor
           -> UniqSupply          -- ^ Fresh supply of unique keys
@@ -44,7 +45,7 @@ liftTycon :: DynFlags            -- ^ Compiler flags
           -> IO (UniqSupply, (TyCon, Maybe TyCon))
           -- ^ Next fresh unique supply, the original type constructor
           -- and maybe the lifted type constructor
-liftTycon dynFlags stycon mtycon supply tcs tcsM tc
+liftTycon dynFlags instEnvs stycon mtycon supply tcs tcsM tc
   | isVanillaAlgTyCon tc || isClassTyCon tc = mdo
     -- The tycon definition is cyclic, so we use this let-construction.
     let u = uniqFromSupply supply
@@ -52,7 +53,7 @@ liftTycon dynFlags stycon mtycon supply tcs tcsM tc
         isCls = isJust (tyConClass_maybe tc)
     -- Lift the rhs of the underlying datatype definition.
     -- For classes, this lifts the implicit datatype for its dictionary.
-    (us2, rhs) <- liftAlgRhs isCls stycon mtycon tcs tcsM tycon other
+    (us2, rhs) <- liftAlgRhs isCls dynFlags instEnvs stycon mtycon tcs tcsM tycon other
       (algTyConRhs tc)
     -- Potentially lift any class information
     flav <- case (tyConRepName_maybe tc, tyConClass_maybe tc) of
@@ -112,30 +113,32 @@ liftTycon dynFlags stycon mtycon supply tcs tcsM tc
 -- 'UniqFM' in the fourth parameter and the
 -- 'TyCon' in the sixth parameter depend on the output of the computation.
 liftAlgRhs :: Bool                -- ^ Is it a class definition or not
+           -> DynFlags            -- ^ Compiler flags
+           -> FamInstEnvs         -- ^ Family Instance Environments, both home and external
            -> TyCon               -- ^ 'Shareable' type constructor
            -> TyCon               -- ^ 'Monad' type constructor
-           -> UniqFM TyCon TyCon -- ^ Map of old TyCon's from this module to lifted ones
+           -> UniqFM TyCon TyCon  -- ^ Map of old TyCon's from this module to lifted ones
            -> TyConMap            -- ^ Map of imported old TyCon's to lifted ones
            -> TyCon               -- ^ Lifted TyCon of this rhs
            -> UniqSupply          -- ^ Fresh supply of unique keys
            -> AlgTyConRhs         -- ^ Rhs to be lifted
            -> IO (UniqSupply, AlgTyConRhs)
           -- ^ Next fresh unique key supply and lifted rhs
-liftAlgRhs isClass stycon mtycon tcs tcsM tycon us
+liftAlgRhs isClass dflags instEnvs stycon mtycon tcs tcsM tycon us
   -- Just lift all constructors of a data decl.
   (DataTyCon cns size ne) = do
     let (u:uss) = listSplitUniqSupply us
     cns' <- zipWithM
-      (liftConstr False isClass stycon mtycon tcs tcsM tycon) uss cns
+      (liftConstr False isClass dflags instEnvs stycon mtycon tcs tcsM tycon) uss cns
     return (u, DataTyCon cns' size ne)
-liftAlgRhs isClass stycon mtycon tcs tcsM tycon us
+liftAlgRhs isClass dflags instEnvs stycon mtycon tcs tcsM tycon us
   -- Depending on the origin of this newtype declaration (class or not),
   -- Perform a full lifting or just and inner lifting.
   (NewTyCon dc rhs _ co lev) = do
     let (u1, tmp1) = splitUniqSupply us
         (u2, tmp2) = splitUniqSupply tmp1
         (u3, u4  ) = splitUniqSupply tmp2
-    dc' <- liftConstr (not isClass) isClass stycon mtycon tcs tcsM tycon u1 dc
+    dc' <- liftConstr (not isClass) isClass dflags instEnvs stycon mtycon tcs tcsM tycon u1 dc
     rhs' <- replaceTyconTyPure tcs <$>
       if isClass
         then liftType    stycon (mkTyConTy mtycon) u2 tcsM rhs
@@ -153,7 +156,7 @@ liftAlgRhs isClass stycon mtycon tcs tcsM tycon us
                                       (reverse (tyConRoles tycon)) rhs'
     let co' = mkNewTypeCoAxiom axNameNew tycon etavs etaroles etarhs
     return (u4, NewTyCon dc' rhs' (etavs, etarhs) co' lev)
-liftAlgRhs _ _ _ _ _ _ u c = return (u, c)
+liftAlgRhs _ _ _ _ _ _ _ _ u c = return (u, c)
 
 -- | Eta-reduce type variables of a newtype declaration to generate a
 -- more siple newtype coercion.

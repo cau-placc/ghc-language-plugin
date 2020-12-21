@@ -22,6 +22,7 @@ import GHC.Plugins
 import GHC.Types.Id.Make
 import GHC.Core.TyCo.Rep
 import GHC.Core.PatSyn
+import GHC.Core.FamInstEnv
 
 import Plugin.Trans.Type
 import Plugin.Trans.Var
@@ -54,20 +55,23 @@ instance Exception RecordLiftingException
 -- 'TyCon' in the seventh parameter depend on the output of the computation.
 liftConstr :: Bool                -- ^ True iff the type constructor stems from a newtype declaration
            -> Bool                -- ^ True iff the type constructor should not be renamed
+           -> DynFlags            -- ^ Compiler flags
+           -> FamInstEnvs         -- ^ Family Instance Environments, both home and external
            -> TyCon               -- ^ 'Shareable' type constructor
            -> TyCon               -- ^ 'Nondet' type constructor
-           -> UniqFM TyCon TyCon -- ^ Map of old TyCon's from this module to lifted ones
+           -> UniqFM TyCon TyCon  -- ^ Map of old TyCon's from this module to lifted ones
            -> TyConMap            -- ^ Map of imported old TyCon's to lifted ones
            -> TyCon               -- ^ Lifted declaration type constructor
            -> UniqSupply          -- ^ Supply of fresh unique keys
            -> DataCon             -- ^ Constructor to be lifted
            -> IO DataCon          -- ^ Lifted constructor
-liftConstr normalNewty noRename stycon mtycon tcs tcsM tycon s cn = do
+liftConstr normalNewty noRename dflags instEnvs stycon mtycon tcs tcsM tycon s cn = do
 
   -- Create all required unique keys.
   let (s1, tmp1) = splitUniqSupply s
       (s2, tmp2) = splitUniqSupply tmp1
-      (s3, s4  ) = splitUniqSupply tmp2
+      (s3, tmp3) = splitUniqSupply tmp2
+      (s4, s5  ) = splitUniqSupply tmp3
       ss = listSplitUniqSupply s4
 
   -- Lift all constructor arguments and update any type constructors.
@@ -89,13 +93,21 @@ liftConstr normalNewty noRename stycon mtycon tcs tcsM tycon s cn = do
   -- Update the type constructor of the constructor result.
   resty <- liftIO (replaceCon (dataConOrigResTy cn))
 
-  -- Create the new constructor.
-  let dc = mkDataCon
+  let rep = case dataConWrapId_maybe cn of
+              Nothing   -> NoDataConRep
+              Just wrap -> initUs_ s5 $ do
+                uWrap <- getUniqueM
+                let wrap' = if noRename then varName wrap else
+                              liftName (varName wrap) uWrap
+                let bangs = dataConImplBangs cn
+                mkDataConRep dflags instEnvs wrap' (Just bangs) dc
+      -- Create the new constructor.
+      dc = mkDataCon
         name1 (dataConIsInfix cn) (tyConName $ promoteDataCon cn)
         (dataConSrcBangs cn) fs (dataConUnivTyVars cn)
         (dataConExTyCoVars cn) (dataConUserTyVarBinders cn) (dataConEqSpec cn)
         (dataConTheta cn) argtys resty NoRRI tycon
-        (dataConTag cn) (dataConStupidTheta cn) worker NoDataConRep
+        (dataConTag cn) (dataConStupidTheta cn) worker rep
       -- let the worker be created by GHC,
       -- so that the IdInfo (especially unfolding) remains correct
       worker = mkDataConWorkId name2 dc

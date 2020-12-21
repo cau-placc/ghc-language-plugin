@@ -59,7 +59,7 @@ getTypeOrPanic e = do
   mty <- getType e
   case mty of
     Just ty -> return ty
-    Nothing -> panicAny "Cound not get type of expression" e
+    Nothing -> panicAny "Could not get type of expression" e
 
 -- | Print an outputable "thing" under the given string tag.
 printAny :: (MonadIO m, HasDynFlags m, Outputable a) => String -> a -> m ()

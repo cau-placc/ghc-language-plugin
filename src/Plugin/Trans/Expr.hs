@@ -401,7 +401,8 @@ liftMonadicExpr given tcs (L l (HsLamCase _ mg)) =
 liftMonadicExpr _ tcs (L _ (HsConLikeOut _ (RealDataCon c))) = do
   c' <- liftIO (getLiftedCon c tcs)
   let tys = dataConOrigArgTys c'
-  e <- fst <$> mkConLam Nothing c' tys []
+  let stricts = dataConImplBangs c'
+  e <- fst <$> mkConLam Nothing c' (zip tys stricts) []
   return $ noLoc $ HsPar noExtField e
 liftMonadicExpr _ tcs (L _ (XExpr (WrapExpr (HsWrap w (HsConLikeOut _ (RealDataCon c)))))) = do
   c' <- liftIO (getLiftedCon c tcs)
@@ -409,7 +410,8 @@ liftMonadicExpr _ tcs (L _ (XExpr (WrapExpr (HsWrap w (HsConLikeOut _ (RealDataC
   let (apps, absts) = collectTyApps w'
       realApps = drop (length absts) apps
   let tys = conLikeInstOrigArgTys (RealDataCon c') realApps
-  e <- fst <$> mkConLam (Just w') c' tys []
+  let stricts = dataConImplBangs c'
+  e <- fst <$> mkConLam (Just w') c' (zip tys stricts) []
   return $ noLoc $ HsPar noExtField e
 liftMonadicExpr given tcs (L _ (OpApp _ e1 op e2)) = do
   -- e1 `op` e2
