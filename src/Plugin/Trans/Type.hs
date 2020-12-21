@@ -189,9 +189,9 @@ liftTypeParametrized sh stc mty s tcs t
            <$> liftInnerTyParametrized sh stc mty u1 tcs ty1
            <*> liftInnerTyParametrized sh stc mty u2 tcs ty2
     -- Lift a type application of a type constructor.
-    -- If it is a type class constraint, do not wrap it with our monad.
+    -- If it is a type class constraint or ANY, do not wrap it with our monad.
     liftType' us (TyConApp tc tys)
-      | isClassTyCon tc = do
+      | isClassTyCon tc || anyTyCon == tc = do
         tc' <- lookupTyConMap GetNew tcs tc
         tys' <- mapM (replaceTyconTy tcs) tys
         return (TyConApp tc' tys')
@@ -252,8 +252,7 @@ liftInnerTy :: TyCon       -- ^ 'Shareable' type constructor
             -> TyConMap    -- ^ Type constructor map
             -> Type        -- ^ Type to be lifted
             -> IO Type     -- ^ Lifted type with 'Shareable' constraints
-liftInnerTy stc mty us tcs ty =
-  snd . splitAppTy <$> liftType stc mty us tcs ty
+liftInnerTy = liftInnerTyParametrized True
 
 -- | Lift a type without wrapping it in our monad at the top of the type.
 -- Fails if the type has an invisible pi-type (e,.g., forall, constraint)
@@ -276,8 +275,12 @@ liftInnerTyParametrized :: Bool        -- ^ Add 'Shareable' constraints or not.
                         -> TyConMap    -- ^ Type constructor map
                         -> Type        -- ^ Type to be lifted
                         -> IO Type     -- ^ Lifted type
-liftInnerTyParametrized b stc mty us tcs ty
-  = snd . splitAppTy <$> liftTypeParametrized b stc mty us tcs ty
+liftInnerTyParametrized b stc mty us tcs ty = do
+  ty' <- liftTypeParametrized b stc mty us tcs ty
+  return $ case splitTyConApp_maybe ty' of
+    Just (tc, [inner]) | mkTyConTy tc `eqType` mty
+      -> inner
+    _ -> ty'
 
 -- | Lift the type of a data value constructor.
 liftConType :: TyCon -> Type -> UniqSupply -> TyConMap -> Type -> IO Type
