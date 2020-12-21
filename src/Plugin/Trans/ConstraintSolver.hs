@@ -68,12 +68,12 @@ solveShareAnyPlugin _ _ wanted = do
   uncurry TcPluginOk . unzip . catMaybes
     <$> mapM (transformShareAny scls) wanted
 
--- | Transforms a constraint Shareable Nondet Any to Shareable Nondet (),
+-- | Transforms a constraint Shareable Nondet (Any X) to Shareable Nondet (),
 -- with an additional coercion.
 transformShareAny :: Class -> Ct -> TcPluginM (Maybe ((EvTerm, Ct), Ct))
 transformShareAny scls w@(CDictCan (CtWanted pty _ si loc)
                             cls [mty, aty] pend)
-  | cls == scls && aty `eqType` anyTypeOfKind liftedTypeKind = do
+  | cls == scls, TyConApp atc _ <- aty, atc == anyTyCon = do
     let pty' = mkTyConApp (classTyCon scls) [mty, unitTy]
     v' <- unsafeTcPluginTcM $ freshDictId pty'
     let w' = CDictCan (CtWanted pty (EvVarDest v') si loc)
