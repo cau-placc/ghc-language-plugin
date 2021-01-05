@@ -85,13 +85,11 @@ liftPat' _ _ p@AsPat {} =
 liftPat' new tcs (ParPat x p) = do
   (p', vars1, vars2) <- liftPat new tcs p
   return (ParPat x p', vars1, vars2)
-liftPat' _ _ p@BangPat {} = do
-  flags <- getDynFlags
-  l <- getSrcSpanM
-  reportError (mkErrMsg flags l neverQualify
-    "Bang patterns are not supported by the plugin")
-  failIfErrsM
-  return (p, [], [])
+-- ignore any leftover bangs, their strictness is ensured during
+-- the pattern match compilation
+liftPat' new tcs (BangPat _ p) = do
+  (p', vars1, vars2) <- liftPat new tcs p
+  return (unLoc p', vars1, vars2) 
 liftPat' _ _ p@(ListPat (ListPatTc _ Nothing) _) =
   panicAny "List pattern should have been desugared before lifting" p
 liftPat' _ _ p@(ListPat (ListPatTc _ (Just _)) _) = do

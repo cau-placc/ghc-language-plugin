@@ -18,6 +18,7 @@ module Plugin.Trans.PatternMatching (compileMatchGroup, matchExpr) where
 
 import Data.List
 import Data.Syb
+import Data.Maybe
 import Data.Tuple.Extra
 import Control.Monad
 
@@ -93,8 +94,10 @@ matchExpr (HsMultiIf ty grhs) = do
   err <- errorExpr IfAlt ty
   unLoc <$> foldM compileGuard err grhs
 matchExpr (HsLet _ bs e) = do
-  bs' <- compileLet bs
-  return (unLoc (foldr toLetExpr e bs'))
+  (bs', vss) <- compileLet bs
+  strict <- foldrM mkSeq e vss
+  let eLet = foldr toLetExpr strict bs'
+  return (unLoc eLet)
 matchExpr (HsDo x ctxt (L l stmts)) = do
   (stmts', swapCtxt) <- compileDo x ctxt stmts
   let ctxt' = if swapCtxt then DoExpr Nothing else ctxt
@@ -156,7 +159,7 @@ compileDo ty ctxt (L l (BindStmt (XBindStmtTc b' _ _ f') p e) : stmts) = do
           -- due to nested LastStmt by changing the context.
           case ctxt of { ListComp -> True; _ -> False })
 compileDo ty ctxt (L _ (LetStmt _ bs) : xs) = do
-  bs' <- compileLet bs
+  (bs', vss) <- compileLet bs
   let lets = map toLetStmt bs'
   (xs', swapCtxt) <- compileDo ty ctxt xs
   return (lets ++ xs', swapCtxt)
@@ -195,27 +198,42 @@ compileDo _ _ (L l (RecStmt _ _ _ _ _ _ _) : _) =  do
 
 -- | Desugars pattern bindings in the given let-bindings.
 -- This is done by introducing selector functions for each of them.
-compileLet :: LHsLocalBinds GhcTc -> TcM [(RecFlag, LHsBinds GhcTc)]
-compileLet (L _ (HsValBinds _ (XValBindsLR (NValBinds bs _)))) =
-  mapM compileValBs bs
+compileLet :: LHsLocalBinds GhcTc -> TcM ([(RecFlag, LHsBinds GhcTc)], [Var])
+compileLet (L _ (HsValBinds _ (XValBindsLR (NValBinds bs _)))) = do
+  (bs', vss) <- unzip <$> mapM compileValBs bs
+  return (bs', concat vss)
   where
-    compileValBs (f, bs') = (f,) . listToBag
-      <$> concatMapM compileLetBind (bagToList bs')
+    compileValBs (f, bs') = do
+      (bss, vss) <- unzip <$> mapM compileLetBind (bagToList bs')
+      return ((f, listToBag (concat bss)), concat vss)
 compileLet (L l (HsIPBinds _ _)) = do
   flags <- getDynFlags
   reportError (mkErrMsg flags l neverQualify
     "Implicit parameters are not supported by the plugin")
   failIfErrsM
-  return []
-compileLet _                      = return []
+  return ([], [])
+compileLet _ = return ([], [])
 
 -- | Desugars pattern bindings in the given let-binding.
 -- This is done by introducing (multiple) selector functions
--- for the single binding.
-compileLetBind :: LHsBindLR GhcTc GhcTc -> TcM [LHsBindLR GhcTc GhcTc]
+-- for the single binding. Also returns a lift of strict variables
+compileLetBind :: LHsBindLR GhcTc GhcTc -> TcM ([LHsBindLR GhcTc GhcTc], [Var])
 compileLetBind (L l (AbsBinds x tvs evs ex ev bs sig)) = do
-  bs' <- listToBag <$> concatMapM compileLetBind (bagToList bs)
-  return [L l (AbsBinds x tvs evs ex ev bs' sig)]
+  (bss, vss) <- unzip <$> mapM compileLetBind (bagToList bs)
+  let bs' = listToBag $ concat bss
+  let vs = concat vss
+  (realVs, mbex) <- unzip <$> mapM (getRealVar ex) vs
+  return ([L l (AbsBinds x tvs evs (ex ++ catMaybes mbex) ev bs' sig)], realVs)
+  where
+    getRealVar [] v = do
+      u <- getUniqueM
+      let p = setVarUnique v u
+      -- Not currently exported, so create an export that we can seq later
+      return (p, Just (ABE noExtField p v WpHole (SpecPrags [])))
+    getRealVar (ABE _ p m _ _ : _) v
+      | v == m             = return (p, Nothing)
+    getRealVar (_ : ex') v = getRealVar ex' v
+
 compileLetBind (L _ (PatBind ty p grhss _)) = do
   mtc <- getMonadTycon
   -- we do not use ConstraintSolver.removeNondet,
@@ -225,8 +243,13 @@ compileLetBind (L _ (PatBind ty p grhss _)) = do
   (p', vs) <- prepareSelPat p
   let pe = noLoc (HsVar noExtField (noLoc fname))
   bs <- mapM (mkSelFun ty' p' pe) vs
-  return (b : bs)
+  return (b : bs, if isBangPat p then [fname] else [])
   where
+    origStrictness
+      | isBangPat   p = SrcStrict
+      | isNoLazyPat p = NoSrcStrict
+      | otherwise     = SrcLazy
+
     rmNondet mtc (TyConApp tc [inner])
       | mtc == tc    = inner
     rmNondet _ other = other
@@ -235,7 +258,7 @@ compileLetBind (L _ (PatBind ty p grhss _)) = do
     -- fname = grhss
     createOrdinaryFun ty' = do
       fname <- freshVar (Scaled Many ty')
-      let ctxt = FunRhs (noLoc (varName fname)) Prefix NoSrcStrict
+      let ctxt = FunRhs (noLoc (varName fname)) Prefix origStrictness
           alt = Match noExtField ctxt [] grhss
           mgtc = MatchGroupTc [] ty'
           mg = MG mgtc (noLoc [noLoc alt]) Generated
@@ -309,8 +332,8 @@ compileLetBind (L _ (PatBind ty p grhss _)) = do
         | v == new          -> VarPat x (L l2 v)
         | p2 `contains` new -> unLoc (removeOtherPatterns new p2)
         | otherwise         -> WildPat (varType v)
-      BangPat x p2
-        | p2 `contains` new -> BangPat x $ removeOtherPatterns new p2
+      -- always keep banged pattern for correct strictness
+      BangPat x p2          -> BangPat x $ removeOtherPatterns new p2
       ListPat x ps
         | ps `contains` new -> ListPat x $ map (removeOtherPatterns new) ps
         | otherwise         -> WildPat (hsLPatType p0)
@@ -343,7 +366,10 @@ compileLetBind (L _ (PatBind ty p grhss _)) = do
 
     removeOtherField new (L l1 (HsRecField v p1 pun)) =
       L l1 (HsRecField v (removeOtherPatterns new p1) pun)
-compileLetBind b = return [b]
+compileLetBind b@(L _ (FunBind _ (L _ fname) (MG _ (L _ (L _ (Match _
+               (FunRhs _ _ strict) _ _):_)) _) _)) =
+  return ([b], if strict == SrcStrict then [fname] else [])
+compileLetBind b = return ([b], [])
 
 -- | Checks if the first term contains the second term.
 contains :: (Eq a, Data r, Typeable a) => r -> a -> Bool
@@ -810,7 +836,7 @@ isVarPat (L _ (XPat (CoPat _ p _))) = isVarPat (noLoc p)
 isBangPat :: LPat GhcTc -> Bool
 isBangPat (L _ (WildPat _         )) = False
 isBangPat (L _ (VarPat _ _        )) = False
-isBangPat (L _ (LazyPat _ p       )) = isBangPat p
+isBangPat (L _ (LazyPat _ _       )) = False
 isBangPat (L _ (AsPat _ _ p       )) = isBangPat p
 isBangPat (L _ (ParPat _ p        )) = isBangPat p
 isBangPat (L _ (BangPat _ _       )) = True

@@ -70,7 +70,8 @@ liftMonadicBinding _ _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
   -- create the dictionary variables
   let (tvs, c) = collectTyDictArgs wrap
   stc <- getShareClassTycon
-  mty <- mkTyConTy <$> getMonadTycon
+  mtc <- getMonadTycon
+  let mty = mkTyConTy mtc
   uss <- replicateM (length tvs) getUniqueSupplyM
   let mkShareTy ty = mkTyConApp stc [mty, ty]
   let evsty = catMaybes $
@@ -82,7 +83,8 @@ liftMonadicBinding _ _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
   allEvs <- (++evs) <$> liftIO (mapM replaceEv c)
   let cts = mkGivens ctloc allEvs
   let given' = given ++ cts
-  ty <- liftTypeTcM tcs (varType name)
+  (unlifted, _) <- liftIO (removeNondetShareable tcs mtc stc (varType name))
+  ty <- liftTypeTcM tcs unlifted
   let wrapLike = createWrapperLike ty tvs allEvs
 
   (eqs', con) <- captureConstraints $ if isDerivedEnum eqs
@@ -172,7 +174,9 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
       let v1ty = varType v1
       ty1 <- case splitTyConApp_maybe (snd (splitPiTysInvisible v1ty)) of
         Just (tc, _) | tc == mtycon
-          -> liftIO (replaceTyconTy tcs v1ty)
+          -> do
+          (unlifted, _) <- liftIO (removeNondetShareable tcs mtycon stycon v1ty)
+          liftTypeTcM tcs unlifted
         _ -> do
           let (bs1, t1) = splitPiTysInvisibleN (length b + length c) v1ty
               named = filter isNamedBinder bs1
