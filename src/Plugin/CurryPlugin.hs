@@ -77,16 +77,17 @@ plugin = defaultPlugin
     addPreludeImport p@(HsParsedModule (L l
                           m@HsModule { hsmodImports = im }) _ _) = do
       flgs <- getDynFlags
-      if opt `elem` (pluginModNameOpts flgs) || any isCurryPrelImport im
+      if opt `elem` pluginModNameOpts flgs || any isCurryPrelImport im
         then return p
         else return (p { hpm_module = L l (m { hsmodImports = prel:im }) })
       where
         prel = noLoc (ImportDecl noExtField NoSourceText (noLoc prelName)
-                        Nothing NotBoot False NotQualified True Nothing Nothing)
+                        Nothing False False NotQualified True Nothing Nothing)
 
     isCurryPrelImport :: LImportDecl GhcPs -> Bool
-    isCurryPrelImport (L _ (ImportDecl { ideclName = L _ nm })) =
+    isCurryPrelImport (L _ ImportDecl { ideclName = L _ nm }) =
       nm == prelName
+    isCurryPrelImport _ = False
 
     conPlugin = TcPlugin
       { tcPluginInit  = unsafeTcPluginTcM loadDefaultTyConMap
@@ -126,7 +127,7 @@ liftMonadPlugin mdopts env = do
     let tycns = mapMaybe (\(a,b) -> fmap (a,) b) liftedTycns
     let tnsM = listToUniqMap tycns
     return (Right (tycns, liftedTycns)))
-    `catch` (\e -> return (Left e)))
+    `catch` (return . Left))
 
   -- extrect results or analyze any thrown IO errors
   (tycons, liftedTycons) <- case res of
@@ -184,7 +185,7 @@ liftMonadPlugin mdopts env = do
     -- (enable some language extentions and disable all warnings)
     flags <- getDynFlags
     setDynFlags (flip (foldl wopt_unset) [toEnum 0 ..] $
-                 flip (foldl xopt_set) requiredExtensions $
+                 flip (foldl xopt_set) requiredExtensions
                  (flags { cachedPlugins = [], staticPlugins = [] })) $ do
 
       -- gather neccessary derivings

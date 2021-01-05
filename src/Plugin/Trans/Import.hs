@@ -59,7 +59,7 @@ checkImports env = do
 
 isDataKind :: (Module, [ImportedBy]) -> Bool
 isDataKind (Module u n, _) =
-  mkModuleName "Data.Kind" == n && u == baseUnit
+  mkModuleName "Data.Kind" == n && u == baseUnitId
 
 -- | Get any 'NondetTag' module annotations for a given module
 -- and the source span of the import declaration, if available.
@@ -92,7 +92,7 @@ classifyWithLoadResult mdl anns mspan =
     then LoadSuccess mdl
     else LoadFail mdl mspan
 
--- | Check if the given load result should provide an error message. 
+-- | Check if the given load result should provide an error message.
 errorOnFailedLoad :: IfaceLoadResult -> TcM ()
 errorOnFailedLoad (LoadSuccess _      ) = return ()
 errorOnFailedLoad (LoadFail    mdl msp) =
