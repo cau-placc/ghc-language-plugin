@@ -20,10 +20,9 @@ import Control.Exception
 import Language.Haskell.TH (Extension(..))
 
 import GHC.Plugins
-import GHC.Hs.Binds
-import GHC.Hs.Expr
-import GHC.Hs.Extension
+import GHC.Hs
 import GHC.Types.TypeEnv
+import GHC.Types.SourceText
 import GHC.Tc.Types
 import GHC.Tc.Solver
 import GHC.Tc.Types.Evidence
@@ -63,13 +62,39 @@ import Plugin.Effect.Annotation
 -- the functional-logic programming language Curry.
 plugin :: Plugin
 plugin = defaultPlugin
-  { renamedResultAction   = const processImportPlugin
+  { parsedResultAction    = const . const addPreludeImport
+  , renamedResultAction   = const processImportPlugin
   , typeCheckResultAction = const . liftMonadPlugin . parseDumpOpts
   , pluginRecompile       = const (return NoForceRecompile)
   , tcPlugin              = const (Just conPlugin)
-  , dynflagsPlugin        = const (return . (`xopt_unset` ImplicitPrelude))
+  , dynflagsPlugin        = const addNoImpPreludeOpt
   }
   where
+    addNoImpPreludeOpt :: DynFlags -> IO DynFlags
+    addNoImpPreludeOpt dflags
+      | ImplicitPrelude `xopt` dflags =
+        return (dflags `xopt_unset` ImplicitPrelude)
+      | otherwise =
+        return (dflags { pluginModNameOpts = opt:pluginModNameOpts dflags })
+
+    opt = (prelName , "NoImplicitPrelude")
+    prelName = mkModuleName "Plugin.CurryPlugin.Prelude"
+
+    addPreludeImport :: HsParsedModule -> Hsc HsParsedModule
+    addPreludeImport p@(HsParsedModule (L l
+                          m@HsModule { hsmodImports = im }) _ _) = do
+      flgs <- getDynFlags
+      if opt `elem` (pluginModNameOpts flgs) || any isCurryPrelImport im
+        then return p
+        else return (p { hpm_module = L l (m { hsmodImports = prel:im }) })
+      where
+        prel = noLoc (ImportDecl noExtField NoSourceText (noLoc prelName)
+                        Nothing NotBoot False NotQualified True Nothing Nothing)
+
+    isCurryPrelImport :: LImportDecl GhcPs -> Bool
+    isCurryPrelImport (L _ (ImportDecl { ideclName = L _ nm })) =
+      nm == prelName
+
     conPlugin = TcPlugin
       { tcPluginInit  = unsafeTcPluginTcM loadDefaultTyConMap
       , tcPluginSolve = tcPluginSolver

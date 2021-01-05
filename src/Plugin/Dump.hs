@@ -55,4 +55,5 @@ parseDumpOpts opts = DOpts <$> foldM parseOne [] opts
     parseOne xs "dump-original-type-env"  = Just (DumpOriginalTypeEnv:xs)
     parseOne xs "dump-pattern-matched"    = Just (DumpPatternMatched :xs)
     parseOne xs "dump-deriving-errs"      = Just (DumpDerivingErrs   :xs)
+    parseOne xs "NoImplicitPrelude"       = Just xs
     parseOne _ _                          = Nothing
