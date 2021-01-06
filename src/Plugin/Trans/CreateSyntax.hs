@@ -71,7 +71,7 @@ mkConLam mw c [] vs
             (noLoc (wrap (HsConLikeOut noExtField (RealDataCon c))))
             (map (noLoc . HsVar noExtField . noLoc) $ reverse vs)
     -- Get the result type of the constructor.
-    ty <- bindingType . snd . splitFunTys <$> getTypeOrPanic e -- ok
+    ty <- snd . splitFunTys <$> getTypeOrPanic e -- ok
     -- Wrap the whole term in a 'return'.
     e' <- mkApp mkNewReturnTh ty [noLoc $ HsPar noExtField e]
     mty <- mkTyConTy <$> getMonadTycon

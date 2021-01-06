@@ -506,11 +506,11 @@ liftMonadicExpr given tcs (L l1 (HsDo x ctxt (L l2 stmts))) = do
             | otherwise  = ctxt
   stmts' <- liftMonadicStmts ctxt' ctxtSwitch x' given tcs stmts
   return (L l1 (HsDo x' ctxt' (L l2 stmts')))
-liftMonadicExpr given tcs e@(L _ (ExplicitList ty Nothing es)) = do
+liftMonadicExpr given tcs (L _ (ExplicitList ty Nothing es)) = do
   -- [e1, ..., en]
   -- -> return (Cons e1 (return (Cons ... (return (Cons en (return Nil))))))
   em <- mkEmptyList ty tcs
-  liftedTy <- getTypeOrPanic e >>= liftTypeTcM tcs -- ok
+  liftedTy <- liftInnerTyTcM tcs (mkListTy ty) -- ok
   nil <- mkApp mkNewReturnTh liftedTy [em]
   if null es
     then return nil
