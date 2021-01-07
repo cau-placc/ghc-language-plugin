@@ -4,6 +4,7 @@ import Distribution.TestSuite
 import System.Directory
 import System.Process
 import System.Exit
+import System.Environment
 
 import SemanticTests
 
@@ -11,7 +12,10 @@ tests :: IO [Test]
 tests = do
   path <- makeAbsolute "test-examples"
   setCurrentDirectory  path
-  return [testGroup "Example Tests"
+  args' <- getArgs
+  let args = if null args' then ["Semantic", "Compile"] else args'
+  return
+    [ if "Compile" `notElem` args then noTest else testGroup "Compile Tests"
     [ Test (mkCompileTest Succeed    "Coin.hs")
     , Test (mkCompileTest Succeed    "Data.hs")
     , Test (mkCompileTest Succeed    "Import.hs")
@@ -22,11 +26,13 @@ tests = do
     , Test (mkCompileTest Succeed    "InstanceImport.hs")
     , Test (mkCompileTest Succeed    "PolyFailed.hs")
     , Test (mkCompileTest Succeed    "Typeclass.hs")
-
-    , Test (mkSemanticTest letPattern)
+    ]
+    , if "Semantic" `notElem` args then noTest else testGroup "Semantic Tests"
+    [ Test (mkSemanticTest letPattern)
     , Test (mkSemanticTest unknownNat)
     , Test (mkSemanticTest guards)
     ]]
+  where noTest = testGroup "Empty Group" []
 
 data Expected = Succeed | ExpectFail
 
@@ -34,7 +40,7 @@ mkCompileTest :: Expected -> FilePath -> TestInstance
 mkCompileTest expect file = TestInstance
   { run = testGhcInvocation expect file
   , name = file
-  , tags = []
+  , tags = ["Compile"]
   , options = []
   , setOption = \_ _ -> Left "Option not supported"
   }
