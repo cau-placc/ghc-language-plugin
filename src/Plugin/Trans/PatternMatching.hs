@@ -21,6 +21,7 @@ import Data.Syb
 import Data.Maybe
 import Data.Tuple.Extra
 import Control.Monad
+import Language.Haskell.TH (Extension(..))
 
 import GHC.Plugins
 import GHC.Hs.Binds
@@ -243,7 +244,10 @@ compileLetBind (L _ (PatBind ty p grhss _)) = do
   (p', vs) <- prepareSelPat p
   let pe = noLoc (HsVar noExtField (noLoc fname))
   bs <- mapM (mkSelFun ty' p' pe) vs
-  return (b : bs, if isBangPat p then [fname] else [])
+  flags <- getDynFlags
+  let decidedStrict = isBangPat p ||
+                      (Strict `xopt` flags && isNoLazyPat p)
+  return (b : bs, if decidedStrict then [fname] else [])
   where
     origStrictness
       | isBangPat   p = SrcStrict
@@ -367,8 +371,11 @@ compileLetBind (L _ (PatBind ty p grhss _)) = do
     removeOtherField new (L l1 (HsRecField v p1 pun)) =
       L l1 (HsRecField v (removeOtherPatterns new p1) pun)
 compileLetBind b@(L _ (FunBind _ (L _ fname) (MG _ (L _ (L _ (Match _
-               (FunRhs _ _ strict) _ _):_)) _) _)) =
-  return ([b], if strict == SrcStrict then [fname] else [])
+               (FunRhs _ _ strict) _ _):_)) _) _)) = do
+  flags <- getDynFlags
+  let decidedStrict = strict == SrcStrict ||
+                      (strict == NoSrcStrict && Strict `xopt` flags)
+  return ([b], if decidedStrict then [fname] else [])
 compileLetBind b = return ([b], [])
 
 -- | Checks if the first term contains the second term.
@@ -510,7 +517,11 @@ mkVarMatch n vs ty err eqs = do
   let noAs = map (preprocessAs v) eqs
   alts <- mapM (bindVarAlt v) noAs
   e <- compileMatching vs' ty alts err
-  if any (isBangPat . fst) noAs
+  dflags <- getDynFlags
+  -- This match is strict as soon as at most one of noAs is a bang pattern
+  -- or if Strict is turned on and at least one of the pattern is not lazy.
+  if any (isBangPat . fst) noAs ||
+     (Strict `xopt` dflags && any (isNoLazyPat . fst) noAs)
     then mkSeq v e
     else return e
 
