@@ -5,6 +5,7 @@
 {-# LANGUAGE UndecidableInstances       #-}
 {-# LANGUAGE TypeApplications           #-}
 {-# LANGUAGE DeriveLift                 #-}
+{-# LANGUAGE Strict #-}
 {-|
 Module      : Plugin.Effect.Monad
 Description : Convenience wrapper for the effect

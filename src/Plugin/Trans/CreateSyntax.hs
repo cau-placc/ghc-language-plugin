@@ -91,8 +91,8 @@ mkConLam w c ((Scaled _ ty, strictness) : tys) vs = do
   e' <- case strictness of
     HsLazy -> return e
     -- | strict or unpacked
-    _      -> mkApp (mkNewSeqValueTh (bindingType (varType v))) (bindingType resty)
-                [noLoc (HsVar noExtField (noLoc v)), e]
+    _      -> return e --mkApp (mkNewSeqValueTh (bindingType (varType v))) (bindingType resty)
+                --[noLoc (HsVar noExtField (noLoc v)), e]
   -- Make the lambda for this variable
   let lamty = mkVisFunTyMany ty' resty
   let e'' = mkLam (noLoc v) (Scaled Many ty') e' resty

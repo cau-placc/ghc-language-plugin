@@ -3,6 +3,7 @@
 {-# OPTIONS_GHC -Wno-incomplete-patterns    #-}
 {-# LANGUAGE RankNTypes                     #-}
 {-# LANGUAGE ScopedTypeVariables            #-}
+{-# LANGUAGE Strict #-}
 {-|
 Module      : Plugin.CurryPlugin.ForeignExport
 Description : Prelude for the Curry-Plugin

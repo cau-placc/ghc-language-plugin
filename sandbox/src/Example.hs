@@ -1,12 +1,15 @@
 {-# OPTIONS_GHC -fplugin Plugin.CurryPlugin #-}
 {-# LANGUAGE NoImplicitPrelude              #-}
+{-# LANGUAGE Strict #-}
 module Example where
 
 import Plugin.CurryPlugin.Prelude
 
-permutations :: [a] -> [a]
-permutations []     = []
-permutations (x:xs) = insert x (permutations xs)
+test :: Bool
+test = not (null xs)
   where
-    insert e []     = [e]
-    insert e (y:ys) = (e:y:ys) ? (y : insert e ys)
+    xs :: [Int]
+    xs = 1 : xs
+
+test2 :: Int
+test2 = foldr (?) failed [1..]

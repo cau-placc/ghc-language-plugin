@@ -3,6 +3,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ViewPatterns    #-}
 {-# LANGUAGE OverloadedLists #-}
+{-# LANGUAGE Strict #-}
 {-|
 Module      : Plugin.Effect.THEval
 Description : Definition of choice trees and search algorithms

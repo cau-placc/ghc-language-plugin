@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts          #-}
 {-# LANGUAGE DeriveFunctor             #-}
 {-# LANGUAGE RankNTypes                #-}
+{-# LANGUAGE BangPatterns              #-}
 {-|
 Module      : Plugin.Effect.CurryEffect
 Description : Implementation of nondeterminism with sharing
@@ -38,11 +39,11 @@ newtype Lazy a = Lazy {
 -- | Collect all results into a given nondeterministic
 -- and monadic data structure.
 collect :: (Monad m, Nondet (m n)) => Lazy n -> (m n)
-collect a = runLazy (fmap return a)
+collect !a = runLazy (fmap return a)
 
 -- | Collect all results into a given nondeterministic data structure.
 runLazy :: Nondet n => Lazy n -> n
-runLazy m = fromLazy m (\a _ -> a) emptyStore
+runLazy !m = fromLazy m (\a _ -> a) emptyStore
 
 instance Applicative Lazy where
   {-# INLINE pure #-}
@@ -66,26 +67,26 @@ instance Monad Lazy where
 {-# INLINE[0] pureL #-}
 -- | Inlineable implementation of 'pure' for 'Lazy'
 pureL :: a -> Lazy a
-pureL x = Lazy (\c -> c x)
+pureL !x = Lazy (\(!c) -> c x)
 
 {-# INLINE[0] andThen #-}
 -- | Inlineable implementation of '(>>=)' for 'Lazy'
 andThen :: Lazy a -> (a -> Lazy b) -> Lazy b
-andThen a k = Lazy (\c s -> fromLazy a (\x -> fromLazy (k x) c) s)
+andThen !a !k = Lazy (\(!c) (!s) -> fromLazy a (\(!x) -> fromLazy (k x) c) s)
 
 instance MonadFail Lazy where
-  fail _ = Lazy (\_ _ -> failure)
+  fail !_ = Lazy (\(!_) (!_) -> failure)
 
 instance MonadPlus Lazy where
-  mzero = Lazy (\_ _ -> failure)
-  a `mplus` b = Lazy (\c s -> fromLazy a c s ? fromLazy b c s)
+  mzero = Lazy (\(!_) (!_) -> failure)
+  !a `mplus` !b = Lazy (\(!c) (!s) -> fromLazy a c s ? fromLazy b c s)
 
 instance MonadState Store Lazy where
-  get = Lazy (\c s -> c s s)
-  put s = Lazy (\c _ -> c () s)
+  get = Lazy (\(!c) (!s) -> c s s)
+  put !s = Lazy (\(!c) (!_) -> c () s)
 
 instance Sharing Lazy where
-  share a = memo (a >>= shareArgs share)
+  share !a = memo (a >>= shareArgs share)
 
 -- | A data type to label and store shared nondeterministic values
 -- on an untyped heap.
@@ -107,27 +108,27 @@ freshLabel = do
 
 -- | Look up the vaule for a given label in the store.
 lookupValue :: MonadState Store m => Int -> m (Maybe a)
-lookupValue k = gets (fmap typed . M.lookup k . heap)
+lookupValue !k = gets (fmap typed . M.lookup k . heap)
 
 -- | Store a given value for later.
 storeValue :: MonadState Store m => Int -> a -> m ()
-storeValue k v = modify (\s -> s { heap = M.insert k (Untyped v) (heap s) })
+storeValue !k !v = modify (\(!s) -> s { heap = M.insert k (Untyped v) (heap s) })
 
 {-# INLINE memo #-}
 -- | Memorize a nondeterministic value for explicit sharing.
 memo :: Lazy a -> Lazy (Lazy a)
-memo a =
+memo !a =
   Lazy
-    (\c1 (Store key heap1) ->
+    (\(!c1) (Store !key !heap1) ->
        c1
          (Lazy
-            (\c2 s@(Store _ heap2) ->
+            (\(!c2) s@(Store !_ !heap2) ->
                case M.lookup key heap2 of
-                 Just x -> c2 (typed x) s
+                 Just !x -> c2 (typed x) s
                  Nothing ->
                    fromLazy
                      a
-                     (\x (Store other heap3) ->
+                     (\(!x) (Store !other !heap3) ->
                         c2 x (Store other (M.insert key (Untyped x) heap3)))
                      s))
          (Store (succ key) heap1))
@@ -137,4 +138,4 @@ data Untyped = forall a. Untyped a
 
 -- | Extract a typed value from an untyped container.
 typed :: Untyped -> a
-typed (Untyped x) = unsafeCoerce x
+typed (Untyped !x) = unsafeCoerce x

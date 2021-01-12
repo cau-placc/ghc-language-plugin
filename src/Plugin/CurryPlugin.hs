@@ -104,7 +104,7 @@ plugin = defaultPlugin
 -- | This type checker plugin implements the lifting of declarations
 -- for the Curry plugin.
 liftMonadPlugin :: Maybe DumpOpts -> TcGblEnv -> TcM TcGblEnv
-liftMonadPlugin mdopts env = setGblEnv env $ do
+liftMonadPlugin mdopts env = getDynFlags >>= \f -> setDynFlags (f `xopt_unset` Strict) $ setGblEnv env $ do
   dopts <- case mdopts of
     Just xs -> return xs
     Nothing -> addErrTc "Error! Unrecognized plugin option" >>

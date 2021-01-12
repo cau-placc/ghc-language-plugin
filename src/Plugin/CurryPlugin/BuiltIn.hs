@@ -11,6 +11,7 @@
 {-# LANGUAGE ConstraintKinds        #-}
 {-# OPTIONS_GHC -Wno-orphans        #-}
 {-# OPTIONS_GHC -Wno-unused-foralls #-}
+{-# LANGUAGE StrictData #-}
 {-|
 Module      : Plugin.CurryPlugin.BuiltIn
 Description : Built-In functions, types and type classes
