@@ -12,6 +12,7 @@
 {-# OPTIONS_GHC -Wno-orphans        #-}
 {-# OPTIONS_GHC -Wno-unused-foralls #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE BangPatterns #-}
 {-|
 Module      : Plugin.CurryPlugin.BuiltIn
 Description : Built-In functions, types and type classes
@@ -60,12 +61,12 @@ instance Shareable Nondet a => Shareable Nondet (ListND a) where
 
 -- | Normalform instance for lists
 instance Normalform Nondet a1 a2 => Normalform Nondet (ListND a1) [a2] where
-  nf mxs = mxs P.>>= \case
+  nf !mxs = mxs P.>>= \case
     Nil       -> P.return []
-    Cons x xs -> (:) P.<$> nf x P.<*> nf xs
-  liftE mxs = mxs P.>>= \case
+    Cons !x !xs -> (:) P.<$> nf x P.<*> nf xs
+  liftE !mxs = mxs P.>>= \case
     []   -> P.return Nil
-    x:xs -> Cons P.<$> P.return (liftE (P.return x))
+    (!x):(!xs) -> Cons P.<$> P.return (liftE (P.return x))
                  P.<*> P.return (liftE (P.return xs))
 
 -- * Lifted tuple types and internal instances
