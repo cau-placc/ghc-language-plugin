@@ -139,7 +139,8 @@ not :: Nondet (Bool --> Bool)
 not = liftNondet1 P.not
 
 -- Lifted seq operator to force evaluation. Forces the effect and value.
-seq :: forall (k :: RuntimeRep) a b. Nondet (a --> b --> b)
+seq :: forall (k :: RuntimeRep) a b.
+       Nondet (Nondet a -> Nondet (Nondet b -> Nondet b))
 seq = P.return $ \a -> P.return $ \b ->
   (a P.>>= \a' -> P.seq a' b)
 
