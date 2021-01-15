@@ -370,11 +370,15 @@ compileLetBind (L _ (PatBind ty p grhss _)) = do
 
     removeOtherField new (L l1 (HsRecField v p1 pun)) =
       L l1 (HsRecField v (removeOtherPatterns new p1) pun)
-compileLetBind b@(L _ (FunBind _ (L _ fname) (MG _ (L _ (L _ (Match _
+compileLetBind b@(L _ (FunBind _ (L _ fname)
+               (MG (MatchGroupTc args _) (L _ (L _ (Match _
                (FunRhs _ _ strict) _ _):_)) _) _)) = do
   flags <- getDynFlags
-  let decidedStrict = strict == SrcStrict ||
-                      (strict == NoSrcStrict && Strict `xopt` flags)
+  -- Evaluating a function strict is never required
+  -- if it is defined with at least one argument.
+  let decidedStrict = null args &&
+                      (strict == SrcStrict ||
+                      (strict == NoSrcStrict && Strict `xopt` flags))
   return ([b], if decidedStrict then [fname] else [])
 compileLetBind b = return ([b], [])
 
