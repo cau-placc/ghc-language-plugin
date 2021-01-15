@@ -802,7 +802,10 @@ liftVarWithWrapper given tcs w v
       getPred _ = Nothing
       preds = mapMaybe getPred (fst (splitPiTysInvisible monotype))
 
-  if null preds
+  let isWpHole WpHole = True
+      isWpHole _      = False
+
+  if null preds || isWpHole w
     then do
       let newWrap = abstsWrap <.> createWrapperFor (varType v') apps []
       return (noLoc (mkHsWrap newWrap (HsVar noExtField (noLoc v'))))
