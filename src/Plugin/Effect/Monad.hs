@@ -5,6 +5,7 @@
 {-# LANGUAGE UndecidableInstances       #-}
 {-# LANGUAGE TypeApplications           #-}
 {-# LANGUAGE DeriveLift                 #-}
+{-# LANGUAGE TypeFamilies               #-}
 {-|
 Module      : Plugin.Effect.Monad
 Description : Convenience wrapper for the effect
@@ -74,6 +75,7 @@ instance (Normalform Nondet a1 a2, Show a2) => Show (Nondet a1) where
   show = show . allValuesNF
 
 instance Sharing Nondet where
+  type ShareConstraints Nondet a = Shareable Nondet a
   share = shre
 
 -- | Nondeterministic failure

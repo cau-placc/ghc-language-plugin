@@ -8,6 +8,8 @@
 {-# LANGUAGE DefaultSignatures      #-}
 {-# LANGUAGE LambdaCase             #-}
 {-# LANGUAGE LinearTypes            #-}
+{-# LANGUAGE ConstraintKinds        #-}
+{-# LANGUAGE TypeFamilies           #-}
 {-|
 Module      : Plugin.Effect.Classes
 Description : Type classes used for the effect implementation
@@ -23,12 +25,15 @@ modernized with a generic implementation by Kai-Oliver Prott.
 module Plugin.Effect.Classes where
 
 import GHC.Generics as Gen
+import Data.Kind
 
 import Plugin.Effect.Tree
 
 -- | A class for Monads with support for explicit sharing of effects.
 class Monad s => Sharing s where
-  share :: Shareable s a => s a -> s (s a)
+  type ShareConstraints s a :: Constraint
+  type ShareConstraints s a = ()
+  share :: ShareConstraints s a => s a -> s (s a)
 
 -- | A class for Nondeterminism
 class Nondet n where

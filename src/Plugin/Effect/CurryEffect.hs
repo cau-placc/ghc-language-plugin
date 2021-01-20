@@ -3,6 +3,8 @@
 {-# LANGUAGE FlexibleContexts          #-}
 {-# LANGUAGE DeriveFunctor             #-}
 {-# LANGUAGE RankNTypes                #-}
+{-# LANGUAGE ScopedTypeVariables       #-}
+{-# LANGUAGE TypeFamilies              #-}
 {-|
 Module      : Plugin.Effect.CurryEffect
 Description : Implementation of nondeterminism with sharing
@@ -85,6 +87,7 @@ instance MonadState Store Lazy where
   put s = Lazy (\c _ -> c () s)
 
 instance Sharing Lazy where
+  type ShareConstraints Lazy a = Shareable Lazy a
   share a = memo (a >>= shareArgs share)
 
 -- | A data type to label and store shared nondeterministic values
