@@ -210,6 +210,17 @@ mkNewShareTh tcs ty
                 mkTyConApp mtycon [ty] -- m a
   mkNewAny th_expr expType
 
+mkNewShareTop :: (Int, String) -> Type -> TcM (LHsExpr GhcTc)
+mkNewShareTop key ty = do
+  th_expr <- liftQ [| shreTopLevel |]
+  let tup = mkTupleTy Boxed [intTy, stringTy]
+  let expType = mkVisFunTyMany tup $
+                mkVisFunTyMany ty ty -- (Int, String) -> ty -> ty
+  e <- mkNewAny th_expr expType
+  th_arg <- liftQ [| key |]
+  arg <- mkNewAny th_arg tup
+  return (mkHsApp e arg)
+
 -- | Create a 'liftE' for the given argument types.
 mkNewLiftETh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewLiftETh ty1 ty2 = do

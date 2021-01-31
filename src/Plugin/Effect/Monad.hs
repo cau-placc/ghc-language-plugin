@@ -24,7 +24,7 @@ module Plugin.Effect.Monad
   , NondetTag(..)
   , liftNondet1, liftNondet2
   , apply1, apply2, apply2Unlifted, apply3
-  , bind, rtrn, fmp, shre, seqValue)
+  , bind, rtrn, fmp, shre, shreTopLevel, seqValue)
   where
 
 import Language.Haskell.TH.Syntax
@@ -55,12 +55,17 @@ fmp f (Nondet a) = Nondet (fmap f a)
 shre :: Shareable Nondet a => Nondet a -> Nondet (Nondet a)
 shre m = Nondet $ fmap Nondet $ memo (unNondet (m >>= shareArgs share))
 
+{-# INLINE[0] shreTopLevel #-}
+shreTopLevel :: (Int, String) -> Nondet a -> Nondet a
+shreTopLevel = const id
+
 {-# INLINE seqValue #-}
 seqValue :: Nondet a -> Nondet b -> Nondet b
 seqValue a b = a >>= \a' -> a' `seq` b
 
 {-# RULES
-"bind/rtrn"       forall f x. bind (rtrn x) f = f x
+"bind/rtrn"    forall f x. bind (rtrn x) f = f x
+"shreTopLevel" forall x i. shreTopLevel i x = x
   #-}
   -- "bind/rtrn'let"   forall e x. let b = e in rtrn x = rtrn (let b = e in x)
 
@@ -77,6 +82,7 @@ instance (Normalform Nondet a1 a2, Show a2) => Show (Nondet a1) where
 instance Sharing Nondet where
   type ShareConstraints Nondet a = Shareable Nondet a
   share = shre
+  shareTopLevel = shreTopLevel
 
 -- | Nondeterministic failure
 failed :: Shareable Nondet a => Nondet a

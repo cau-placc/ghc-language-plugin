@@ -89,6 +89,7 @@ instance MonadState Store Lazy where
 instance Sharing Lazy where
   type ShareConstraints Lazy a = Shareable Lazy a
   share a = memo (a >>= shareArgs share)
+  shareTopLevel = const id
 
 -- | A data type to label and store shared nondeterministic values
 -- on an untyped heap.

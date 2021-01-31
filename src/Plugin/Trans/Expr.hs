@@ -27,6 +27,7 @@ import GHC.Hs.Expr
 import GHC.Core.TyCo.Rep
 import GHC.Types.Id.Make
 import GHC.Types.TypeEnv
+import GHC.Types.Unique
 import GHC.Tc.Types
 import GHC.Tc.Solver
 import GHC.Tc.Types.Origin
@@ -65,7 +66,7 @@ import Plugin.Trans.ConstraintSolver
 liftMonadicBinding :: Bool -> Bool -> [Ct] -> TyConMap -> [ClsInst]
                    -> HsBindLR GhcTc GhcTc
                    -> TcM ([HsBindLR GhcTc GhcTc], [(Var,Var)])
-liftMonadicBinding _ _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
+liftMonadicBinding lcl _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
   setSrcSpan b $ addLandmarkErrCtxt ("In the definition of" <+> ppr name) $ do
   -- create the dictionary variables
   let (tvs, c) = collectTyDictArgs wrap
@@ -85,11 +86,16 @@ liftMonadicBinding _ _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
   let given' = given ++ cts
   (unlifted, _) <- liftIO (removeNondetShareable tcs mtc stc (varType name))
   ty <- liftTypeTcM tcs unlifted
+  let name' = setVarType name ty
   let wrapLike = createWrapperLike ty tvs allEvs
 
+  let (_, monotype) = splitPiTysInvisibleN (length tvs + length c)
+                        (instantiateWith (map mkTyVarTy tvs) ty)
   (eqs', con) <- captureConstraints $ if isDerivedEnum eqs
     then liftDerivedEnumEquation tcs eqs
-    else liftMonadicEquation given' tcs eqs
+    else liftMonadicEquation
+            (if lcl then Nothing else Just (setVarType name monotype))
+            given' tcs eqs
   lvl <- getTcLevel
   env <- getLclEnv
   u <- getUniqueM
@@ -106,7 +112,6 @@ liftMonadicBinding _ _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
 
   let fullwrap = (wrapLike <.> wx)
   ticks' <- mapM (liftTick tcs) ticks
-  let name' = setVarType name ty
   return ([FunBind fullwrap (L b name') eqs' ticks'], [])
   where
     replaceEv ev = setVarType ev <$> replaceTyconTy tcs (varType ev)
@@ -136,7 +141,7 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
   -- lift inner bindings
   let bs = map unLoc (bagToList f)
   f' <- listToBag . map noLoc . concat
-          <$> mapM (fmap fst . liftMonadicBinding False True given' tcs [])
+          <$> mapM (fmap fst . liftMonadicBinding lcl True given' tcs [])
               (foldr (\(n, o) -> substitute n o) bs vs')
 
   -- lift any original evidence that is exported. This is only relevant
@@ -339,12 +344,12 @@ liftValBinds given tcs (XValBindsLR (NValBinds bs _)) = do
         mapM (liftMonadicBinding True False given tcs []) bs1
       return ((rf, listToBag bs2), concat vss)
 
-liftMonadicEquation :: [Ct] -> TyConMap
+liftMonadicEquation :: Maybe Var -> [Ct] -> TyConMap
                     -> MatchGroup GhcTc (LHsExpr GhcTc)
                     -> TcM (MatchGroup GhcTc (LHsExpr GhcTc))
-liftMonadicEquation given tcs (MG a (L b alts) c) = do
+liftMonadicEquation mv given tcs (MG a (L b alts) c) = do
   a'@(MatchGroupTc _ res) <- liftMGTc tcs a
-  alts' <- mapM (liftMonadicAlt given tcs res) alts
+  alts' <- mapM (liftMonadicAlt mv given tcs res) alts
   return (MG a' (L b alts') c)
 
 liftMGTc :: TyConMap -> MatchGroupTc -> TcM MatchGroupTc
@@ -354,28 +359,29 @@ liftMGTc tcs (MatchGroupTc args res) = do
             args
   return (MatchGroupTc args' res')
 
-liftMonadicAlt :: [Ct] -> TyConMap -> Type
+liftMonadicAlt :: Maybe Var -> [Ct] -> TyConMap -> Type
                -> LMatch GhcTc (LHsExpr GhcTc)
                -> TcM (LMatch GhcTc (LHsExpr GhcTc))
-liftMonadicAlt given tcs resty (L a (Match b c d rhs)) = do
+liftMonadicAlt mv given tcs resty (L a (Match b c d rhs)) = do
   (d', s, n) <- unzip3 <$> mapM (liftPattern tcs) d
-  rhs' <- liftMonadicRhs (concat s) (concat n) given tcs resty rhs
+  rhs' <- liftMonadicRhs mv (concat s) (concat n) given tcs resty rhs
   return (L a (Match b c d' rhs'))
 
-liftMonadicRhs :: [(Var, Var)] -> [(Var, Var)] -> [Ct] -> TyConMap -> Type
-               -> GRHSs GhcTc (LHsExpr GhcTc)
+liftMonadicRhs :: Maybe Var -> [(Var, Var)] -> [(Var, Var)] -> [Ct] -> TyConMap
+               -> Type -> GRHSs GhcTc (LHsExpr GhcTc)
                -> TcM (GRHSs GhcTc (LHsExpr GhcTc))
-liftMonadicRhs s n given tcs resty (GRHSs a grhs b) = do
-  grhs' <- mapM (liftMonadicGRhs s n given tcs resty) grhs
+liftMonadicRhs mv s n given tcs resty (GRHSs a grhs b) = do
+  grhs' <- mapM (liftMonadicGRhs mv s n given tcs resty) grhs
   return (GRHSs a grhs' b)
 
-liftMonadicGRhs :: [(Var, Var)] -> [(Var, Var)] -> [Ct] -> TyConMap -> Type
-                -> LGRHS GhcTc (LHsExpr GhcTc)
+liftMonadicGRhs :: Maybe Var -> [(Var, Var)] -> [(Var, Var)] -> [Ct] -> TyConMap
+                -> Type -> LGRHS GhcTc (LHsExpr GhcTc)
                 -> TcM (LGRHS GhcTc (LHsExpr GhcTc))
-liftMonadicGRhs s n given tcs bdyty (L a (GRHS b c body)) = do
+liftMonadicGRhs mv s n given tcs bdyty (L a (GRHS b c body)) = do
   body' <- liftMonadicExpr given tcs body
   body'' <- shareVars tcs s given body' bdyty
-  L a . GRHS b c <$> foldM liftNewTyVar body'' n
+  body''' <- foldM liftNewTyVar body'' n
+  L a . GRHS b c <$> shareTopLevel mv body'''
 
 liftMonadicExpr :: [Ct] -> TyConMap -> LHsExpr GhcTc
                 -> TcM (LHsExpr GhcTc)
@@ -468,7 +474,7 @@ liftMonadicExpr _    _   e@(L l ExplicitSum {}) = do
   failIfErrsM
   return e
 liftMonadicExpr given tcs (L l (HsCase _ scr br)) = do
-  br'@(MG (MatchGroupTc _ ty2) _ _) <- liftMonadicEquation given tcs br
+  br'@(MG (MatchGroupTc _ ty2) _ _) <- liftMonadicEquation Nothing given tcs br
   scr' <- liftMonadicExpr given tcs scr
   ty1 <- getTypeOrPanic scr >>= liftTypeTcM tcs -- ok
   mkBind scr' ty1 (noLoc $ HsPar noExtField $ L l $ HsLamCase noExtField br') ty2
@@ -707,7 +713,7 @@ liftLambda :: [Ct] -> TyConMap -> SrcSpan
            -> TcM (LHsExpr GhcTc)
 liftLambda given tcs l _ mg = do
   mg'@(MG (MatchGroupTc [Scaled m arg] res) _ _)
-    <- liftMonadicEquation given tcs mg
+    <- liftMonadicEquation Nothing given tcs mg
   let e = L l (HsLam noExtField mg')
   let ty = mkVisFunTy m arg res
   mkApp mkNewReturnTh ty [noLoc (HsPar noExtField e)]
@@ -1008,6 +1014,17 @@ shareVars tcs vs evs e' ety = do
       -- is polymorphic we know this, as the function could not have
       -- such a multiplicity if the function could not be linear in v1/v2.
       | otherwise = return (substitute v1 v2 e)
+
+shareTopLevel :: Maybe Var -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
+shareTopLevel Nothing  e = return e
+shareTopLevel (Just v) e = do
+  --printBndrUnsafe "v" v
+  --printAny "e" e
+  let u = varUnique v
+  let i = getKey u
+  mdl <- tcg_mod <$> getGblEnv
+  let s = nameStableString (mkExternalName u mdl (occName v) noSrcSpan)
+  mkApp (mkNewShareTop (i, s)) (varType v) [e]
 
 substitute :: Data a => Var -> Var -> a -> a
 substitute new old = everywhere (mkT substVar)

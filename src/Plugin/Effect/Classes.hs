@@ -31,9 +31,17 @@ import Plugin.Effect.Tree
 
 -- | A class for Monads with support for explicit sharing of effects.
 class Monad s => Sharing s where
-  type ShareConstraints s a :: Constraint
-  type ShareConstraints s a = ()
+  type family ShareConstraints s a :: Constraint
+  type instance ShareConstraints s a = ()
   share :: ShareConstraints s a => s a -> s (s a)
+
+  type family ShareTopLevelConstraints s a :: Constraint
+  type instance ShareTopLevelConstraints s a = ()
+  shareTopLevel :: (ShareTopLevelConstraints s a) => (Int, String) -> s a -> s a
+
+{-# RULES
+"shareTopLevel/return" forall x i. shareTopLevel i (return x) = return x
+  #-}
 
 -- | A class for Nondeterminism
 class Nondet n where
