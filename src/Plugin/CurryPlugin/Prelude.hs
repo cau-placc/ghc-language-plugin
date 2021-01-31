@@ -141,6 +141,7 @@ const x _ = x
 flip :: (a -> b -> c) -> b -> a -> c
 flip f b a = f a b
 
+infixr 0 $
 ($) :: (a -> b) -> a -> b
 ($) f x = f x
 
