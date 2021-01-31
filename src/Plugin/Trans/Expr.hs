@@ -676,8 +676,9 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
       failIfErrsM
       return (s, [])
 
-    synExprExists se | HsLit _ _ <- syn_expr se = False
-                     | otherwise                = True
+
+    synExprExists NoSyntaxExprTc = False
+    synExprExists _              = True
 
     trans1 (SyntaxExprTc e ws w) = do
       e1 <- liftMonadicExpr given tcs (noLoc (mkHsWrap w e))

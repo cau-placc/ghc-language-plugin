@@ -318,7 +318,7 @@ mkListReturn a = do
   return (SyntaxExprTc (unLoc e) [WpHole, WpHole] WpHole)
   where
     mk _ = do
-      th_expr <- liftQ [| return |]
+      th_expr <- liftQ [| (:) [] |]
       let expType = a `mkVisFunTyMany` mkTyConApp listTyCon [a]
       mkNewAny th_expr expType
 
@@ -329,7 +329,7 @@ mkListFail a = do
   return (SyntaxExprTc (unLoc e) [WpHole, WpHole] WpHole)
   where
     mk _ = do
-      th_expr <- liftQ [| fail |]
+      th_expr <- liftQ [|  \_ -> [] |]
       let expType = stringTy `mkVisFunTyMany` mkTyConApp listTyCon [a]
       mkNewAny th_expr expType
 
@@ -340,7 +340,7 @@ mkListGuard = do
   return (SyntaxExprTc (unLoc e) [WpHole, WpHole] WpHole)
   where
     mk _ = do
-      th_expr <- liftQ [| guard |]
+      th_expr <- liftQ [| \b -> if b then [()] else [] |]
       let expType = boolTy `mkVisFunTyMany` mkTyConApp listTyCon [unitTy]
       mkNewAny th_expr expType
 

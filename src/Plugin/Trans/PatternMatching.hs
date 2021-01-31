@@ -115,7 +115,7 @@ compileDo _ GhciStmtCtxt _ = failWithTc $ text
 compileDo _ _ [] =
   panicAny "Empty do-expression or missing last statement" ()
 compileDo ty ctxt [L l (LastStmt x e b r)] = do
-  let ty' = fst (splitAppTy ty)
+  let ty' = snd (splitAppTy ty)
   r' <- case ctxt of
     ListComp -> mkListReturn ty'
     _        -> return r
@@ -132,7 +132,7 @@ compileDo ty ctxt (L l (BindStmt (XBindStmtTc b' _ _ f') p e) : stmts) = do
   let ety = snd (splitAppTy emty)
 
   -- Create the bind and fail for ListComp.
-  let ty' = fst (splitAppTy ty)
+  let ty' = snd (splitAppTy ty)
   (b, f) <- case ctxt of
     ListComp -> (,) <$> mkListBind ety ty' <*> mkListFail ty'
     _        -> return (b', maybe NoSyntaxExprTc id f')
@@ -173,7 +173,7 @@ compileDo _ _ (L l (ApplicativeStmt _ _ _) : _) = do
 compileDo ty ctxt (L l (BodyStmt x e s g) : xs) = do
   (xs', swapCtxt) <- compileDo ty ctxt xs
   -- Add the missing sequence operator (>>) for list comprehensions.
-  let ty' = fst (splitAppTy ty)
+  let ty' = snd (splitAppTy ty)
   (s', g') <- case ctxt of
     ListComp -> (,) <$> mkListSeq unitTy ty' <*> mkListGuard
     _        -> return (s, g)
