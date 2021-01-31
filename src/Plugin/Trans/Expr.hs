@@ -16,6 +16,7 @@ import Data.Syb
 import Data.List
 import Data.Tuple.Extra
 import Data.Maybe
+import Data.Char
 
 import GHC.Plugins
 import GHC.Hs.Binds
@@ -238,7 +239,8 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
       n | "$con2tag_" `isPrefixOf` n -> False
       '$':'c':_     -> True
       '$':'d':'m':_ -> True
-      '$':_         -> False
+      '$':xs        -> not (any isAlpha xs) -- if none of the symbols is alpha,
+                                            -- then no built in, but an operator
       _             -> not (isRecordSelector v)
 
     flattenEv (TcEvBinds _) = []
