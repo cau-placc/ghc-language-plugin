@@ -24,6 +24,8 @@ import GHC.Tc.Types.Evidence
 import GHC.Tc.Types.Constraint
 import GHC.Tc.Utils.Monad
 import GHC.Tc.Utils.Env
+import GHC.Tc.Utils.Zonk
+import GHC.Tc.Solver
 import GHC.Types.Fixity
 import GHC.Types.Error
 import GHC.Core.TyCo.Rep
@@ -299,8 +301,10 @@ mkNewApply2Unlifted ty1 ty2 ty3 = do
 -- | Create a '(>>=)' specialized to lists for list comprehensions.
 mkListBind :: Type -> Type -> TcM SyntaxExprTc
 mkListBind a b = do
-  e <- mkApp mk b []
-  return (SyntaxExprTc (unLoc e) [WpHole, WpHole] WpHole)
+  (e, constraints) <- captureConstraints (mkApp mk b [])
+  wrapper <- mkWpLet . EvBinds <$> simplifyTop constraints
+  res <- zonkTopLExpr e
+  return (SyntaxExprTc (unLoc res) [WpHole, WpHole] WpHole)
   where
     mk _ = do
       th_expr <- liftQ [| (>>=) |]
