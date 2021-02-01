@@ -318,7 +318,7 @@ mkListReturn a = do
   return (SyntaxExprTc (unLoc e) [WpHole, WpHole] WpHole)
   where
     mk _ = do
-      th_expr <- liftQ [| (:) [] |]
+      th_expr <- liftQ [| \x -> (:) x [] |]
       let expType = a `mkVisFunTyMany` mkTyConApp listTyCon [a]
       mkNewAny th_expr expType
 
