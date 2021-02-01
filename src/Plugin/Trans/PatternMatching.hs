@@ -116,10 +116,10 @@ compileDo _ _ [] =
   panicAny "Empty do-expression or missing last statement" ()
 compileDo ty ctxt [L l (LastStmt x e b r)] = do
   let ty' = snd (splitAppTy ty)
-  r' <- case ctxt of
-    ListComp -> mkListReturn ty'
-    _        -> return r
-  return ([L l (LastStmt x e b r')], False)
+  (r', ctxtSwap) <- case ctxt of
+    ListComp -> (, True) <$> mkListReturn ty'
+    _        -> return (r, False)
+  return ([L l (LastStmt x e b r')], ctxtSwap)
 compileDo _ _ (s@(L _ (LastStmt _ _ _ _)) : _) =
   panicAny "Unexpected last statement in do notation" s
 compileDo ty ctxt (L l (BindStmt (XBindStmtTc b' _ _ f') p e) : stmts) = do
