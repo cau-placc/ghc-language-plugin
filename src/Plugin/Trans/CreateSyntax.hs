@@ -11,13 +11,10 @@ syntactic constructs for GHC's abstract syntax tree.
 -}
 module Plugin.Trans.CreateSyntax where
 
-import Control.Monad
-
 import GHC.Plugins hiding (getSrcSpanM)
 import GHC.Hs.Binds
 import GHC.Hs.Extension
 import GHC.Hs.Pat
-import GHC.Hs.Utils
 import GHC.Hs.Expr
 import GHC.Tc.Types
 import GHC.Tc.Types.Evidence
@@ -303,7 +300,7 @@ mkListBind :: Type -> Type -> TcM SyntaxExprTc
 mkListBind a b = do
   (e, constraints) <- captureConstraints (mkApp mk b [])
   wrapper <- mkWpLet . EvBinds <$> simplifyTop constraints
-  res <- zonkTopLExpr e
+  res <- zonkTopLExpr (noLoc (mkHsWrap wrapper (unLoc e)))
   return (SyntaxExprTc (unLoc res) [WpHole, WpHole] WpHole)
   where
     mk _ = do
@@ -318,8 +315,10 @@ mkListBind a b = do
 -- | Create a 'return' specialized to lists for list comprehensions.
 mkListReturn :: Type -> TcM SyntaxExprTc
 mkListReturn a = do
-  e <- mkApp mk a []
-  return (SyntaxExprTc (unLoc e) [WpHole, WpHole] WpHole)
+  (e, constraints) <- captureConstraints (mkApp mk a [])
+  wrapper <- mkWpLet . EvBinds <$> simplifyTop constraints
+  res <- zonkTopLExpr (noLoc (mkHsWrap wrapper (unLoc e)))
+  return (SyntaxExprTc (unLoc res) [WpHole] WpHole)
   where
     mk _ = do
       th_expr <- liftQ [| \x -> (:) x [] |]
@@ -329,8 +328,10 @@ mkListReturn a = do
 -- | Create a 'fail' specialized to lists for list comprehensions.
 mkListFail :: Type -> TcM SyntaxExprTc
 mkListFail a = do
-  e <- mkApp mk a []
-  return (SyntaxExprTc (unLoc e) [WpHole, WpHole] WpHole)
+  (e, constraints) <- captureConstraints (mkApp mk a [])
+  wrapper <- mkWpLet . EvBinds <$> simplifyTop constraints
+  res <- zonkTopLExpr (noLoc (mkHsWrap wrapper (unLoc e)))
+  return (SyntaxExprTc (unLoc res) [WpHole] WpHole)
   where
     mk _ = do
       th_expr <- liftQ [|  \_ -> [] |]
@@ -340,8 +341,10 @@ mkListFail a = do
 -- | Create a 'guard' specialized to lists for list comprehensions.
 mkListGuard :: TcM SyntaxExprTc
 mkListGuard = do
-  e <- mkApp mk unitTy []
-  return (SyntaxExprTc (unLoc e) [WpHole, WpHole] WpHole)
+  (e, constraints) <- captureConstraints (mkApp mk unitTy [])
+  wrapper <- mkWpLet . EvBinds <$> simplifyTop constraints
+  res <- zonkTopLExpr (noLoc (mkHsWrap wrapper (unLoc e)))
+  return (SyntaxExprTc (unLoc res) [WpHole] WpHole)
   where
     mk _ = do
       th_expr <- liftQ [| \b -> if b then [()] else [] |]
@@ -351,8 +354,10 @@ mkListGuard = do
 -- | Create a '(>>)' specialized to lists for list comprehensions.
 mkListSeq :: Type -> Type -> TcM SyntaxExprTc
 mkListSeq a b = do
-  e <- mkApp mk b []
-  return (SyntaxExprTc (unLoc e) [WpHole, WpHole] WpHole)
+  (e, constraints) <- captureConstraints (mkApp mk b [])
+  wrapper <- mkWpLet . EvBinds <$> simplifyTop constraints
+  res <- zonkTopLExpr (noLoc (mkHsWrap wrapper (unLoc e)))
+  return (SyntaxExprTc (unLoc res) [WpHole, WpHole] WpHole)
   where
     mk _ = do
       th_expr <- liftQ [| (>>) |]
