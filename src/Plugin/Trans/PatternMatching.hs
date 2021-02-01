@@ -133,9 +133,11 @@ compileDo ty ctxt (L l (BindStmt (XBindStmtTc b' _ _ f') p e) : stmts) = do
 
   -- Create the bind and fail for ListComp.
   let ty' = snd (splitAppTy ty)
-  (b, f) <- case ctxt of
-    ListComp -> (,) <$> mkListBind ety ty' <*> mkListFail ty'
-    _        -> return (b', maybe NoSyntaxExprTc id f')
+  (b, f, r) <- case ctxt of
+    ListComp -> (,,) <$> mkListBind ety ty'
+                     <*> mkListFail ty'
+                     <*> mkListReturn ty'
+    _        -> return (b', maybe NoSyntaxExprTc id f', NoSyntaxExprTc)
 
   -- Create the regular and fail alternatatives
   -- (if f is not noSynExpr, the fail one never gets used).
@@ -154,11 +156,17 @@ compileDo ty ctxt (L l (BindStmt (XBindStmtTc b' _ _ f') p e) : stmts) = do
   e' <- matchExpr (HsCase noExtField (noLoc (HsVar noExtField v)) mg)
   return ([L l (BindStmt (XBindStmtTc b ty Many Nothing)
                  (noLoc (VarPat noExtField v)) e),
-          noLoc (LastStmt noExtField (noLoc e') Nothing NoSyntaxExprTc)],
+          noLoc (LastStmt noExtField (noLoc (applySynExpr r e'))
+                  Nothing NoSyntaxExprTc)],
           -- Normally ListCompr creates a return around LastStmt.
           -- Prevent creation of duplicate return for MonadCompr
           -- due to nested LastStmt by changing the context.
           case ctxt of { ListComp -> True; _ -> False })
+  where
+    applySynExpr NoSyntaxExprTc x = x
+    applySynExpr (SyntaxExprTc se _ _) x = HsApp noExtField
+      (noLoc (HsPar noExtField (noLoc se)))
+      (noLoc (HsPar noExtField (noLoc x)))
 compileDo ty ctxt (L _ (LetStmt _ bs) : xs) = do
   (bs', vss) <- compileLet bs
   let lets = map toLetStmt bs'
