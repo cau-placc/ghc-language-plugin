@@ -52,6 +52,7 @@ import Plugin.Trans.Type
 import Plugin.Trans.CreateSyntax
 import Plugin.Trans.Util
 import Plugin.Trans.TysWiredIn
+import Plugin.Trans.LExprEQ
 
 {-
   Pattern matching done by the classical matrix algorithm, but instead of
@@ -597,6 +598,28 @@ mkConMatch n vs ty2 err eqs = do
 mkAlts :: Var -> [Var] -> Type -> Type -> LHsExpr GhcTc
        -> [(LPat GhcTc, LMatch GhcTc (LHsExpr GhcTc))]
        -> TcM (Either [LMatch GhcTc (LHsExpr GhcTc)] (LHsExpr GhcTc))
+mkAlts v vs ty1 ty2 err eqs@((vp@(L _ (ViewPat ty e p)), alt) : _) = do
+  let (same, different) = partition (\(pat,_) -> sameTopCon pat vp) eqs
+  let pty = hsLPatType p
+  alts' <- mkAlts v vs ty1 ty2 err different
+  let viewExpr = HsApp noExtField e (noLoc (HsVar noExtField (noLoc v)))
+      pty = hsLPatType p
+      as = viewAlts same
+      mgtc = MatchGroupTc [Scaled Many pty] ty2
+      mkMG others = MG mgtc (noLoc (as ++ others)) Generated
+      mkCse others = HsCase noExtField (noLoc viewExpr) (mkMG others)
+      mkGrhs = GRHS noExtField []
+      mkGrhss e = GRHSs noExtField [noLoc (mkGrhs e)]
+                    (noLoc (EmptyLocalBinds noExtField))
+      mkWild :: LHsExpr GhcTc -> Match GhcTc (LHsExpr GhcTc)
+      mkWild e = Match noExtField CaseAlt [noLoc (WildPat pty)] (mkGrhss e)
+  case alts' of
+    Left remain -> Right . noLoc <$> matchExpr (mkCse [noLoc (mkWild ex)])
+      where
+        ex = noLoc (HsCase noExtField (noLoc (HsVar noExtField (noLoc v))) mgI)
+        mgtcI = MatchGroupTc [Scaled Many ty1] ty2
+        mgI = MG mgtcI (noLoc remain) Generated
+    Right ex   -> Right . noLoc <$> matchExpr (mkCse [noLoc (mkWild ex)])
 mkAlts v vs ty1 ty2 err eqs@((p, alt) : _) = do
   -- Assuming the first pattern is not a lazy pattern,
   -- we need every alternative with the same constructor as the first one
@@ -628,6 +651,15 @@ mkAlts _ _  ty1 _ err   [] =
       grhss = GRHSs noExtField [noLoc grhs] (noLoc (EmptyLocalBinds noExtField))
       alt = Match noExtField CaseAlt [noLoc (WildPat ty1)] grhss
   in return (Left [noLoc alt])
+
+viewAlts :: [(LPat GhcTc, LMatch GhcTc (LHsExpr GhcTc))]
+         -> [LMatch GhcTc (LHsExpr GhcTc)]
+viewAlts [] = []
+viewAlts (( L _ (ViewPat _ _ p)
+          , L l (Match _ _ _ grhss))
+         :rest) = L l (Match noExtField CaseAlt [p] grhss)
+                : viewAlts rest
+viewAlts alts = error $ "Unexpected pattern when desugaring ViewPattern: " ++ showPprUnsafe (ppr alts)
 
 -- Desugars natural patterns (e.g. overloaded literals)
 -- and string patterns into if-then-else.
@@ -743,12 +775,9 @@ flattenPat (L l cn@ConPat {}) =
       cty = conLikeInstOrigArgTys (unLoc (pat_con cn)) argtys
   in (\(args', vs, c) -> (L l (cn { pat_args = args' }), vs, c))
        <$> flattenConPatDetails (pat_args cn) cty argtys
-flattenPat p@(L l (ViewPat _ _ _)) = do
-  flags <- getDynFlags
-  reportError (mkErrMsg flags l neverQualify
-    "View pattern are not supported by the plugin")
-  failIfErrsM
-  return (p, [], [])
+flattenPat (L l (ViewPat ty e p')) = do
+  v <- mkVar (hsLPatType p')
+  return (L l (ViewPat ty e (noLoc (VarPat noExtField (noLoc v)))), [v], [p'])
 flattenPat p@(L l (SplicePat _ _)) = do
   flags <- getDynFlags
   reportError (mkErrMsg flags l neverQualify
@@ -835,7 +864,7 @@ isConstrPat (L _ (ListPat _ _  ))      = True
 isConstrPat (L _ TuplePat {}    )      = True
 isConstrPat (L _ SumPat {}      )      = True
 isConstrPat (L _ ConPat {}      )      = True
-isConstrPat (L _ ViewPat {}     )      = False
+isConstrPat (L _ ViewPat {}     )      = True -- <- Surprisingly, this works.
 isConstrPat (L _ (SplicePat _ _))      = False
 isConstrPat (L _ (LitPat _ _   ))      = True
 isConstrPat (L _ NPat {}        )      = True
@@ -929,7 +958,9 @@ sameTopCon (L _ (SumPat _ _ t1 _))
            (L _ (SumPat _ _ t2 _))                        = t1 == t2
 sameTopCon (L _ (ConPat _ (L _ c1) _))
            (L _ (ConPat _ (L _ c2) _))                    = sameConLike c1 c2
-sameTopCon (L _ ViewPat{}      ) (L _ ViewPat{}      )    = False
+sameTopCon (L _ (ViewPat t1 e1 _)) (L _ (ViewPat t2 e2 _)) = viewLExprEq x1 x2
+  where
+    (x1, x2) = ((e1, t1), (e2, t2))
 sameTopCon (L _ (SplicePat _ _)) (L _ (SplicePat _ _))    = False
 sameTopCon (L _ (LitPat _ l1  )) (L _ (LitPat _ l2  ))    = l1 == l2
 sameTopCon (L _ (NPat _ (L _ l1) _ _ ))

@@ -86,6 +86,7 @@ common deps
     Plugin.Trans.Util
     Plugin.Trans.Var
     Plugin.Trans.Pat
+    Plugin.Trans.LExprEQ
     Plugin.Trans.FunWiredIn
     Plugin.Trans.TysWiredIn
     Plugin.Trans.Enum
