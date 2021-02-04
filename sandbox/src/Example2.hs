@@ -3,6 +3,7 @@
 {-# LANGUAGE MultiParamTypeClasses          #-}
 {-# LANGUAGE FunctionalDependencies         #-}
 {-# LANGUAGE FlexibleInstances              #-}
+{-# LANGUAGE ViewPatterns                   #-}
 module Example2 where
 
 import Plugin.CurryPlugin.Prelude
@@ -20,9 +21,10 @@ instance ListLike [a] a where
   uncons (x:xs) = Just (x, xs)
 
 permutations :: ListLike l e => l -> l
-permutations l = case uncons l of
-    Nothing      -> nil
-    Just (x, xs) -> insert x (permutations xs)
-  where insert e l' = case uncons l' of
-          Nothing      -> e `cons` nil
-          Just (x, xs) -> (e `cons` x `cons` xs) ? (x `cons` insert e xs)
+permutations (uncons -> Nothing     ) = nil
+permutations (uncons -> Just (x, xs)) = insert x (permutations xs)
+
+insert :: ListLike l e => e -> l -> l
+insert e (uncons -> Nothing     ) = e `cons` nil
+insert e (uncons -> Just (x, xs)) = (e `cons` x `cons` xs) ?
+                                    (x `cons` insert e xs)
