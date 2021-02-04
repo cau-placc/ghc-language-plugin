@@ -598,21 +598,20 @@ mkConMatch n vs ty2 err eqs = do
 mkAlts :: Var -> [Var] -> Type -> Type -> LHsExpr GhcTc
        -> [(LPat GhcTc, LMatch GhcTc (LHsExpr GhcTc))]
        -> TcM (Either [LMatch GhcTc (LHsExpr GhcTc)] (LHsExpr GhcTc))
-mkAlts v vs ty1 ty2 err eqs@((vp@(L _ (ViewPat ty e p)), alt) : _) = do
+mkAlts v vs ty1 ty2 err eqs@((vp@(L _ (ViewPat _ e p)), _) : _) = do
   let (same, different) = partition (\(pat,_) -> sameTopCon pat vp) eqs
-  let pty = hsLPatType p
   alts' <- mkAlts v vs ty1 ty2 err different
   let viewExpr = HsApp noExtField e (noLoc (HsVar noExtField (noLoc v)))
       pty = hsLPatType p
-      as = viewAlts same
-      mgtc = MatchGroupTc [Scaled Many pty] ty2
+  as <- viewAlts vs ty2 err same
+  let mgtc = MatchGroupTc [Scaled Many pty] ty2
       mkMG others = MG mgtc (noLoc (as ++ others)) Generated
       mkCse others = HsCase noExtField (noLoc viewExpr) (mkMG others)
       mkGrhs = GRHS noExtField []
-      mkGrhss e = GRHSs noExtField [noLoc (mkGrhs e)]
+      mkGrhss ex = GRHSs noExtField [noLoc (mkGrhs ex)]
                     (noLoc (EmptyLocalBinds noExtField))
       mkWild :: LHsExpr GhcTc -> Match GhcTc (LHsExpr GhcTc)
-      mkWild e = Match noExtField CaseAlt [noLoc (WildPat pty)] (mkGrhss e)
+      mkWild ex = Match noExtField CaseAlt [noLoc (WildPat pty)] (mkGrhss ex)
   case alts' of
     Left remain -> Right . noLoc <$> matchExpr (mkCse [noLoc (mkWild ex)])
       where
@@ -652,14 +651,22 @@ mkAlts _ _  ty1 _ err   [] =
       alt = Match noExtField CaseAlt [noLoc (WildPat ty1)] grhss
   in return (Left [noLoc alt])
 
-viewAlts :: [(LPat GhcTc, LMatch GhcTc (LHsExpr GhcTc))]
-         -> [LMatch GhcTc (LHsExpr GhcTc)]
-viewAlts [] = []
-viewAlts (( L _ (ViewPat _ _ p)
-          , L l (Match _ _ _ grhss))
-         :rest) = L l (Match noExtField CaseAlt [p] grhss)
-                : viewAlts rest
-viewAlts alts = error $ "Unexpected pattern when desugaring ViewPattern: " ++ showPprUnsafe (ppr alts)
+viewAlts :: [Var] -> Type -> LHsExpr GhcTc
+         -> [(LPat GhcTc, LMatch GhcTc (LHsExpr GhcTc))]
+         -> TcM [LMatch GhcTc (LHsExpr GhcTc)]
+viewAlts _  _   _   [] = return []
+viewAlts vs ty2 err ((curr@((L _ (ViewPat _ _ p)), L l _))
+                     :rest) = do
+  (p', vs',_) <- flattenPat p
+  curr' <- flattenEq curr
+  bdy <- compileMatching (vs' ++ vs) ty2 [curr'] err
+  let grhs = GRHS noExtField [] bdy
+  let grhss = GRHSs noExtField [noLoc grhs] (noLoc (EmptyLocalBinds noExtField))
+  let a = L l (Match noExtField CaseAlt [p'] grhss)
+  restAlts <- viewAlts vs ty2 err rest
+  return (a : restAlts)
+viewAlts _  _   _   alts =
+  panicAny "Unexpected pattern when desugaring ViewPattern" alts
 
 -- Desugars natural patterns (e.g. overloaded literals)
 -- and string patterns into if-then-else.
@@ -775,9 +782,9 @@ flattenPat (L l cn@ConPat {}) =
       cty = conLikeInstOrigArgTys (unLoc (pat_con cn)) argtys
   in (\(args', vs, c) -> (L l (cn { pat_args = args' }), vs, c))
        <$> flattenConPatDetails (pat_args cn) cty argtys
-flattenPat (L l (ViewPat ty e p')) = do
-  v <- mkVar (hsLPatType p')
-  return (L l (ViewPat ty e (noLoc (VarPat noExtField (noLoc v)))), [v], [p'])
+flattenPat (L _ (ViewPat _ _ p')) = flattenPat p'
+  -- seems weird, cut the matching on the view is handled somewhere else.
+  -- We are only interested in what is left to match on the inner patttern
 flattenPat p@(L l (SplicePat _ _)) = do
   flags <- getDynFlags
   reportError (mkErrMsg flags l neverQualify
