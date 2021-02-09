@@ -5,6 +5,7 @@
 {-# LANGUAGE RankNTypes             #-}
 {-# LANGUAGE PolyKinds              #-}
 {-# LANGUAGE DataKinds              #-}
+{-# LANGUAGE GADTs                  #-}
 {-# LANGUAGE QuantifiedConstraints  #-}
 {-# LANGUAGE UndecidableInstances   #-}
 {-# LANGUAGE ConstraintKinds        #-}
@@ -136,6 +137,12 @@ id = P.return P.id
 -- | Lifted logical negation
 not :: Nondet (Bool --> Bool)
 not = liftNondet1 P.not
+
+-- Lifted seq operator to force evaluation. Forces the effect and value.
+seq :: forall (k :: RuntimeRep) a b.
+       Nondet (Nondet a -> Nondet (Nondet b -> Nondet b))
+seq = P.return $ \a -> P.return $ \b ->
+  (a P.>>= \a' -> P.seq a' b)
 
 -- | Lifted const function
 const :: Nondet (a --> b --> a)
@@ -433,8 +440,12 @@ instance (OrdND a, OrdND b, ShareableN a, ShareableN b) =>
 class NumND a where
   (+) :: Nondet (a --> a --> a)
   (-) :: Nondet (a --> a --> a)
+  (-) = P.return $ \a -> P.return $ \b ->
+    (+) P.>>= \f -> f a P.>>= \g -> g (negate P.>>= \h -> h b)
   (*) :: Nondet (a --> a --> a)
   negate :: Nondet (a --> a)
+  negate = P.return $ \a -> (-) P.>>= \f ->
+    f (fromInteger P.>>= \h -> h (P.return 0)) P.>>= \g -> g a
   abs    :: Nondet (a --> a)
   signum :: Nondet (a --> a)
   fromInteger :: Nondet (P.Integer --> a)
@@ -754,6 +765,12 @@ class BoundedND a where
 instance BoundedND Int where
   minBound = P.return P.minBound
   maxBound = P.return P.maxBound
+
+class IsStringND a where
+  fromString :: Nondet (StringND --> a)
+
+instance (a ~ Char) => IsStringND (ListND a) where
+  fromString = P.return $ \x -> x
 
 {-
 

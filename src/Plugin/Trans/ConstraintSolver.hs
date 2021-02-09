@@ -10,24 +10,27 @@ GHC's type checking.
 This plugin is disabled automatically during lifting.
 -}
 module Plugin.Trans.ConstraintSolver
-  (tcPluginSolver, removeNondet, solveShareAnyPlugin) where
+  ( tcPluginSolver, removeNondetShareable, removeNondet, solveShareAnyPlugin
+  , mkImplications
+  ) where
 
 import Data.Maybe
 import Data.IORef
 import Data.Tuple.Extra
 import Control.Monad.IO.Class
 
-import TcRnTypes
-import TcPluginM (getTopEnv)
-import Class
-import TcEvidence
-import TcOrigin
-import TyCoRep
-import TysPrim
-import TyCon
-import GhcPlugins
-import UniqMap
-import Constraint
+import GHC.Types.Name.Occurrence
+import GHC.Plugins
+import GHC.Builtin.Types.Prim
+import GHC.Tc.Types
+import GHC.Tc.Plugin
+import GHC.Tc.Types.Origin
+import GHC.Tc.Types.Constraint
+import GHC.Tc.Types.Evidence
+import GHC.Tc.Utils.TcType
+import GHC.Core.Class
+import GHC.Core.TyCo.Rep
+import GHC.Data.Bag
 
 import Plugin.Trans.Type
 import Plugin.Trans.Var
@@ -36,8 +39,8 @@ import Plugin.Trans.Var
 -- lifted imported definitions during GHC's type checking.
 -- The first argument contains the currently known mapping of
 -- lifted and unlifted type constructors.
-tcPluginSolver :: IORef (UniqMap TyCon TyCon,
-                         UniqMap TyCon TyCon,
+tcPluginSolver :: IORef (UniqFM TyCon TyCon,
+                         UniqFM TyCon TyCon,
                          UniqSet TyCon,
                          UniqSet TyCon)
                -> TcPluginSolver
@@ -97,11 +100,12 @@ transformWanted :: TyConMap -> Class -> Ct
 -- "t1 ~# t2" via a transformation to irreducible constraints.
 -- The irreducible constraints are handled by the same function below.
 transformWanted m c (CNonCanonical (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
-  (HoleDest (CoercionHole var href)) si loc))
+  (HoleDest (CoercionHole var _ href)) si loc))
     | tc == eqPrimTyCon = do
       res <- transformWanted m c (CIrredCan
                (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
-                 (HoleDest (CoercionHole var href)) si loc) False)
+                 (HoleDest (CoercionHole var NoBlockSubst href)) si loc)
+               OtherCIS)
       case res of
         Just ((EvExpr (Coercion co), (CIrredCan w' _)), Just new) ->
           return (Just ((EvExpr (Coercion co), (CNonCanonical w')), Just new))
@@ -109,19 +113,20 @@ transformWanted m c (CNonCanonical (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
 -- Transform irreducible constraints like
 -- "(Nondet t1) ~# (Nondet t2)" to "t1 ~# t2".
 transformWanted m _ w@(CIrredCan (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
-  (HoleDest (CoercionHole var href)) si loc) _)
+  (HoleDest (CoercionHole var _ href)) si loc) _)
     | tc == eqPrimTyCon
     = unsafeTcPluginTcM $ do
       mtc <- getMonadTycon
+      stc <- getShareClassTycon
       -- Un-lift both sides of the equality.
-      (ty1', b1) <- liftIO (removeNondet m mtc ty1)
-      (ty2', b2) <- liftIO (removeNondet m mtc ty2)
+      (ty1', b1) <- liftIO (removeNondetShareable m mtc stc ty1)
+      (ty2', b2) <- liftIO (removeNondetShareable m mtc stc ty2)
       -- As long as one of the sides changed,
       -- return the constraint as solved and create a new one
       if b1 || b2
         then do
               -- Un-lift any information about the origin of the constraint.
-              origin' <- liftIO (transformOrigin m mtc (ctl_origin loc))
+              origin' <- liftIO (transformOrigin m mtc stc (ctl_origin loc))
               -- Create the new IORef that will be filled with the evidence
               -- for the new equality later.
               newhref <- liftIO (newIORef Nothing)
@@ -133,13 +138,13 @@ transformWanted m _ w@(CIrredCan (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
                              , ctl_env    = (ctl_env loc) { tcl_ctxt = [] }
                              }
                   -- Create the new coercion hole for the new constraint.
-                  d' = HoleDest (CoercionHole var newhref)
+                  d' = HoleDest (CoercionHole var NoBlockSubst newhref)
                   -- Create the new wanted constraint.
                   newev = CtWanted (TyConApp tc [k1, k2, ty1', ty2']) d' si loc'
                   new = CNonCanonical newev
                   -- Create the coercion that should be used as evidence for
                   -- the old constraint.
-                  co = mkRepReflCo (expandTypeSynonyms ty1)
+                  co = mkRepReflCo (expandTypeSynonyms ty1')
               -- Fill the old coercion hole with the new coercion.
               liftIO (writeIORef href (Just co))
 
@@ -208,41 +213,50 @@ liftClassConstraint m pty xi cls f = unsafeTcPluginTcM $ do
 
 -- | Transform the origin of a constraint
 -- to remove any mention of a Nondet type constructor.
-transformOrigin :: TyConMap -> TyCon -> CtOrigin -> IO CtOrigin
-transformOrigin tcs mtc (TypeEqOrigin act ex th vis) = do
-  act' <- fst <$> removeNondet tcs mtc act
-  ex' <- fst <$> removeNondet tcs mtc ex
+transformOrigin :: TyConMap -> TyCon -> TyCon -> CtOrigin -> IO CtOrigin
+transformOrigin tcs mtc stc (TypeEqOrigin act ex th vis) = do
+  act' <- fst <$> removeNondetShareable tcs mtc stc act
+  ex' <- fst <$> removeNondetShareable tcs mtc stc ex
   return (TypeEqOrigin act' ex' th vis)
-transformOrigin _ _ o = return o
+transformOrigin _ _ _ o = return o
+
+removeNondet :: TyConMap -> TyCon -> TyCon -> Type -> IO (Type, Bool)
+removeNondet = removeGeneral False
+
+removeNondetShareable :: TyConMap -> TyCon -> TyCon -> Type -> IO (Type, Bool)
+removeNondetShareable = removeGeneral True
 
 -- | Un-lift a given type. Returns the new type and True iff the type changed.
-removeNondet :: TyConMap -> TyCon -> Type -> IO (Type, Bool)
-removeNondet tcs mtc = removeNondet' . expandTypeSynonyms
+removeGeneral :: Bool -> TyConMap -> TyCon -> TyCon -> Type -> IO (Type, Bool)
+removeGeneral remS tcs mtc stc = removeGeneral' . expandTypeSynonyms
   where
-    removeNondet' (ForAllTy b ty) =
-      first (ForAllTy b) <$> removeNondet' ty
-    removeNondet' (FunTy f ty1 ty2) = do
-      (ty1', b1) <- removeNondet' ty1
-      (ty2', b2) <- removeNondet' ty2
-      return (FunTy f ty1' ty2', b1 || b2)
-    removeNondet' (CastTy ty kc) =
-      first (flip CastTy kc) <$> removeNondet' ty
-    removeNondet' (CoercionTy c) =
+    removeGeneral' (ForAllTy b ty) =
+      first (ForAllTy b) <$> removeGeneral' ty
+    removeGeneral' (FunTy InvisArg _ (TyConApp tc [_,_]) ty)
+      | tc == stc && remS =
+        second (const True) <$> removeGeneral' ty
+    removeGeneral' (FunTy f m ty1 ty2) = do
+      (ty1', b1) <- removeGeneral' ty1
+      (ty2', b2) <- removeGeneral' ty2
+      return (FunTy f m ty1' ty2', b1 || b2)
+    removeGeneral' (CastTy ty kc) =
+      first (flip CastTy kc) <$> removeGeneral' ty
+    removeGeneral' (CoercionTy c) =
       return (CoercionTy c, False)
-    removeNondet' (LitTy l) =
+    removeGeneral' (LitTy l) =
       return (LitTy l, False)
-    removeNondet' (AppTy ty1 ty2) = do
-      (ty1', b1) <- removeNondet' ty1
-      (ty2', b2) <- removeNondet' ty2
+    removeGeneral' (AppTy ty1 ty2) = do
+      (ty1', b1) <- removeGeneral' ty1
+      (ty2', b2) <- removeGeneral' ty2
       return (AppTy ty1' ty2', b1 || b2)
-    removeNondet' (TyConApp tc [ty])
+    removeGeneral' (TyConApp tc [ty])
       | tc == mtc =
-        second (const True) <$> removeNondet' ty
-    removeNondet' (TyConApp tc args) = do
-      (args', bs) <- unzip <$> mapM removeNondet' args
+        second (const True) <$> removeGeneral' ty
+    removeGeneral' (TyConApp tc args) = do
+      (args', bs) <- unzip <$> mapM removeGeneral' args
       tc' <- lookupTyConMap GetOld tcs tc
       return (TyConApp tc' args', or bs)
-    removeNondet' (TyVarTy v) =
+    removeGeneral' (TyVarTy v) =
       return (TyVarTy v, False)
 
 -- | Create a dummy variable to use in place of required evidence.
@@ -252,4 +266,22 @@ newDummyEvId :: Var -> TcPluginM Var
 newDummyEvId v = unsafeTcPluginTcM $ do
   u <- getUniqueM
   let name = mkSystemName u (mkVarOcc "#dummy_remove")
-  return $ mkLocalVar (DFunId True) name (varType v) vanillaIdInfo
+  return $ mkLocalVar (DFunId True) name Many (varType v) vanillaIdInfo
+
+mkImplications :: [Ct] -> [TcTyVar] -> TcLevel -> TcLclEnv -> EvBindsVar
+               -> WantedConstraints -> Bag Implication
+mkImplications given tvs lvl env bindsVar (WC simpl impl holes) =
+  listToBag $ map mkImplication (simplSingles ++ implSingles ++ holesSingles)
+  where
+    simplSingles = bagToList $
+      mapBag (\e -> WC (listToBag [e]) emptyBag emptyBag) simpl
+    implSingles  = bagToList $
+      mapBag (\e -> WC emptyBag (listToBag [e]) emptyBag) impl
+    holesSingles =
+      bagToList $ mapBag (\e -> WC emptyBag emptyBag (listToBag [e])) holes
+
+    givenVars = map (ctEvEvId . cc_ev) $ filter isGivenCt given
+
+    mkImplication c =
+      Implic lvl tvs UnkSkol givenVars False False env c bindsVar emptyVarSet
+                emptyVarSet IC_Unsolved

@@ -15,19 +15,19 @@ import Data.Tuple.Extra
 import Data.Typeable
 import Data.ByteString                ( unpack )
 
+import GHC.HsToCore
+import GHC.ThToHs
+import GHC.Plugins
 import GHC.Hs.Extension
 import GHC.Hs.Expr
 import GHC.Hs.Lit
-import GHC.ThToHs
-import GhcPlugins
-import Desugar
-import Bag
-import TcRnTypes
-import TcRnMonad
-import TcExpr
-import TcType
-import TcEvidence
-import RnExpr
+import GHC.Tc.Types
+import GHC.Tc.Gen.Expr
+import GHC.Tc.Types.Evidence
+import GHC.Tc.Utils.Monad
+import GHC.Rename.Expr
+import GHC.Data.Bag
+import GHC.Types.SourceText
 
 -- | Lift a computation from the 'Q' monad to the type checker monad.
 liftQ :: Q a -> TcM a
@@ -42,7 +42,7 @@ mkNewAny ex ty = do
       flags <- getDynFlags
       panic ("Error while converting TemplateHaskell: " ++ showSDoc flags msg)
     Right res -> return res
-  fmap fst (rnLExpr ps_expr) >>= flip tcMonoExpr (Check ty)
+  fmap fst (rnLExpr ps_expr) >>= flip tcCheckMonoExpr ty
 
 -- | Get the type of the given expression or return Nothing
 -- if its type annotations are inconsistent.
@@ -55,11 +55,11 @@ getType e = do
 -- | Get the type of the given expression or panic
 -- if its type annotations are inconsistent.
 getTypeOrPanic :: LHsExpr GhcTc -> TcM Type
-getTypeOrPanic e = do 
+getTypeOrPanic e = do
   mty <- getType e
   case mty of
     Just ty -> return ty
-    Nothing -> panicAny "Cound not get type of expression" e
+    Nothing -> panicAny "Could not get type of expression" e
 
 -- | Print an outputable "thing" under the given string tag.
 printAny :: (MonadIO m, HasDynFlags m, Outputable a) => String -> a -> m ()
@@ -85,7 +85,7 @@ panicAnyUnsafe :: (Outputable a, Typeable a) => String -> a -> b
 panicAnyUnsafe str a =
   if typeOf a == typeOf ()
     then panic (str ++ ".")
-    else panic (str ++ ": " ++ showPpr unsafeGlobalDynFlags a)
+    else panic (str ++ ": " ++ showPprUnsafe a)
 
 -- | Creates a compiler panic with the given string tag and binder.
 -- Also aborts compilation.
@@ -97,8 +97,8 @@ panicBndr str a = do
 -- | Creates a compiler panic with the given string tag and binder.
 -- Also aborts compilation.
 panicBndrUnsafe :: (OutputableBndr a) => String -> a -> b
-panicBndrUnsafe str a =
-  panic (str ++ ": " ++ showSDoc unsafeGlobalDynFlags (pprBndr LetBind a))
+panicBndrUnsafe str a = panic $
+  str ++ ": " ++ renderWithContext defaultSDocContext (pprBndr LetBind a)
 
 -- | Print an outputable "thing" under the given string tag in a context that
 -- has no "safe" access to the global compiler flags.
@@ -106,7 +106,7 @@ printAnyUnsafe :: (MonadIO m, Outputable a) => String -> a -> m ()
 printAnyUnsafe str a = do
   liftIO $ putStr str
   liftIO $ putStr ": "
-  liftIO $ putStrLn $ showPpr unsafeGlobalDynFlags a
+  liftIO $ putStrLn $ showPprUnsafe a
 
 -- | Print an outputable binder under the given string tag in a context that
 -- has no "safe" access to the global compiler flags.
@@ -114,7 +114,7 @@ printBndrUnsafe :: (MonadIO m, OutputableBndr a) => String -> a -> m ()
 printBndrUnsafe str a = do
   liftIO $ putStr str
   liftIO $ putStr ": "
-  liftIO $ putStrLn $ showSDocUnsafe (pprBndr LetBind a)
+  liftIO $ putStrLn $ renderWithContext defaultSDocContext (pprBndr LetBind a)
 
 -- |Apply a monadic action to all elements in a bag with source location
 -- annotations.
@@ -128,15 +128,16 @@ setDynFlags f = updEnv (\(Env a b c d) -> Env (a { hsc_dflags = f }) b c d)
 
 -- | Collect all type applications that are performed
 -- by the given wrapper expression.
-collectTyApps :: HsWrapper -> [Type]
-collectTyApps = flip collectTyApps' []
+collectTyApps :: HsWrapper -> ([Type], [Var])
+collectTyApps = flip collectTyApps' ([], [])
   where
     -- (w1 `compose` w2) e --> w1 (w2 e)
     -- => every type application in w2 is applied before w1,
     -- hence the "reversed" order here
     collectTyApps' (WpCompose w1 w2) = collectTyApps' w2 . collectTyApps' w1
-    collectTyApps' (WpTyApp      ty) = (ty:)
-    collectTyApps' _                 = id
+    collectTyApps' (WpTyApp      ty) = first (ty:)
+    collectTyApps' (WpTyLam       v) = second (v:)
+    collectTyApps'  _                = id
 
 -- | Get a list of all arguments of the given arithmetic sequence.
 arithSeqArgs :: ArithSeqInfo GhcTc -> [LHsExpr GhcTc]

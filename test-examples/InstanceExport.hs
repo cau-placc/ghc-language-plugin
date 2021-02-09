@@ -1,14 +1,28 @@
-{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE NoImplicitPrelude              #-}
+{-# LANGUAGE StandaloneDeriving             #-}
+{-# LANGUAGE TypeSynonymInstances           #-}
+{-# LANGUAGE FlexibleInstances              #-}
+{-# LANGUAGE DeriveFunctor                  #-}
 {-# OPTIONS_GHC -fplugin Plugin.CurryPlugin #-}
 module InstanceExport where
 
 import Plugin.CurryPlugin.Prelude
 
 newtype Id a = Id a
-  deriving Show
 
-instance Functor Id where
-  fmap f (Id a) = Id (f a)
+data Phantom a = Phantom
+
+type Number = Phantom Int
+
+instance Num Number where
+
+deriving instance Show (Phantom a)
+
+deriving instance Show a => Show (Id a)
+
+deriving instance Functor Id
+
+deriving instance Functor Phantom
 
 instance Applicative Id where
   pure = Id

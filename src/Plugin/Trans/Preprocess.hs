@@ -11,258 +11,264 @@ rewrites of selected expressions.
 -}
 module Plugin.Trans.Preprocess (preprocessBinding) where
 
-import Data.Generics (everywhereM, mkM)
+import Data.Syb
 
+import GHC.Plugins
 import GHC.Hs.Binds
 import GHC.Hs.Extension
 import GHC.Hs.Expr
 import GHC.Hs.Pat
 import GHC.Hs.Lit
-import TcRnMonad
-import TcEvidence
-import SrcLoc
-import GhcPlugins
-import ErrUtils
+import GHC.Tc.Types
+import GHC.Tc.Types.Evidence
+import GHC.Tc.Utils.Monad
+import GHC.Utils.Error
 
 import Plugin.Trans.Util
+import Plugin.Trans.Type
+import Plugin.Trans.ConstraintSolver
 import Plugin.Trans.PatternMatching
 
 -- | Preprocess a binding before lifting, to get rid of nested pattern matching.
 -- Also removes some explicit type applications and fuses HsWrapper.
-preprocessBinding :: Bool -> HsBindLR GhcTc GhcTc -> TcM (HsBindLR GhcTc GhcTc)
-preprocessBinding lcl (AbsBinds a b c d e f g)
+preprocessBinding :: TyConMap -> Bool -> HsBindLR GhcTc GhcTc
+                  -> TcM (HsBindLR GhcTc GhcTc)
+preprocessBinding tcs lcl (AbsBinds a b c d e f g)
   -- Record selectors should stay like they are for now.
   | not (any (isRecordSelector . abe_poly) d) = do
   -- Rreprocess each binding seperate.
-  bs <- liftBag (preprocessBinding lcl) f
+  bs <- liftBag (preprocessBinding tcs lcl) f
   return (AbsBinds a b c d e bs g)
-preprocessBinding lcl (FunBind a (L b name) eqs c ticks) = do
+preprocessBinding tcs lcl (FunBind a (L b name) eqs ticks) = do
   -- Compile pattern matching first, but only use matchExpr
   -- if this is a top-level binding to avoid doing this multiple times.
   Left matchedGr <- compileMatchGroup eqs
   matched <- (if lcl then return else everywhereM (mkM matchExpr)) matchedGr
   -- Preprocess the inner part of the declaration afterwards.
-  eqs' <- preprocessEquations matched
-  return (FunBind a (L b name) eqs' c ticks)
-preprocessBinding _ a = return a
+  eqs' <- preprocessEquations tcs matched
+  return (FunBind a (L b name) eqs' ticks)
+preprocessBinding _ _ a = return a
 
-preprocessEquations :: MatchGroup GhcTc (LHsExpr GhcTc)
+preprocessEquations :: TyConMap -> MatchGroup GhcTc (LHsExpr GhcTc)
                     -> TcM (MatchGroup GhcTc (LHsExpr GhcTc))
-preprocessEquations (MG a (L b alts) c) = do
-  alts' <- mapM preprocessAlt alts
+preprocessEquations tcs (MG a (L b alts) c) = do
+  alts' <- mapM (preprocessAlt tcs) alts
   return (MG a (L b alts') c)
-preprocessEquations a = return a
 
-preprocessAlt :: LMatch GhcTc (LHsExpr GhcTc)
+preprocessAlt :: TyConMap -> LMatch GhcTc (LHsExpr GhcTc)
               -> TcM (LMatch GhcTc (LHsExpr GhcTc))
-preprocessAlt (L a (Match b c d rhs)) = do
-  rhs' <- preprocessRhs rhs
+preprocessAlt tcs (L a (Match b c d rhs)) = do
+  rhs' <- preprocessRhs tcs rhs
   return (L a (Match b c d rhs'))
-preprocessAlt a = return a
 
-preprocessRhs :: GRHSs GhcTc (LHsExpr GhcTc)
+preprocessRhs :: TyConMap -> GRHSs GhcTc (LHsExpr GhcTc)
               -> TcM (GRHSs GhcTc (LHsExpr GhcTc))
-preprocessRhs (GRHSs a grhs b) = do
-  grhs' <- mapM preprocessGRhs grhs
+preprocessRhs tcs (GRHSs a grhs b) = do
+  grhs' <- mapM (preprocessGRhs tcs) grhs
   return (GRHSs a grhs' b)
-preprocessRhs a = return a
 
-preprocessGRhs :: LGRHS GhcTc (LHsExpr GhcTc)
+preprocessGRhs :: TyConMap -> LGRHS GhcTc (LHsExpr GhcTc)
                -> TcM (LGRHS GhcTc (LHsExpr GhcTc))
-preprocessGRhs (L a (GRHS b c body)) = do
-  body' <- preprocessExpr body
+preprocessGRhs tcs (L a (GRHS b c body)) = do
+  body' <- preprocessExpr tcs body
   return (L a (GRHS b c body'))
-preprocessGRhs a = return a
 
 -- preprocessExpr traverses the AST to reach all local function definitions
 -- and removes some ExplicitTypeApplications.
 -- Some HsWrapper might be split into two halves on each side of an
 -- explicit type applications. We have to fuse those wrappers.
-preprocessExpr :: LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
-preprocessExpr (L l (HsWrap _ w1 (HsAppType _ (L _ (HsWrap _ w2 e)) _))) =
-  return (L l (HsWrap noExtField (w1 <.> w2) e))
-preprocessExpr e@(L _ (HsVar _ (L _ _))) =
+preprocessExpr :: TyConMap -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
+preprocessExpr tcs (L l1 (HsVar x (L l2 v))) = do
+  mtc <- getMonadTycon
+  stc <- getShareClassTycon
+  v' <- setVarType v . fst <$> liftIO (removeNondet tcs mtc stc (varType v))
+  let e = (L l1 (HsVar x (L l2 v')))
   return e
-preprocessExpr e@(L _ HsLit{}) =
+preprocessExpr _ e@(L _ HsLit{}) =
   return e
-preprocessExpr (L l (HsOverLit x lit)) =
+preprocessExpr tcs (L l (HsOverLit x lit)) =
   (\e -> L l (HsOverLit x (lit { ol_witness = unLoc e })))
-    <$> preprocessExpr (noLoc (ol_witness lit))
-preprocessExpr (L l (HsLam x mg)) = do
-  mg' <- preprocessEquations mg
+    <$> preprocessExpr tcs (noLoc (ol_witness lit))
+preprocessExpr tcs (L l (HsLam x mg)) = do
+  mg' <- preprocessEquations tcs mg
   return (L l (HsLam x mg'))
-preprocessExpr (L l (HsLamCase x mg)) = do
-  mg' <- preprocessEquations mg
+preprocessExpr tcs (L l (HsLamCase x mg)) = do
+  mg' <- preprocessEquations tcs mg
   return (L l (HsLamCase x mg'))
-preprocessExpr e@(L _ (HsConLikeOut _ _)) =
+preprocessExpr _ e@(L _ (HsConLikeOut _ _)) =
   return e
-preprocessExpr (L l (OpApp x e1 op e2)) = do
-  e1' <- preprocessExpr e1
-  op' <- preprocessExpr op
-  e2' <- preprocessExpr e2
+preprocessExpr tcs (L l (OpApp x e1 op e2)) = do
+  e1' <- preprocessExpr tcs e1
+  op' <- preprocessExpr tcs op
+  e2' <- preprocessExpr tcs e2
   return (L l (OpApp x e1' op' e2'))
-preprocessExpr (L l (HsApp x e1 e2)) = do
-  e1' <- preprocessExpr e1
-  e2' <- preprocessExpr e2
+preprocessExpr tcs (L l (HsApp x e1 e2)) = do
+  e1' <- preprocessExpr tcs e1
+  e2' <- preprocessExpr tcs e2
   return (L l (HsApp x e1' e2'))
-preprocessExpr (L l (HsAppType x e ty)) = do
-  e' <- preprocessExpr e
-  return (L l (HsAppType x e' ty))
-preprocessExpr (L l (NegApp x e1 e2)) = do
-  e1' <- preprocessExpr e1
-  e2' <- preprocessSynExpr e2
+preprocessExpr tcs (L l (HsAppType ty e _)) = do
+  e' <- unLoc <$> preprocessExpr tcs e
+  case e' of
+    (XExpr (WrapExpr (HsWrap w' e''))) ->
+         return (L l (XExpr (WrapExpr (HsWrap (WpTyApp ty <.> w') e''))))
+    _ -> return (L l (XExpr (WrapExpr (HsWrap (WpTyApp ty) e'))))
+preprocessExpr tcs (L l (NegApp x e1 e2)) = do
+  e1' <- preprocessExpr tcs e1
+  e2' <- preprocessSynExpr tcs e2
   return (L l (NegApp x e1' e2'))
-preprocessExpr (L l (HsPar x e)) = do
-  e' <- preprocessExpr e
+preprocessExpr tcs (L l (HsPar x e)) = do
+  e' <- preprocessExpr tcs e
   return (L l (HsPar x e'))
-preprocessExpr (L l (SectionL x e1 e2)) = do
-  e1' <- preprocessExpr e1
-  e2' <- preprocessExpr e2
+preprocessExpr tcs (L l (SectionL x e1 e2)) = do
+  e1' <- preprocessExpr tcs e1
+  e2' <- preprocessExpr tcs e2
   return (L l (SectionL x e1' e2'))
-preprocessExpr (L l (SectionR x e1 e2)) = do
-  e1' <- preprocessExpr e1
-  e2' <- preprocessExpr e2
+preprocessExpr tcs (L l (SectionR x e1 e2)) = do
+  e1' <- preprocessExpr tcs e1
+  e2' <- preprocessExpr tcs e2
   return (L l (SectionR x e1' e2'))
-preprocessExpr (L l (ExplicitTuple x args b)) = do
-  args' <- mapM preprocessTupleArg args
+preprocessExpr tcs (L l (ExplicitTuple x args b)) = do
+  args' <- mapM (preprocessTupleArg tcs) args
   return (L l (ExplicitTuple x args' b))
-preprocessExpr e@(L l ExplicitSum {}) = do
+preprocessExpr _ e@(L l ExplicitSum {}) = do
   flags <- getDynFlags
   reportError (mkErrMsg flags l neverQualify
     "Unboxed sum types are not supported by the plugin")
   failIfErrsM
   return e
-preprocessExpr (L l (HsCase x sc br)) = do
-  br' <- preprocessEquations br
-  sc' <- preprocessExpr sc
+preprocessExpr tcs (L l (HsCase x sc br)) = do
+  br' <- preprocessEquations tcs br
+  sc' <- preprocessExpr tcs sc
   return (L l (HsCase x sc' br'))
-preprocessExpr (L l (HsIf x Nothing e1 e2 e3)) = do
-  e1' <- preprocessExpr e1
-  e2' <- preprocessExpr e2
-  e3' <- preprocessExpr e3
-  return (L l (HsIf x Nothing e1' e2' e3'))
-preprocessExpr (L l (HsIf x (Just se) e1 e2 e3)) = do
-  se' <- preprocessSynExpr se
-  e1' <- preprocessExpr e1
-  e2' <- preprocessExpr e2
-  e3' <- preprocessExpr e3
-  return (L l (HsIf x (Just se') e1' e2' e3'))
-preprocessExpr e@(L _ (HsMultiIf _ _)) =
+preprocessExpr tcs (L l (HsIf x e1 e2 e3)) = do
+  e1' <- preprocessExpr tcs e1
+  e2' <- preprocessExpr tcs e2
+  e3' <- preprocessExpr tcs e3
+  return (L l (HsIf x e1' e2' e3'))
+preprocessExpr _ e@(L _ (HsMultiIf _ _)) =
   panicAny "Multi-way if should have been desugared before lifting" e
-preprocessExpr (L l (HsLet x bs e)) = do
-  bs' <- preprocessLocalBinds bs
-  e' <- preprocessExpr e
+preprocessExpr tcs (L l (HsLet x bs e)) = do
+  bs' <- preprocessLocalBinds tcs bs
+  e' <- preprocessExpr tcs e
   return (L l (HsLet x bs' e'))
-preprocessExpr (L l1 (HsDo x ctxt (L l2 stmts))) = do
-  stmts' <- preprocessStmts stmts
+preprocessExpr tcs (L l1 (HsDo x ctxt (L l2 stmts))) = do
+  stmts' <- preprocessStmts tcs stmts
   return (L l1 (HsDo x ctxt (L l2 stmts')))
-preprocessExpr (L l (ExplicitList x Nothing es)) = do
-  es' <- mapM preprocessExpr es
+preprocessExpr tcs (L l (ExplicitList x Nothing es)) = do
+  es' <- mapM (preprocessExpr tcs) es
   return (L l (ExplicitList x Nothing es'))
-preprocessExpr e@(L l (ExplicitList _ (Just _) _)) = do
+preprocessExpr _ e@(L l (ExplicitList _ (Just _) _)) = do
   flags <- getDynFlags
   reportError (mkErrMsg flags l neverQualify
     "Overloaded lists are not supported by the plugin")
   failIfErrsM
   return e
-preprocessExpr (L l (RecordCon x cn (HsRecFields flds dd))) = do
-  flds' <- mapM preprocessField flds
+preprocessExpr tcs (L l (RecordCon x cn (HsRecFields flds dd))) = do
+  flds' <- mapM (preprocessField tcs) flds
   return (L l (RecordCon x cn (HsRecFields flds' dd)))
-preprocessExpr (L l (RecordUpd x e flds)) = do
-  e' <- preprocessExpr e
-  flds' <- mapM preprocessField flds
+preprocessExpr tcs (L l (RecordUpd x e flds)) = do
+  e' <- preprocessExpr tcs e
+  flds' <- mapM (preprocessField tcs) flds
   return (L l (RecordUpd x e' flds'))
-preprocessExpr (L l (ExprWithTySig x e ty)) = do
-  e' <- preprocessExpr e
+preprocessExpr tcs (L l (ExprWithTySig x e ty)) = do
+  e' <- preprocessExpr tcs e
   return (L l (ExprWithTySig x e' ty))
-preprocessExpr (L l (ArithSeq x Nothing i)) = do
-  x' <- unLoc <$> preprocessExpr (noLoc x)
-  i' <- preprocessArithExpr i
+preprocessExpr tcs (L l (ArithSeq x Nothing i)) = do
+  x' <- unLoc <$> preprocessExpr tcs (noLoc x)
+  i' <- preprocessArithExpr tcs i
   return (L l (ArithSeq x' Nothing i'))
-preprocessExpr e@(L l (ArithSeq _ (Just _) _)) = do
+preprocessExpr _ e@(L l (ArithSeq _ (Just _) _)) = do
   flags <- getDynFlags
   reportError (mkErrMsg flags l neverQualify
     "Overloaded lists are not supported by the plugin")
   failIfErrsM
   return e
-preprocessExpr (L l (HsSCC a b c e)) = do
-  e' <- preprocessExpr e
-  return (L l (HsSCC a b c e'))
-preprocessExpr (L l (HsCoreAnn a b c e)) = do
-  e' <- preprocessExpr e
-  return (L l (HsCoreAnn a b c e'))
-preprocessExpr e@(L l (HsBracket _ _)) = do
+preprocessExpr tcs (L l (HsPragE x (HsPragSCC a b c) e)) = do
+  e' <- preprocessExpr tcs e
+  return (L l (HsPragE x (HsPragSCC a b c) e'))
+preprocessExpr _ e@(L l (HsBracket _ _)) = do
   flags <- getDynFlags
   reportError (mkErrMsg flags l neverQualify
     "Template Haskell and Quotation are not supported by the plugin")
   failIfErrsM
   return e
-preprocessExpr e@(L l (HsSpliceE _ _)) =  do
+preprocessExpr _ e@(L l (HsSpliceE _ _)) =  do
   flags <- getDynFlags
   reportError (mkErrMsg flags l neverQualify
     "Template Haskell and Quotation are not supported by the plugin")
   failIfErrsM
   return e
-preprocessExpr e@(L l (HsTcBracketOut _ _ _)) = do
+preprocessExpr _ e@(L l (HsTcBracketOut _ _ _ _)) = do
   flags <- getDynFlags
   reportError (mkErrMsg flags l neverQualify
     "Template Haskell and Quotation are not supported by the plugin")
   failIfErrsM
   return e
-preprocessExpr e@(L l (HsProc _ _ _)) =  do
+preprocessExpr _ e@(L l (HsProc _ _ _)) = do
   flags <- getDynFlags
   reportError (mkErrMsg flags l neverQualify
     "Arrow notation is not supported by the plugin")
   failIfErrsM
   return e
-preprocessExpr (L l (HsStatic x e)) = do
-  L l . HsStatic x <$> preprocessExpr e
-preprocessExpr (L l (HsTick a tick e)) = do
-  e' <- preprocessExpr e
+preprocessExpr tcs (L l (HsStatic x e)) = do
+  L l . HsStatic x <$> preprocessExpr tcs e
+preprocessExpr tcs (L l (HsTick a tick e)) = do
+  e' <- preprocessExpr tcs e
   return (L l (HsTick a tick e'))
-preprocessExpr (L l (HsBinTick a b c e)) = do
-  e' <- preprocessExpr e
+preprocessExpr tcs (L l (HsBinTick a b c e)) = do
+  e' <- preprocessExpr tcs e
   return (L l (HsBinTick a b c e'))
-preprocessExpr (L l (HsTickPragma a b c d e)) = do
-  e' <- preprocessExpr e
-  return (L l (HsTickPragma a b c d e'))
-preprocessExpr (L l (HsWrap x w e)) = do
-  e' <- unLoc <$> preprocessExpr (noLoc e)
-  return (L l (HsWrap x w e'))
-preprocessExpr e = panicAny "This expression should not occur after TC" e
+preprocessExpr tcs (L l (XExpr (WrapExpr (HsWrap w e)))) = do
+  e' <- unLoc <$> preprocessExpr tcs (noLoc e)
+  case e' of
+    (XExpr (WrapExpr (HsWrap w' e''))) ->
+         return (L l (XExpr (WrapExpr (HsWrap (w <.> w') e''))))
+    _ -> return (L l (XExpr (WrapExpr (HsWrap w e'))))
+preprocessExpr _ (L _ (HsUnboundVar _ _)) = undefined
+preprocessExpr _ (L _ (HsRecFld _ _)) = undefined
+preprocessExpr _ (L _ (HsOverLabel _ _ _)) = undefined
+preprocessExpr _ e@(L l (HsIPVar _ _)) = do
+  flags <- getDynFlags
+  reportError (mkErrMsg flags l neverQualify
+    "Implicit parameters are not supported by the plugin")
+  failIfErrsM
+  return e
+preprocessExpr _ (L _ (HsRnBracketOut _ _ _)) = undefined
+preprocessExpr _ (L _ (XExpr (ExpansionExpr _))) = undefined
 
-preprocessArithExpr :: ArithSeqInfo GhcTc -> TcM (ArithSeqInfo GhcTc)
-preprocessArithExpr (From e1) = From <$> preprocessExpr e1
-preprocessArithExpr (FromThen e1 e2) = do
-  e1' <- preprocessExpr e1
-  e2' <- preprocessExpr e2
+preprocessArithExpr :: TyConMap -> ArithSeqInfo GhcTc
+                    -> TcM (ArithSeqInfo GhcTc)
+preprocessArithExpr tcs (From e1) = From <$> preprocessExpr tcs e1
+preprocessArithExpr tcs (FromThen e1 e2) = do
+  e1' <- preprocessExpr tcs e1
+  e2' <- preprocessExpr tcs e2
   return (FromThen e1' e2')
-preprocessArithExpr (FromTo e1 e2) = do
-  e1' <- preprocessExpr e1
-  e2' <- preprocessExpr e2
+preprocessArithExpr tcs (FromTo e1 e2) = do
+  e1' <- preprocessExpr tcs e1
+  e2' <- preprocessExpr tcs e2
   return (FromTo e1' e2')
-preprocessArithExpr (FromThenTo e1 e2 e3) = do
-  e1' <- preprocessExpr e1
-  e2' <- preprocessExpr e2
-  e3' <- preprocessExpr e3
+preprocessArithExpr tcs (FromThenTo e1 e2 e3) = do
+  e1' <- preprocessExpr tcs e1
+  e2' <- preprocessExpr tcs e2
+  e3' <- preprocessExpr tcs e3
   return (FromThenTo e1' e2' e3')
 
-preprocessStmts :: [ExprLStmt GhcTc] -> TcM [ExprLStmt GhcTc]
-preprocessStmts [] = return []
-preprocessStmts (s:ss) = do
+preprocessStmts :: TyConMap -> [ExprLStmt GhcTc] -> TcM [ExprLStmt GhcTc]
+preprocessStmts _ [] = return []
+preprocessStmts tcs (s:ss) = do
   s'  <- preprocessStmt s
-  ss' <- preprocessStmts ss
+  ss' <- preprocessStmts tcs ss
   return (s':ss')
   where
     preprocessStmt (L l (LastStmt x e a r)) = do
-      e' <- preprocessExpr e
-      r' <- preprocessSynExpr r
+      e' <- preprocessExpr tcs e
+      r' <- preprocessSynExpr tcs r
       return (L l (LastStmt x e' a r'))
-    preprocessStmt (L l (BindStmt x p e b f)) = do
-      e' <- preprocessExpr e
-      b' <- preprocessSynExpr b
-      f'  <- preprocessSynExpr f
-      return (L l (BindStmt x p e' b' f'))
+    preprocessStmt (L l (BindStmt (XBindStmtTc b m ty f) p e)) = do
+      e' <- preprocessExpr tcs e
+      b' <- preprocessSynExpr tcs b
+      f'  <- maybe (return Nothing) (fmap Just . preprocessSynExpr tcs) f
+      return (L l (BindStmt (XBindStmtTc b' m ty f') p e'))
     preprocessStmt (L l (ApplicativeStmt _ _ _)) = do
       flags <- getDynFlags
       reportError (mkErrMsg flags l neverQualify
@@ -270,12 +276,12 @@ preprocessStmts (s:ss) = do
       failIfErrsM
       return s
     preprocessStmt (L l (BodyStmt x e sq g)) = do
-      e'  <- preprocessExpr e
-      sq' <- preprocessSynExpr sq
-      g'  <- preprocessSynExpr g
+      e'  <- preprocessExpr tcs e
+      sq' <- preprocessSynExpr tcs sq
+      g'  <- preprocessSynExpr tcs g
       return (L l (BodyStmt x e' sq' g'))
     preprocessStmt (L l (LetStmt x bs)) = do
-      bs' <- preprocessLocalBinds bs
+      bs' <- preprocessLocalBinds tcs bs
       return (L l (LetStmt x bs'))
     preprocessStmt (L l (ParStmt _ _ _ _)) =  do
       flags <- getDynFlags
@@ -295,46 +301,47 @@ preprocessStmts (s:ss) = do
         "Recursive do-notation is not supported by the plugin")
       failIfErrsM
       return s
-    preprocessStmt s' = return s'
 
-preprocessSynExpr :: SyntaxExpr GhcTc -> TcM (SyntaxExpr GhcTc)
-preprocessSynExpr (SyntaxExpr e ws w) = do
-  e' <- unLoc <$> preprocessExpr (noLoc e)
-  return (SyntaxExpr e' ws w)
+preprocessSynExpr :: TyConMap -> SyntaxExprTc -> TcM (SyntaxExpr GhcTc)
+preprocessSynExpr tcs (SyntaxExprTc e ws w) = do
+  e' <- unLoc <$> preprocessExpr tcs (noLoc e)
+  return (SyntaxExprTc e' ws w)
+preprocessSynExpr _ NoSyntaxExprTc = return NoSyntaxExprTc
 
-preprocessField :: Located (HsRecField' a (LHsExpr GhcTc))
+preprocessField :: TyConMap -> Located (HsRecField' a (LHsExpr GhcTc))
                 -> TcM (Located (HsRecField' a (LHsExpr GhcTc)))
-preprocessField (L l (HsRecField v e p)) = do
-  e' <- preprocessExpr e
+preprocessField tcs (L l (HsRecField v e p)) = do
+  e' <- preprocessExpr tcs e
   return (L l (HsRecField v e' p))
 
-preprocessTupleArg :: LHsTupArg GhcTc -> TcM (LHsTupArg GhcTc)
-preprocessTupleArg (L l (Present x e)) =
-  L l . Present x <$> preprocessExpr e
-preprocessTupleArg x = return x
+preprocessTupleArg :: TyConMap -> LHsTupArg GhcTc -> TcM (LHsTupArg GhcTc)
+preprocessTupleArg tcs (L l (Present x e)) =
+  L l . Present x <$> preprocessExpr tcs e
+preprocessTupleArg _ x = return x
 
-preprocessLocalBinds :: LHsLocalBinds GhcTc -> TcM (LHsLocalBinds GhcTc)
-preprocessLocalBinds (L l (HsValBinds x b)) = do
-  b' <- preprocessValBinds b
+preprocessLocalBinds :: TyConMap -> LHsLocalBinds GhcTc
+                     -> TcM (LHsLocalBinds GhcTc)
+preprocessLocalBinds tcs (L l (HsValBinds x b)) = do
+  b' <- preprocessValBinds tcs b
   return (L l (HsValBinds x b'))
-preprocessLocalBinds bs@(L l (HsIPBinds _ _)) =  do
+preprocessLocalBinds _ bs@(L l (HsIPBinds _ _)) =  do
   flags <- getDynFlags
   reportError (mkErrMsg flags l neverQualify
     "Implicit parameters are not supported by the plugin")
   failIfErrsM
   return bs
-preprocessLocalBinds b = return b
+preprocessLocalBinds _ b = return b
 
-preprocessValBinds :: HsValBindsLR GhcTc GhcTc
+preprocessValBinds :: TyConMap -> HsValBindsLR GhcTc GhcTc
                    -> TcM (HsValBindsLR GhcTc GhcTc)
-preprocessValBinds bs@ValBinds {} = 
+preprocessValBinds _ bs@ValBinds {} =
   panicAny "Untyped bindings are not expected after TC" bs
-preprocessValBinds (XValBindsLR (NValBinds bs sigs)) = do
+preprocessValBinds tcs (XValBindsLR (NValBinds bs sigs)) = do
   bs' <- mapM preprocessNV bs
   return (XValBindsLR (NValBinds bs' sigs))
   where
     preprocessNV :: (RecFlag, LHsBinds GhcTc)
                  -> TcM (RecFlag, LHsBinds GhcTc)
     preprocessNV (rf, b) = do
-      bs' <- liftBag (preprocessBinding True) b
+      bs' <- liftBag (preprocessBinding tcs True) b
       return (rf, bs')

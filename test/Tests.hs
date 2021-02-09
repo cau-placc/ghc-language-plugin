@@ -26,11 +26,21 @@ tests = do
     , Test (mkCompileTest Succeed    "InstanceImport.hs")
     , Test (mkCompileTest Succeed    "PolyFailed.hs")
     , Test (mkCompileTest Succeed    "Typeclass.hs")
+    , Test (mkCompileTest Succeed    "OverloadedStrings.hs")
+    , Test (mkCompileTest Succeed    "MultiParamFlexible.hs")
+    , Test (mkCompileTest Succeed    "ScopedTypeVariables.hs")
+    , Test (mkCompileTest Succeed    "GeneralizedNewtypeDeriving.hs")
+    , Test (mkCompileTest Succeed    "TypeOperatorsImport.hs")
+    , Test (mkCompileTest Succeed    "TupleSections.hs")
+    , Test (mkCompileTest Succeed    "KindSignatures.hs")
+    , Test (mkCompileTest Succeed    "DefaultSignaturesImport.hs")
     ]
     , if "Semantic" `notElem` args then noTest else testGroup "Semantic Tests"
     [ Test (mkSemanticTest letPattern)
     , Test (mkSemanticTest unknownNat)
     , Test (mkSemanticTest guards)
+    , Test (mkSemanticTest bangPattern)
+    , Test (mkSemanticTest noBangPattern)
     ]]
   where noTest = testGroup "Empty Group" []
 

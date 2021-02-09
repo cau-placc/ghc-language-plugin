@@ -10,6 +10,7 @@ import Plugin.CurryPlugin.Encapsulation
 import qualified Tests.Guards     as Test
 import qualified Tests.UnknownNat as Test
 import qualified Tests.LetPattern as Test
+import qualified Tests.Bang       as Test
 
 data SemanticTestDescr = forall a. (Eq a, Show a) => TestDescr
   {  testExpr   :: a
@@ -36,6 +37,20 @@ letPattern = TestDescr
   { testExpr   = not (null (eval DFS Test.letPattern))
   , testResult = True
   , testName   = "letPattern"
+  }
+
+bangPattern :: SemanticTestDescr
+bangPattern = TestDescr
+  { testExpr   = null (eval DFS Test.testBang)
+  , testResult = True
+  , testName   = "bangPattern"
+  }
+
+noBangPattern :: SemanticTestDescr
+noBangPattern = TestDescr
+  { testExpr   = eval DFS Test.testNoBang
+  , testResult = [()]
+  , testName   = "noBangPattern"
   }
 
 mkSemanticTest :: SemanticTestDescr -> TestInstance

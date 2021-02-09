@@ -1,5 +1,8 @@
 {-# LANGUAGE NoImplicitPrelude              #-}
 {-# OPTIONS_GHC -fplugin Plugin.CurryPlugin #-}
+{-# OPTIONS_GHC -Wno-incomplete-patterns    #-}
+{-# LANGUAGE RankNTypes                     #-}
+{-# LANGUAGE ScopedTypeVariables            #-}
 {-|
 Module      : Plugin.CurryPlugin.ForeignExport
 Description : Prelude for the Curry-Plugin
@@ -7,11 +10,20 @@ Copyright   : (c) Kai-Oliver Prott (2020)
 Maintainer  : kai.prott@hotmail.de
 
 This module is the replacement Prelude to be used with the Curry-Plugin.
-Most of these definitions are from Haskell's default Prelude and not from me. 
+Most of these definitions are from Haskell's default Prelude and not from me.
 -}
 module Plugin.CurryPlugin.Prelude
  ( module Plugin.CurryPlugin.ForeignExport
- , module Plugin.CurryPlugin.Prelude
+ , (&&), (||), not, otherwise
+ , Maybe(..), maybe
+ , Either(..)
+ , fst, snd, curry, uncurry
+ , subtract
+ , id, const, (.), flip, ($), until, asTypeOf
+ , map, (++), filter, head, last, tail, init
+ , (!!), foldr, foldr1, foldl, foldl1, null, length
+ , reverse, and, or, any, all, concat, concatMap
+ , iterate, repeat, cycle, elem, notElem, zip, zipWith, unzip
  ) where
 
 import Plugin.CurryPlugin.ForeignExport
@@ -129,6 +141,7 @@ const x _ = x
 flip :: (a -> b -> c) -> b -> a -> c
 flip f b a = f a b
 
+infixr 0 $
 ($) :: (a -> b) -> a -> b
 ($) f x = f x
 
@@ -145,20 +158,26 @@ asTypeOf x _ = x
 -- List operations
 ------------------------------------------
 
+{-# INLINE map #-}
 map :: (a -> b) -> [a] -> [b]
-map = fmap
+map f xs = build map'
+  where
+    map' c n = foldr (\x ys -> c (f x) ys) n xs
 
 infixr 5 ++
-
+{-# INLINE (++) #-}
 (++) :: [a] -> [a] -> [a]
-[]     ++ ys = ys
-(x:xs) ++ ys = x : xs ++ ys
+xs ++ ys = build append'
+  where
+    {-# INLINE append' #-}
+    append' c n = foldr c (foldr c n ys) xs
 
+{-# INLINE filter #-}
 filter :: (a -> Bool) -> [a] -> [a]
-filter _ []     = []
-filter p (x:xs)
-  | p x         = x : filter p xs
-  | otherwise   = filter p xs
+filter p xs = build filter'
+  where
+    {-# INLINE filter' #-}
+    filter' c n = foldr (\a b -> if p a then c a b else b) n xs
 
 head :: [a] -> a
 head (x:_) = x
@@ -183,17 +202,36 @@ infixl 9 !!
     then x
     else xs !! (n - 1)
 
+{-# INLINE[0] foldr #-}
 foldr :: (a -> b -> b) -> b -> [a] -> b
 foldr _ b []     = b
 foldr f b (x:xs) = x `f` foldr f b xs
 
+{-# INLINE[0] build #-}
+build :: forall a. (forall b. (a -> b -> b) -> b -> b) -> [a]
+build g = g (:) []
+
+{-# INLINE[0] augment #-}
+augment :: forall a. (forall b. (a -> b -> b) -> b -> b) -> [a] -> [a]
+augment g xs = g (:) xs
+
+{-# RULES
+"fold/build"    forall k z (g :: forall b. (a -> b -> b) -> b -> b).
+                foldr k z (build g) = g k z
+
+"foldr/augment" forall k z xs (g :: forall b. (a -> b -> b) -> b -> b).
+                foldr k z (augment g xs) = g k (foldr k z xs)
+ #-}
+
+{-# INLINE foldr1 #-}
 foldr1 :: (a -> a -> a) -> [a] -> a
 foldr1 f (x:xs) = foldr f x xs
 
+{-# INLINE foldl #-}
 foldl :: (b -> a -> b) -> b -> [a] -> b
-foldl _ b []     = b
-foldl f b (x:xs) = foldl f b xs `f` x
+foldl f z xs = foldr (\b g a -> g (f a b)) id xs z
 
+{-# INLINE foldl1 #-}
 foldl1 :: (a -> a -> a) -> [a] -> a
 foldl1 f (x:xs) = foldl f x xs
 
@@ -201,6 +239,7 @@ null :: [a] -> Bool
 null [] = True
 null _  = False
 
+{-# INLINE length #-}
 length :: [a] -> Int
 length = foldl (\c _ -> c + 1) 0
 
@@ -210,20 +249,28 @@ reverse = reverse' []
     reverse' acc []     = acc
     reverse' acc (x:xs) = reverse' (x:acc) xs
 
+{-# INLINE and #-}
 and :: [Bool] -> Bool
 and = foldr (&&) True
 
+{-# INLINE or #-}
 or :: [Bool] -> Bool
 or = foldr (||) False
 
+{-# INLINE any #-}
 any :: (a -> Bool) -> [a] -> Bool
 any p = foldr (\a b -> p a || b) False
 
+{-# INLINE all #-}
 all :: (a -> Bool) -> [a] -> Bool
 all p = foldr (\a b -> p a && b) True
 
+{-# INLINE concat #-}
 concat :: [[a]] -> [a]
-concat = foldr (++) []
+concat xs = build concat'
+  where
+    {-# INLINE concat' #-}
+    concat' c n = foldr (\x y -> foldr c y x) n xs
 
 concatMap :: (a -> [b]) -> [a] -> [b]
 concatMap f = foldr (\a b -> f a ++ b) []
@@ -233,8 +280,15 @@ iterate f x = x : iterate f (f x)
 
 -- a recursive definition is better than a cyclic one, as long as sharing
 -- in cyclic structures is unsupported
-repeat :: a -> [a]
-repeat x = x : repeat x
+{-# INLINE repeat #-}
+repeat :: forall a. a -> [a]
+repeat x = build repeat'
+  where
+    {-# INLINE repeat' #-}
+    repeat' :: (a -> b -> b) -> b -> b
+    repeat' c _ =
+      let repeat'' x' = c x' (repeat'' x)
+      in  repeat'' x
 
 -- same as in repeat
 cycle :: [a] -> [a]
@@ -246,10 +300,16 @@ elem a = any (a==)
 notElem :: Eq a => a -> [a] -> Bool
 notElem a = all (a/=)
 
-zip :: [a] -> [b] -> [(a, b)]
-zip []     _      = []
-zip _      []     = []
-zip (a:as) (b:bs) = (a, b) : zip as bs
+{-# INLINE zip #-}
+zip :: forall a b. [a] -> [b] -> [(a, b)]
+zip xs' ys' = build zip'
+  where
+    {-# INLINE zip' #-}
+    zip' :: ((a, b) -> c -> c) -> c -> c
+    zip' c n =
+      let zip'' (x:xs) (y:ys) = c (x, y) (zip'' xs ys)
+          zip'' _      _      = n
+      in  zip'' xs' ys'
 
 zipWith :: (a -> b -> c) -> [a] -> [b] -> [c]
 zipWith _ []     _      = []

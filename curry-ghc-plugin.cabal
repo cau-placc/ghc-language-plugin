@@ -31,17 +31,15 @@ source-repository head
 common deps
   hs-source-dirs: src
   build-depends:
-    base             ^>= 4.14.0.0,
-    ghc              ^>= 8.10.1,
-    ghc-prim         ^>= 0.6.1,
-    template-haskell ^>= 2.16.0,
-    bytestring       ^>= 0.10.10.0,
-    containers       ^>= 0.6.0,
-    deque            ^>= 0.4.3,
-    transformers     ^>= 0.5.6,
-    mtl              ^>= 2.2.2,
-    syb              ^>= 0.7.1,
-    extra            ^>= 1.7.3
+    base             ^>= 4.16.0.0,
+    ghc              ^>= 9.1.0,
+    ghc-prim         -any,
+    template-haskell -any,
+    bytestring       -any,
+    containers       -any,
+    transformers     -any,
+    mtl              -any,
+    extra            -any,
   ghc-options:      -Wall
   default-language: Haskell2010
   other-extensions:
@@ -70,6 +68,7 @@ common deps
     MultiParamTypeClasses,
     TemplateHaskell
   other-modules:
+    Data.Syb
     Plugin.Dump
     Plugin.CurryPlugin.ForeignExport
     Plugin.Effect.Tree
@@ -87,13 +86,16 @@ common deps
     Plugin.Trans.Util
     Plugin.Trans.Var
     Plugin.Trans.Pat
+    Plugin.Trans.LExprEQ
     Plugin.Trans.FunWiredIn
     Plugin.Trans.TysWiredIn
     Plugin.Trans.Enum
+    Plugin.Trans.Warn
     Plugin.Trans.Preprocess
     Plugin.Trans.Derive
     Plugin.Trans.PatternMatching
     Plugin.Trans.ConstraintSolver
+    Plugin.Trans.Rule
 
 library
   import: deps
@@ -117,6 +119,7 @@ test-suite tests
     Tests.Guards
     Tests.UnknownNat
     Tests.LetPattern
+    Tests.Bang
 
     Plugin.CurryPlugin
     Plugin.CurryPlugin.BuiltIn
@@ -128,7 +131,7 @@ test-suite tests
     Plugin.Effect.CurryEffect
   build-depends:
     curry-ghc-plugin,
-    process   ^>= 1.6.5.0,
-    filepath  ^>= 1.4.2.1,
-    directory ^>= 1.3.3.0,
-    Cabal     ^>= 3.2.0.0
+    process   -any,
+    filepath  -any,
+    directory -any,
+    Cabal     ^>= 3.4.0.0

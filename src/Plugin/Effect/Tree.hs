@@ -1,4 +1,8 @@
-{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveFunctor   #-}
+{-# LANGUAGE TypeFamilies    #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ViewPatterns    #-}
+{-# LANGUAGE OverloadedLists #-}
 {-|
 Module      : Plugin.Effect.THEval
 Description : Definition of choice trees and search algorithms
@@ -12,7 +16,6 @@ module Plugin.Effect.Tree (Tree(..), dfs, bfs) where
 
 import Control.Monad
 import Control.Applicative
-import Deque.Strict
 import GHC.Exts
 
 -- | Nondeterministic can be represented as trees, where results are
@@ -54,13 +57,64 @@ dfs t = dfs' t []
     dfs' (Choice t1 t2) = dfs' t1 . dfs' t2
     dfs' Failed         = id
 
+
 -- | Breadth-first traversal of a choice tree to collect results into a list.
 bfs :: Tree a -> [a]
-bfs t = bfs' (fromList [t])
+bfs t = bfs' [t]
   where
-    bfs' q = case uncons q of
-      Just (Leaf a      , q') -> a : bfs' q'
-      Just (Choice t1 t2, q') ->
-        bfs' (t2 `snoc` (t1 `snoc` q'))
-      Just (Failed      , q') -> bfs' q'
-      Nothing                 -> []
+    bfs' (Leaf   a     :< q) = a : bfs' q
+    bfs' (Choice t1 t2 :< q) = bfs' (t2 :< t1 :< q)
+    bfs' (Failed       :< q) = bfs' q
+    bfs' Nil                 = []
+
+---------------------------------------
+-- Queue Implementation
+---------------------------------------
+
+data Queue a = Q [a] [a]
+  deriving (Show, Eq, Ord, Functor)
+
+{-# COMPLETE (:<), Nil #-}
+
+infixr 5 :<
+pattern (:<) :: a -> Queue a -> Queue a
+pattern x :< xs <- (uncons -> Just (x, xs)) where
+  x :< xs = enqueue x xs
+
+pattern Nil :: Queue a
+pattern Nil <- (uncons -> Nothing) where
+  Nil = emptyQueue
+
+instance IsList (Queue a) where
+  type Item (Queue a) = a
+  fromList = flip Q []
+  toList (Q xs ys) = xs ++ reverse ys
+
+instance Semigroup (Queue a) where
+  Q []  _   <> q         = q
+  Q xs1 ys1 <> Q xs2 ys2 = Q xs1 (ys1 ++ reverse xs2 ++ ys2)
+
+instance Monoid (Queue a) where
+  mempty = emptyQueue
+
+emptyQueue :: Queue a
+emptyQueue = Q [] []
+
+enqueue :: a -> Queue a -> Queue a
+enqueue x (Q xs ys) = queue xs (x:ys)
+
+uncons :: Queue a -> Maybe (a, Queue a)
+uncons q = (,) <$> peek q <*> dequeue q
+
+peek :: Queue a -> Maybe a
+peek (Q (x:_) _) = Just x
+peek _           = Nothing
+
+dequeue :: Queue a -> Maybe (Queue a)
+dequeue (Q (_:xs) ys) = Just (queue xs ys)
+dequeue _             = Nothing
+
+-- Invariant: If the first list is empty, then also the second list is empty.
+queue :: [a] -> [a] -> Queue a
+queue [] ys = Q (reverse ys) []
+queue xs ys = Q xs ys

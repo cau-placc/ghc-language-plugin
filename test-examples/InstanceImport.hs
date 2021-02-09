@@ -25,3 +25,7 @@ test4 = show test3
 
 test5 :: String
 test5 = show (Id Foo)
+
+-- Missing implementation in the Num instance, but type checks otherwise
+test6 :: Number
+test6 = 1 + 2

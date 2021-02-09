@@ -12,15 +12,15 @@ variables that might need to be shared.
 module Plugin.Trans.Pat (liftPattern) where
 
 import GHC.Hs.Pat
-import GHC.Hs.Types
 import GHC.Hs.Extension
-import GhcPlugins hiding (getSrcSpanM)
-import TcRnTypes
-import ConLike
-import TcEvidence
-import Bag
-import TcRnMonad
-import ErrUtils
+import GHC.Hs.Type
+import GHC.Plugins hiding (substTy, extendTvSubst, getSrcSpanM)
+import GHC.Tc.Types
+import GHC.Tc.Types.Evidence
+import GHC.Tc.Utils.Monad
+import GHC.Core.ConLike
+import GHC.Utils.Error
+import GHC.Data.Bag
 
 import Plugin.Trans.Type
 import Plugin.Trans.Constr
@@ -85,13 +85,11 @@ liftPat' _ _ p@AsPat {} =
 liftPat' new tcs (ParPat x p) = do
   (p', vars1, vars2) <- liftPat new tcs p
   return (ParPat x p', vars1, vars2)
-liftPat' _ _ p@BangPat {} = do
-  flags <- getDynFlags
-  l <- getSrcSpanM
-  reportError (mkErrMsg flags l neverQualify
-    "Bang patterns are not supported by the plugin")
-  failIfErrsM
-  return (p, [], [])
+-- ignore any leftover bangs, their strictness is ensured during
+-- the pattern match compilation
+liftPat' new tcs (BangPat _ p) = do
+  (p', vars1, vars2) <- liftPat new tcs p
+  return (unLoc p', vars1, vars2) 
 liftPat' _ _ p@(ListPat (ListPatTc _ Nothing) _) =
   panicAny "List pattern should have been desugared before lifting" p
 liftPat' _ _ p@(ListPat (ListPatTc _ (Just _)) _) = do
@@ -107,7 +105,8 @@ liftPat' _ tcs (TuplePat tys args box) = do
   (args', vs, _) <- unzip3 <$> mapM (liftPat False tcs) args
   let det = PrefixCon args'
   tys' <- mapM (liftInnerTyTcM tcs) tys
-  return (ConPatOut lc tys' [] [] (EvBinds emptyBag) det WpHole, concat vs, [])
+  let res = ConPat (ConPatTc tys' [] [] (EvBinds emptyBag) WpHole) lc det
+  return (res, concat vs, [])
 liftPat' _ _ p@SumPat {} = do
   flags <- getDynFlags
   l <- getSrcSpanM
@@ -115,10 +114,8 @@ liftPat' _ _ p@SumPat {} = do
     "Unboxed sum types are not supported by the plugin")
   failIfErrsM
   return (p, [], [])
-liftPat' _ _ p@ConPatIn {} =
-  panicAny "Untyped pattern not expected after TC" p
-liftPat' _ tcs p@ConPatOut{ pat_args = args
-                        , pat_arg_tys = tys
+liftPat' _ tcs p@ConPat { pat_con_ext = x@ConPatTc { cpt_arg_tys = tys }
+                        , pat_args = args
                         , pat_con = L l (RealDataCon con) } = do
   let recParent = RecSelData (dataConTyCon con)
   let isNew = isNewTyCon (dataConTyCon con)
@@ -127,21 +124,22 @@ liftPat' _ tcs p@ConPatOut{ pat_args = args
   -- so we have to use liftInnerTy.
   tys' <- mapM (liftInnerTyTcM tcs) tys
   con' <- L l . RealDataCon <$> liftIO (getLiftedCon con tcs)
-  let p' = p { pat_args = args', pat_arg_tys = tys', pat_con = con' }
+  let x' = x { cpt_arg_tys = tys' }
+  let p' = p { pat_args = args', pat_con_ext = x', pat_con = con' }
   if isNew
     -- Vars under newtypes do not need to be shared,
     -- as their nondeterminism is already triggered.
     -- But they have to be wrapped in a return again.
     then return (p', [], varsN)
     else return (p', varsS, [])
-liftPat' _ _ p@ConPatOut{ } = do
+liftPat' _ _ p@ConPat {} = do
   flags <- getDynFlags
   l <- getSrcSpanM
   reportError (mkErrMsg flags l neverQualify
     "Pattern synonyms are not supported by the plugin")
   failIfErrsM
   return (p, [], [])
-liftPat' _ _ p@ (ViewPat _ _ _) = do
+liftPat' _ _ p@(ViewPat _ _ _) = do
   flags <- getDynFlags
   l <- getSrcSpanM
   reportError (mkErrMsg flags l neverQualify
@@ -163,8 +161,7 @@ liftPat' _   _   p@(NPlusKPat _ (L _ v) _ _ _ _) = do
   -- as v is definitely unlifted.
   return (p, [], [(setVarUnique v u, v)])
 liftPat' new tcs (SigPat _ p _) = liftPat' new tcs (unLoc p)
-liftPat' new tcs (CoPat _ _ p _) = liftPat' new tcs p
-liftPat' _   _   p@(XPat _) = return (p, [], [])
+liftPat' new tcs (XPat (CoPat _ p _)) = liftPat' new tcs p
 
 liftConDetail :: Bool -> TyConMap -> RecSelParent -> HsConPatDetails GhcTc
               -> TcM (HsConPatDetails GhcTc, [(Var, Var)], [(Var, Var)])
@@ -194,4 +191,3 @@ liftFieldOcc tcs p (FieldOcc v _) = do
   stc <- getShareClassTycon
   v' <- liftIO (getLiftedRecSel stc mty us tcs p v)
   return (FieldOcc v' (noLoc (nameRdrName (varName v'))))
-liftFieldOcc _   _ x = return x

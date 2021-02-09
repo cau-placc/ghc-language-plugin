@@ -7,6 +7,9 @@
 {-# LANGUAGE UndecidableInstances   #-}
 {-# LANGUAGE DefaultSignatures      #-}
 {-# LANGUAGE LambdaCase             #-}
+{-# LANGUAGE LinearTypes            #-}
+{-# LANGUAGE ConstraintKinds        #-}
+{-# LANGUAGE TypeFamilies           #-}
 {-|
 Module      : Plugin.Effect.Classes
 Description : Type classes used for the effect implementation
@@ -22,12 +25,23 @@ modernized with a generic implementation by Kai-Oliver Prott.
 module Plugin.Effect.Classes where
 
 import GHC.Generics as Gen
+import Data.Kind
 
 import Plugin.Effect.Tree
 
 -- | A class for Monads with support for explicit sharing of effects.
 class Monad s => Sharing s where
-  share :: Shareable s a => s a -> s (s a)
+  type family ShareConstraints s a :: Constraint
+  type instance ShareConstraints s a = ()
+  share :: ShareConstraints s a => s a -> s (s a)
+
+  type family ShareTopLevelConstraints s a :: Constraint
+  type instance ShareTopLevelConstraints s a = ()
+  shareTopLevel :: (ShareTopLevelConstraints s a) => (Int, String) -> s a -> s a
+
+{-# RULES
+"shareTopLevel/return" forall x i. shareTopLevel i (return x) = return x
+  #-}
 
 -- | A class for Nondeterminism
 class Nondet n where
@@ -236,5 +250,5 @@ instance (Monad m) => Shareable m Double where
 instance (Monad m) => Shareable m Char where
   shareArgs _ = return
 
-instance (Monad m) => Shareable m (a -> b) where
+instance (Monad m) => Shareable m (a %n -> b) where
   shareArgs _ = return

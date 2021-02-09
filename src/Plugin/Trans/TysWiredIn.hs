@@ -13,20 +13,21 @@ module Plugin.Trans.TysWiredIn (loadDefaultTyConMap, builtInModule) where
 import Data.IORef
 import Data.Tuple
 
-import GhcPlugins
-import TcRnTypes
-import PrelNames
-import UniqMap
-import Finder
-import IfaceEnv
-import TcRnMonad
+import GHC.Types.Name.Occurrence
+import GHC.Plugins
+import GHC.Unit.Finder
+import GHC.Tc.Types
+import GHC.Tc.Utils.Monad
+import GHC.Tc.Utils.Env
+import GHC.Iface.Env
+import GHC.Builtin.Names
 
 import Plugin.Trans.Type
 
 -- | Load the mapping between lifted and unlifted
 -- for all built-in type constructors.
-loadDefaultTyConMap :: TcM (IORef (UniqMap TyCon TyCon,
-                                   UniqMap TyCon TyCon,
+loadDefaultTyConMap :: TcM (IORef (UniqFM TyCon TyCon,
+                                   UniqFM TyCon TyCon,
                                    UniqSet TyCon,
                                    UniqSet TyCon))
 loadDefaultTyConMap = do
@@ -38,8 +39,8 @@ loadDefaultTyConMap = do
   let allLoaded  = others ++ loaded
   let allSwap    = map swap allLoaded
   let (old, new) = unzip allLoaded
-  liftIO (newIORef (listToUniqMap allLoaded,
-                    listToUniqMap allSwap,
+  liftIO (newIORef (listToUFM allLoaded,
+                    listToUFM allSwap,
                     mkUniqSet old,
                     mkUniqSet new))
 
@@ -47,7 +48,7 @@ loadDefaultTyConMap = do
 -- for the given original and replacement name.
 load :: (Name, String) -> TcM (TyCon, TyCon)
 load (n, s) = do
-  old <- lookupTyCon n
+  old <- tcLookupTyCon n
   new <- getTyCon builtInModule s
   return (old, new)
 
@@ -59,27 +60,27 @@ loadAdditional = do
   hscEnv <- getTopEnv
   Found _ bse <- liftIO $
     findImportedModule hscEnv (mkModuleName "GHC.Base") Nothing
-  altA <- lookupTyCon =<< lookupOrig bse ( mkTcOcc "Alternative" )
+  altA <- tcLookupTyCon =<< lookupOrig bse ( mkTcOcc "Alternative" )
   newA <- getTyCon builtInModule "AlternativeND"
 
   -- String is not in PrelNames, so we do the same.
-  altS <- lookupTyCon =<< lookupOrig bse ( mkTcOcc "String" )
+  altS <- tcLookupTyCon =<< lookupOrig bse ( mkTcOcc "String" )
   newS <- getTyCon builtInModule "StringND"
 
   -- And again for ShowS.
   Found _ shw <- liftIO $
     findImportedModule hscEnv (mkModuleName "GHC.Show") Nothing
-  altH <- lookupTyCon =<< lookupOrig shw ( mkTcOcc "ShowS" )
+  altH <- tcLookupTyCon =<< lookupOrig shw ( mkTcOcc "ShowS" )
   newH <- getTyCon builtInModule "ShowSND"
 
   -- And again for Real.
   Found _ real <- liftIO $
     findImportedModule hscEnv (mkModuleName "GHC.Real") Nothing
-  altR <- lookupTyCon =<< lookupOrig real ( mkTcOcc "Real" )
+  altR <- tcLookupTyCon =<< lookupOrig real ( mkTcOcc "Real" )
   newR <- getTyCon builtInModule "RealND"
 
   -- And again for Integral
-  altI <- lookupTyCon =<< lookupOrig real ( mkTcOcc "Integral" )
+  altI <- tcLookupTyCon =<< lookupOrig real ( mkTcOcc "Integral" )
   newI <- getTyCon builtInModule "IntegralND"
   return [(altH, newH), (altR, newR), (altI, newI), (altA, newA), (altS, newS)]
 
@@ -100,6 +101,7 @@ originalNamesToLoad = names
       , (applicativeClassName , "ApplicativeND")
       , (monadClassName       , "MonadND")
       , (monadFailClassName   , "MonadFailND")
+      , (isStringClassName    , "IsStringND")
       , (listTyConName        , "ListND")
       , (rationalTyConName    , "RationalND")
       , (ratioTyConName       , "RatioND")

@@ -13,14 +13,14 @@ module Plugin.Trans.Derive (mkDerivings) where
 import Data.Maybe
 
 import GHC.Hs.Extension
-import GHC.Hs.Types
+import GHC.Hs.Type
 import GHC.Hs.Decls
-import GHC.Hs.Utils hiding (typeToLHsType)
-import TcRnTypes
-import SrcLoc
-import GhcPlugins
-import TyCoRep
-import TcType
+import GHC.Hs.Utils
+import GHC.Types.Name.Occurrence hiding (varName)
+import GHC.Plugins hiding (substTy, extendTvSubst)
+import GHC.Tc.Types
+import GHC.Tc.Utils.TcType
+import GHC.Core.TyCo.Rep
 
 import Plugin.Trans.Type
 
@@ -78,19 +78,22 @@ mkDerivingShare (_, tycon) | isVanillaAlgTyCon tycon = do
   -- Get the lifted type constructor type.
   let tyconty = toTy (tyConName tycon)
   -- Get all type variables of the lifted type constructor.
-  let vars = map varName $ tyConTyVars tycon
+  let vars = tyConTyVars tycon
+  let varsname = map varName vars
+  let varsty = map mkTyVarTy vars
   -- Get types of every constructor argument.
-  let tys = concatMap dataConOrigArgTys (tyConDataCons tycon)
+  let tys = concatMap (map (\(Scaled _ ty) -> ty) .
+                           (`dataConInstArgTys` varsty)) (tyConDataCons tycon)
   -- Filter the ones that have no type variable.
   let requireds = mapMaybe (getRequired mname) tys
   -- Create a Shareable context for each remaining type.
   let ctxt = map (mkHsAppTy (mkHsAppTy scty mty)) requireds
   let clsty = mkHsAppTy scty mty
   -- Apply the class to the fully saturated lifted type constructor.
-  let bdy = mkHsAppTy clsty (foldr appVars tyconty vars)
+  let bdy = mkHsAppTy clsty (foldr appVars tyconty varsname)
   -- Include all Shareable contexts in the type and
   -- add the type variables to the set of bound variables.
-  let ib = HsIB vars (noLoc (HsQualTy noExtField (noLoc ctxt) bdy))
+  let ib = HsIB varsname (noLoc (HsQualTy noExtField (noLoc ctxt) bdy))
   let instty = mkEmptyWildCardBndrs ib
   -- Create the deriving declaration for the lifted type constructor.
   return (Just (noLoc (DerivDecl noExtField instty Nothing Nothing)))
@@ -113,8 +116,10 @@ mkDerivingNF (old, new) | isVanillaAlgTyCon new = do
   let oldvarsty = map mkTyVarTy oldvars
   let newvarsname = map varName newvars
   let oldvarsname = map varName oldvars
-  let newtys = concatMap (`dataConInstArgTys` newvarsty) (tyConDataCons new)
-  let oldtys = concatMap (`dataConInstArgTys` oldvarsty) (tyConDataCons old)
+  let newtys = concatMap (map (\(Scaled _ ty) -> ty) .
+                          (`dataConInstArgTys` newvarsty)) (tyConDataCons new)
+  let oldtys = concatMap (map (\(Scaled _ ty) -> ty) .
+                          (`dataConInstArgTys` oldvarsty)) (tyConDataCons old)
 
   -- In addition to requiring a Normalform instance for every value parameter,
   -- we also need a Normalform instance for each phanton type variable.
@@ -162,48 +167,37 @@ toTy :: Name -> LHsType GhcRn
 toTy n = noLoc (HsTyVar noExtField NotPromoted (noLoc n))
 
 -- | Convert a Type to a pre-typecheck LHsType.
--- Mostly copied from GHC sources. 
+-- Mostly copied from GHC sources.
 typeToLHsType :: Name -> Type -> LHsType GhcRn
 typeToLHsType mtc = go
   where
     go :: Type -> LHsType GhcRn
-    go ty@(FunTy _ arg _)
+    go ty@(FunTy _ _  arg _)
       | isPredTy arg
       , (theta, tau) <- tcSplitPhiTy ty
       = noLoc (HsQualTy { hst_ctxt = noLoc (map go theta)
                         , hst_xqual = noExtField
                         , hst_body = go tau })
-    go (FunTy _ arg res) = nlHsFunTy (go arg) (go res)
+    go (FunTy _ _ arg res) = nlHsFunTy (go arg) (go res)
     go (ForAllTy (Bndr v vis) ty)
-      = noLoc (HsForAllTy { hst_bndrs = [go_tv v]
+      = noLoc (HsForAllTy { hst_tele = if isVisibleArgFlag vis
+                              then HsForAllVis   noExtField [go_tv1 v]
+                              else HsForAllInvis noExtField [go_tv2 v]
                           , hst_xforall = noExtField
-                          , hst_body = go ty
-                          , hst_fvf = if isVisibleArgFlag vis
-                                        then ForallVis
-                                        else ForallInvis })
-    go (TyVarTy tv)         = nlHsTyVar (varName tv)
+                          , hst_body = go ty })
     go (AppTy t1 t2)        = nlHsAppTy (go t1) (go t2)
-    go (LitTy (NumTyLit n))
-      = noLoc $ HsTyLit noExtField (HsNumTy NoSourceText n)
-    go (LitTy (StrTyLit s))
-      = noLoc $ HsTyLit noExtField (HsStrTy NoSourceText s)
-    go ty@(TyConApp tc args)
+    go (TyConApp tc args)
       | mtc == tyConName tc, [x] <- args
       = go x
-      | any isInvisibleTyConBinder (tyConBinders tc)
-        -- We must produce an explicit kind signature here to make certain
-        -- programs kind-check. See Note [Kind signatures in typeToLHsType].
-      = noLoc $ HsKindSig noExtField lhs_ty (go (typeKind ty))
-      | otherwise = lhs_ty
-       where
-        lhs_ty = nlHsTyConApp (tyConName tc) (map go args')
-        args'  = filterOutInvisibleTypes tc args
-    go (CastTy ty _)        = go ty
-    go (CoercionTy co)      = pprPanic "toLHsSigWcType" (ppr co)
+    go ty = noLoc (XHsType (NHsCoreTy ty))
 
    -- Source-language types have _invisible_ kind arguments,
    -- so we must remove them here (GHC Trac #8563)
 
-    go_tv :: TyVar -> LHsTyVarBndr GhcRn
-    go_tv tv = noLoc $ KindedTyVar noExtField (noLoc (varName tv))
-                                   (go (tyVarKind tv))
+    go_tv1 :: TyVar -> LHsTyVarBndr () GhcRn
+    go_tv1 tv = noLoc $ KindedTyVar noExtField ()
+                                    (noLoc (varName tv)) (go (tyVarKind tv))
+
+    go_tv2 :: TyVar -> LHsTyVarBndr Specificity GhcRn
+    go_tv2 tv = noLoc $ KindedTyVar noExtField SpecifiedSpec
+                                    (noLoc (varName tv)) (go (tyVarKind tv))

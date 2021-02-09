@@ -7,19 +7,20 @@ Maintainer  : kai.prott@hotmail.de
 This module contains the function to lift the record selector function
 that is introduced for each record label.
 -}
+{-# LANGUAGE RankNTypes #-}
 module Plugin.Trans.Record (liftRecordSel) where
 
-import Data.Generics.Schemes
-import Data.Generics.Aliases
 import Data.Tuple
+import Data.Syb
 
+import GHC.Plugins
 import GHC.Hs.Binds
 import GHC.Hs.Expr
 import GHC.Hs.Extension
-import TcRnTypes
-import Bag
-import GhcPlugins
-import TcRnMonad
+import GHC.Types.TypeEnv
+import GHC.Tc.Types
+import GHC.Tc.Utils.Monad
+import GHC.Data.Bag
 
 import Plugin.Trans.Type
 import Plugin.Trans.Pat
@@ -32,7 +33,7 @@ import Plugin.Trans.Util
 liftRecordSel :: TyConMap -> HsBindLR GhcTc GhcTc
               -> TcM (Maybe (HsBindLR GhcTc GhcTc))
 liftRecordSel tcs (AbsBinds _ tvs evs ex evb bs sig)
-  | [L l (FunBind x _ mg wrap ticks)] <- bagToList bs,
+  | [L l (FunBind wrap _ mg ticks)] <- bagToList bs,
     [ABE _ p m w s] <- ex = do
       u <- getUniqueM
       stc <- getShareClassTycon
@@ -60,7 +61,7 @@ liftRecordSel tcs (AbsBinds _ tvs evs ex evb bs sig)
       mg' <- liftRecSelMG normalNewty tcs m' mg
 
       -- Create the correct export entries and stuff.
-      let selB = listToBag [L l (FunBind x (noLoc m') mg' wrap ticks)]
+      let selB = listToBag [L l (FunBind wrap (noLoc m') mg' ticks)]
       let ex' = ABE noExtField p' m' w s
       let b' = AbsBinds noExtField tvs evs [ex'] evb selB sig
 
@@ -78,14 +79,13 @@ liftRecSelMG :: Bool -> TyConMap -> Var
              -> TcM (MatchGroup GhcTc (LHsExpr GhcTc))
 liftRecSelMG normalNewty tcs f (MG (MatchGroupTc args res) (L _ alts) orig)
   = do
-    args' <- liftIO (mapM (replaceTyconTy tcs) args)
+    args' <- liftIO (mapM (replaceTyconScaled tcs) args)
     -- Lift the result type of this match group accordingly.
     res' <- if normalNewty
       then liftIO (replaceTyconTy tcs res)
       else liftTypeTcM tcs res
     alts' <- mapM (liftRecSelAlt normalNewty tcs f) alts
     return (MG (MatchGroupTc args' res') (noLoc alts') orig)
-liftRecSelMG _ _ _ x = return x
 
 -- | Lift an alternative of a record selector.
 liftRecSelAlt :: Bool -> TyConMap -> Var -> LMatch GhcTc (LHsExpr GhcTc)

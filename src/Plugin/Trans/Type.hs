@@ -1,5 +1,5 @@
-{-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE LambdaCase   #-}
+{-# LANGUAGE ViewPatterns        #-}
+{-# LANGUAGE LambdaCase          #-}
 {-|
 Module      : Plugin.Trans.Type
 Description : Various functions to get or lift type-related things
@@ -14,24 +14,24 @@ module Plugin.Trans.Type where
 import Data.IORef
 import Data.List
 import Data.Maybe
-import Data.Generics.Aliases
-import Data.Generics.Schemes
+import Data.Syb
+import Control.Monad
 
-import OccName    hiding (varName)
-import HscTypes
-import GhcPlugins hiding (substTy, extendTvSubst)
-import TyCoRep
-import Type
-import Finder
-import IfaceEnv
-import TcRnTypes
-import TcRnMonad
-import Class
-import TcMType
-import UniqMap
-import IfaceSyn
-import TcEvidence
-import Predicate
+import GHC.Types.Name.Occurrence hiding (varName)
+import GHC.Plugins hiding (substTy, extendTvSubst)
+import GHC.Unit.Finder
+import GHC.Unit.External
+import GHC.Tc.Types
+import GHC.Tc.Types.Evidence
+import GHC.Tc.Utils.Monad
+import GHC.Tc.Utils.Instantiate
+import GHC.Tc.Utils.TcType
+import GHC.Tc.Utils.Env
+import GHC.Iface.Syntax
+import GHC.Iface.Env
+import GHC.Core.Class
+import GHC.Core.TyCo.Rep
+import GHC.Core.Predicate
 
 -- This Type contains an IORef, because looking up the mapping between
 -- new <-> old type constructors needs IO.
@@ -39,8 +39,8 @@ import Predicate
 -- we will probably only need a fraction of those anyway
 -- | A mapping between the lifted and unlifted version of each type constructor,
 -- loaded in lazily.
-type TyConMap = (HscEnv, TcRef (UniqMap TyCon TyCon, -- Old -> New
-                                UniqMap TyCon TyCon, -- New -> Old
+type TyConMap = (HscEnv, TcRef (UniqFM TyCon TyCon, -- Old -> New
+                                UniqFM TyCon TyCon, -- New -> Old
                                 UniqSet TyCon,       -- Old
                                 UniqSet TyCon))      -- New
 
@@ -81,7 +81,7 @@ getTyCon mname name = do
   hscEnv <- getTopEnv
   Found _ mdl <- liftIO $
     findImportedModule hscEnv (mkModuleName mname) Nothing
-  lookupTyCon =<< lookupOrig mdl ( mkTcOcc name )
+  tcLookupTyCon =<< lookupOrig mdl ( mkTcOcc name )
 
 {- If we have a type like (T (a -> b)), the correct lifted type is
    ND (TND (ND a -> ND b))
@@ -156,26 +156,26 @@ liftTypeParametrized sh stc mty s tcs t
             -- Function to create 'Shareable' type
             mkShareType t' = mkTyConApp stc [mty, t']
             -- Make a 'Sharable' constraint for each variable
-            cons = zipWith (mkShareable mkShareType) uss bs
+            cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
         -- Update any type constructors of the pre-existing constraints.
         pis' <- mapM (replacePiTy tcs) pis
         -- Include 'Shareable' constraints.
-        mkPiTys pis' . flip (foldr mkInvisFunTy) cons
+        mkPiTys pis' . flip (foldr mkInvisFunTyMany) cons
           -- use the top-level version to get the isDictTy check
           <$> liftTypeParametrized sh stc mty u2 tcs inner
       | otherwise = ForAllTy b <$> liftTypeParametrized sh stc mty us tcs ty
     -- Types to the left of and invisible function type (=>) are constraints.
-    liftType' us (FunTy InvisArg ty1 ty2) =
-        FunTy InvisArg <$> replaceTyconTy tcs ty1 <*> liftType' us ty2
+    liftType' us (FunTy InvisArg m ty1 ty2) =
+        FunTy InvisArg m <$> replaceTyconTy tcs ty1 <*> liftType' us ty2
     -- Wrap a visible function type in our monad, except when it is a
     -- visible dictionary applictation (not possible in GHC yet).-
-    liftType' us (FunTy VisArg ty1 ty2)
+    liftType' us (FunTy VisArg m ty1 ty2)
       | isDictTy ty1 =
-        FunTy VisArg <$> replaceTyconTy tcs ty1 <*> liftType' us ty2
+        FunTy VisArg m <$> replaceTyconTy tcs ty1 <*> liftType' us ty2
       | otherwise =
         let (u1, u2) = splitUniqSupply us
-        in (mkAppTy mty .) . FunTy VisArg <$> liftType' u1 ty1
-                                          <*> liftType' u2 ty2
+        in (mkAppTy mty .) . FunTy VisArg m <$> liftType' u1 ty1
+                                            <*> liftType' u2 ty2
     liftType' us (CastTy ty kc) =
       flip CastTy kc <$> liftType' us ty
     liftType' _ (CoercionTy c) =
@@ -204,33 +204,47 @@ liftTypeParametrized sh stc mty s tcs t
 
 -- | Update type constructors in a pi-type
 replacePiTy :: TyConMap -> TyBinder -> IO TyBinder
-replacePiTy _   (Named b   ) = return (Named b)
-replacePiTy tcs (Anon  f t') = Anon f <$> replaceTyconTy tcs t'
+replacePiTy _   (Named b              ) = return (Named b)
+replacePiTy tcs (Anon  f (Scaled m t)) =
+  (\m' t' -> Anon f (Scaled m' t'))
+    <$> replaceTyconTy tcs m <*> replaceTyconTy tcs t
 
 -- | Create 'Shareable' constraint for the given type variable.
-mkShareable :: (Type -> Type) -> UniqSupply -> TyCoVarBinder -> Type
+mkShareable :: (Type -> Type) -> UniqSupply -> TyCoVarBinder -> Maybe Type
 mkShareable mkShareType us b = mkShareableFor us mkShareType b Nothing
 
 -- | Create 'Shareable' constraint for the given type variable and
 -- add it as an invisible argument in front of the given type.
+-- Returns Nothing if the type variable has an incompatible result kind.
 mkShareableFor :: UniqSupply -> (Type -> Type) -> TyCoVarBinder
-               -> Maybe Type -> Type
+               -> Maybe Type -> Maybe Type
 mkShareableFor us mkShareType b@(Bndr v _) rest =
   let args = fst (splitFunTys (tyVarKind v))
       (u1, u2) = splitUniqSupply us
-      vs = zipWith mkTyVarWith args (uniqsFromSupply u1)
+      vs = zipWith (\(Scaled _ t) -> mkTyVarWith t) args (uniqsFromSupply u1)
       bs = map (flip Bndr Inferred) vs
       vskinds = map mkTyVarTy vs
       innr = map ((. Just) . mkShareableFor u2 mkShareType) bs
       -- innr = [\ty -> ForAllTy b . (Shareable bty => ty)]
-      constraint = foldr ($) (mkShareType (mkAppTys (mkTyVarTy v) vskinds)) innr
-  in case rest of
-    Nothing -> constraint
-    Just r  -> ForAllTy b (mkInvisFunTy constraint r)
+      current = mkShareType (mkAppTys (mkTyVarTy v) vskinds)
+      constraint = foldrM (\f c -> f c) current innr
+  in if snd (splitFunTys (tyVarKind v)) `eqType` liftedTypeKind
+      -- only include it iff the result kind of v == Type
+      then case rest of
+        Nothing -> constraint
+        Just r  -> fmap (ForAllTy b . (`mkInvisFunTyMany` r)) constraint
+      else Nothing
 
 -- | Create a type variable with the given kind and unique key.
 mkTyVarWith :: Kind -> Unique -> TyVar
 mkTyVarWith k u = mkTyVar (mkSystemName u (mkTyVarOcc ("v_" ++ show u))) k
+
+liftTypeIfRequiredTcM :: TyConMap -> Type -> TcM Type
+liftTypeIfRequiredTcM tcs ty = do
+  mtc <- getMonadTycon
+  stc <- getShareClassTycon
+  us <- getUniqueSupplyM
+  liftIO $ liftTypeIfRequired stc mtc us tcs ty
 
 -- | Lift a type if it is not lifted already.
 liftTypeIfRequired :: TyCon -> TyCon -> UniqSupply -> TyConMap -> Type
@@ -310,15 +324,15 @@ liftConTypeWith isNew stc mty us tcs = liftType'
     liftType' :: Type -> IO Type
     liftType' (ForAllTy bs ty) =
       ForAllTy bs <$> liftType' ty
-    liftType' (FunTy InvisArg ty1 ty2) =
-        FunTy InvisArg <$> replaceTyconTy tcs ty1 <*> liftType' ty2
-    liftType' (FunTy VisArg ty1 ty2)
+    liftType' (FunTy InvisArg m ty1 ty2) =
+        FunTy InvisArg m <$> replaceTyconTy tcs ty1 <*> liftType' ty2
+    liftType' (FunTy VisArg m ty1 ty2)
       | isDictTy ty1 =
-        FunTy VisArg <$> replaceTyconTy tcs ty1 <*> liftType' ty2
+        FunTy VisArg m <$> replaceTyconTy tcs ty1 <*> liftType' ty2
       | isNew =
-        FunTy VisArg <$> liftInnerTy stc mty us tcs ty1 <*> liftType' ty2
+        FunTy VisArg m <$> liftInnerTy stc mty us tcs ty1 <*> liftType' ty2
       | otherwise =
-        FunTy VisArg <$> liftType stc mty us tcs ty1 <*> liftType' ty2
+        FunTy VisArg m <$> liftType stc mty us tcs ty1 <*> liftType' ty2
     liftType' (CastTy ty kc) =
       flip CastTy kc <$> liftType' ty
     liftType' (CoercionTy c) =
@@ -341,8 +355,8 @@ replaceTyconTy tcs = replaceTyconTy'
   where
     replaceTyconTy' (ForAllTy b ty) =
       ForAllTy b <$> replaceTyconTy' ty
-    replaceTyconTy' (FunTy f ty1 ty2) =
-      FunTy f <$> replaceTyconTy' ty1 <*> replaceTyconTy' ty2
+    replaceTyconTy' (FunTy f m ty1 ty2) =
+      FunTy f m <$> replaceTyconTy' ty1 <*> replaceTyconTy' ty2
     replaceTyconTy' (CastTy ty kc) =
       flip CastTy kc <$> replaceTyconTy' ty
     replaceTyconTy' (CoercionTy c) =
@@ -358,6 +372,34 @@ replaceTyconTy tcs = replaceTyconTy'
     replaceTyconTy' (TyVarTy v) =
       return (TyVarTy v)
 
+replaceTyconScaled :: TyConMap -> Scaled Type -> IO (Scaled Type)
+replaceTyconScaled tcs (Scaled m ty) =
+  Scaled <$> replaceTyconTy tcs m <*> replaceTyconTy tcs ty
+
+-- A default method for "Class cls" with a default type sig of
+-- DefaultConstraints => classFunTy
+-- has a type
+-- forall cls. Class cls => DefaultConstraints => classFunTy
+-- It should be lifted to
+-- forall cls. Class cls => Shareable cls => DefaultConstraints => classFunTy
+-- Whereas the normal lifting would include the Shareable after all
+-- DefaultConstraints, which we DO NOT want.
+liftDefaultType :: TyConMap -> Class -> Type -> TcM Type
+liftDefaultType tcs cls ty = do
+  -- if cls has N class type variables,
+  -- we have to split off N forall's and the class constraint.
+  let (bs1, ty1) = splitPiTysInvisibleN (classArity cls + 1) ty
+      named = filter isNamedBinder bs1
+  uss <- replicateM (length named) getUniqueSupplyM
+  mtc <- getMonadTycon
+  stc <- getShareClassTycon
+  let bs = map (\(Named b') -> b') named
+      mkShareType t' = mkTyConApp stc [mkTyConTy mtc, t']
+      cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
+  bs' <- liftIO (mapM (replacePiTy tcs) bs1)
+  mkPiTys bs' . flip (foldr mkInvisFunTyMany) cons
+    <$> liftTypeTcM tcs ty1
+
 -- | Lift only the result type of a type.
 -- Sometimes (e.g. for records) we only need to lift the result of a type
 liftResultTy :: TyCon       -- ^ 'Shareable' type constructor
@@ -370,8 +412,8 @@ liftResultTy stc mty us tcs = liftResultTy'
   where
     liftResultTy' (ForAllTy b ty) =
       ForAllTy b <$> liftResultTy' ty
-    liftResultTy' (FunTy f ty1 ty2) =
-      FunTy f <$> replaceTyconTy tcs ty1 <*> liftResultTy' ty2
+    liftResultTy' (FunTy f m ty1 ty2) =
+      FunTy f m <$> replaceTyconTy tcs ty1 <*> liftResultTy' ty2
     liftResultTy' (CastTy ty kc) =
       flip CastTy kc <$> liftResultTy' ty
     liftResultTy' ty = liftTypeNoShareable stc mty us tcs ty
@@ -383,34 +425,39 @@ liftResultTy stc mty us tcs = liftResultTy'
 -- Thus, we use liftInnerTy
 -- | Lift the type applications and update type constructors inside a wrapper.
 -- Reomves any evidence applications.
-liftWrapper :: TyCon         -- ^ 'Shareable' type constructor
-             -> Type         -- ^ 'Nondet' type
-             -> UniqSupply   -- ^ Fresh supply of unique keys
-             -> TyConMap     -- ^ Type constructor map
-             -> HsWrapper    -- ^ Wrapper to be lifted
-             -> IO HsWrapper -- ^ Lifted wrapper
-liftWrapper stc mty us tcs = liftWrapper'
+liftWrapper :: Bool         -- ^ inner lifting or not
+            -> TyCon        -- ^ 'Shareable' type constructor
+            -> Type         -- ^ 'Nondet' type
+            -> UniqSupply   -- ^ Fresh supply of unique keys
+            -> TyConMap     -- ^ Type constructor map
+            -> HsWrapper    -- ^ Wrapper to be lifted
+            -> IO HsWrapper -- ^ Lifted wrapper
+liftWrapper b stc mty us tcs = liftWrapper'
   where
     liftWrapper' (WpCompose w1 w2) =
       WpCompose <$> liftWrapper' w1 <*> liftWrapper' w2
-    liftWrapper' (WpFun w1 w2 ty sd) =
-      WpFun <$> liftWrapper' w1 <*> liftWrapper' w2
-            <*> replaceTyconTy tcs ty <*> pure sd
+    liftWrapper' (WpFun w1 w2 (Scaled m ty) sd) =
+      (\w1' w2' m' ty' -> WpFun w1' w2' (Scaled m' ty') sd)
+            <$> liftWrapper' w1 <*> liftWrapper' w2
+            <*> replaceTyconTy tcs m
+            <*> (if b then liftTypeNoShareable else liftInnerTy)
+                  stc mty us tcs ty
     liftWrapper' (WpCast (SubCo (Refl ty))) =
       WpCast . SubCo . Refl <$> replaceTyconTy tcs ty
     liftWrapper' (WpTyApp app) =
       WpTyApp <$> liftInnerTy stc mty us tcs app
+    liftWrapper' (WpTyLam v)  = return (WpTyLam v)
     -- remove any other thing that was here after typechecking
     liftWrapper' _ = return WpHole
 
 -- | Lift the type applications and update type constructors inside a wrapper.
 -- Reomves any evidence applications.
-liftWrapperTcM :: TyConMap -> HsWrapper -> TcM HsWrapper
-liftWrapperTcM tcs w = do
+liftWrapperTcM :: Bool -> TyConMap -> HsWrapper -> TcM HsWrapper
+liftWrapperTcM b tcs w = do
   stc <- getShareClassTycon
   mty <- mkTyConTy <$> getMonadTycon
   us <- getUniqueSupplyM
-  liftIO (liftWrapper stc mty us tcs w)
+  liftIO (liftWrapper b stc mty us tcs w)
 
 -- | Update type constructors inside a wrapper.
 replaceWrapper :: TyConMap -> HsWrapper -> IO HsWrapper
@@ -418,9 +465,10 @@ replaceWrapper tcs = replaceWrapper'
   where
     replaceWrapper' (WpCompose w1 w2) =
       WpCompose <$> replaceWrapper' w1 <*> replaceWrapper' w2
-    replaceWrapper' (WpFun w1 w2 ty sd) =
-      WpFun <$> replaceWrapper' w1 <*> replaceWrapper' w2
-            <*> replaceTyconTy tcs ty <*> pure sd
+    replaceWrapper' (WpFun w1 w2 (Scaled m ty) sd) =
+      (\w1' w2' m' ty' -> WpFun w1' w2' (Scaled m' ty') sd)
+            <$> replaceWrapper' w1 <*> replaceWrapper' w2
+            <*> replaceTyconTy tcs m <*> replaceTyconTy tcs ty
     replaceWrapper' (WpCast (SubCo (Refl ty))) =
       WpCast . SubCo . Refl <$> replaceTyconTy tcs ty
     replaceWrapper' (WpTyApp app) =
@@ -460,30 +508,30 @@ lookupTyConMap d (hsc, ref) tc = do
   -- Check if we have all the infos for the given TyCon loaded already.
   if tc `elementOfUniqSet` s
     -- Look the TyCon up, with a default fallback.
-    then return (lookupWithDefaultUniqMap m tc tc)
+    then return (lookupWithDefaultUFM m tc tc)
     -- Otherwise, get the module of the type constructor if available.
     else case mbMdl of
       -- Check if the module is in the home or external package and load it
       -- from there.
-      Just mdl | moduleUnitId mdl == thisPackage flags,
+      Just mdl | toUnitId (moduleUnit mdl) == homeUnitId_ flags,
                  not (isOneShot (ghcMode flags))
-                  -> lookupTyConHome mdl m s tcs
-      _           -> lookupTyConExtern m s tcs
+                  -> tcLookupTyConHome mdl m s tcs
+      _           -> tcLookupTyConExtern m s tcs
   where
     -- | Look up a type constructor replacement from a home package module.
-    lookupTyConHome mdl m s tcs = do
+    tcLookupTyConHome mdl m s tcs = do
       -- Get the module interface
       let miface = lookupIfaceByModule (hsc_HPT hsc) emptyPackageIfaceTable mdl
       -- Get the correct declaration to get the original name.
       case miface >>= (find declFinder . mi_decls) of
         Just (_, f) -- Look up the TyCon with the name and load it into our map.
-          -> lookupTypeHscEnv hsc (ifName f) >>= processResult m s tcs
+          -> lookupType hsc (ifName f) >>= processResult m s tcs
         -- If no correct declaration was found, update our map to remember
         -- that no replacement exists.
         _ -> processResult m s tcs Nothing
 
     -- | Look up a type constructor replacement from an external package module.
-    lookupTyConExtern m s tcs = do
+    tcLookupTyConExtern m s tcs = do
       -- Get the table of external packages.
       ext <- eps_PTE <$> readIORef (hsc_EPS hsc)
       -- Find the correct declaration and insert the result into our map.
@@ -495,7 +543,7 @@ lookupTyConMap d (hsc, ref) tc = do
 
     -- | Check if the given TyCon uses the name we are looking for.
     tyThingFinder (_, ATyCon tc') = occName n' == occ2 &&
-                                    nameModule_maybe n' == mbMdl
+                                      nameModule_maybe n' == mbMdl
       where n' = tyConName tc'
     tyThingFinder _               = False
 
@@ -504,10 +552,10 @@ lookupTyConMap d (hsc, ref) tc = do
     -- performed a lookup for.
     processResult m s (mn, mo, sn, so) (Just (ATyCon tc'))
       | GetNew <- d = do
-        writeIORef ref (addToUniqMap m tc tc', mo, addOneToUniqSet s tc, so)
+        writeIORef ref (addToUFM m tc tc', mo, addOneToUniqSet s tc, so)
         return tc'
       | otherwise   = do
-        writeIORef ref (mn, addToUniqMap m tc tc', sn, addOneToUniqSet s tc)
+        writeIORef ref (mn, addToUFM m tc tc', sn, addOneToUniqSet s tc)
         return tc'
     processResult _ s (mn, mo, sn, so) _
       | GetNew <- d = do
@@ -528,13 +576,13 @@ lookupTyConMap d (hsc, ref) tc = do
 
 -- | Update the type constructors in a type with a pure,
 -- side-effect free replacement map.
-replaceTyconTyPure :: UniqMap TyCon TyCon -> Type -> Type
+replaceTyconTyPure :: UniqFM TyCon TyCon -> Type -> Type
 replaceTyconTyPure tcs = replaceTyconTy'
   where
     replaceTyconTy' (ForAllTy b ty) =
       ForAllTy b (replaceTyconTy' ty)
-    replaceTyconTy' (FunTy f ty1 ty2) =
-      FunTy f (replaceTyconTy' ty1) (replaceTyconTy' ty2)
+    replaceTyconTy' (FunTy f m ty1 ty2) =
+      FunTy f m (replaceTyconTy' ty1) (replaceTyconTy' ty2)
     replaceTyconTy' (CastTy ty kc) =
       CastTy (replaceTyconTy' ty) kc
     replaceTyconTy' (CoercionTy c) =
@@ -544,7 +592,7 @@ replaceTyconTyPure tcs = replaceTyconTy'
     replaceTyconTy' (AppTy ty1 ty2) =
       AppTy (replaceTyconTy' ty1) (replaceTyconTy' ty2)
     replaceTyconTy' (TyConApp tc tys) =
-      let tc' = case lookupUniqMap tcs tc of
+      let tc' = case lookupUFM tcs tc of
                   Just x -> x
                   _      -> tc
       in TyConApp tc' (map replaceTyconTy' tys)
@@ -588,6 +636,22 @@ createWrapperFor ty apps evids =
     wrapperArg _             _      _     =
       WpHole
 
+createWrapperLike :: Type -> [Var] -> [Var] -> HsWrapper
+createWrapperLike (ForAllTy _ ty) (v:vs) es =
+  WpTyLam v <.> createWrapperLike ty vs es
+createWrapperLike (FunTy InvisArg _ _ ty) vs (e:es) =
+  WpEvLam e <.> createWrapperLike ty vs es
+createWrapperLike _ _ _ = WpHole
+
+collectTyDictArgs :: HsWrapper -> ([TyVar], [EvVar])
+collectTyDictArgs (WpCompose w1 w2) =
+  let (t1, e1) = collectTyDictArgs w1
+      (t2, e2) = collectTyDictArgs w2
+  in (t1 ++ t2, e1 ++ e2)
+collectTyDictArgs (WpTyLam v) = ([v], [])
+collectTyDictArgs (WpEvLam v) = ([], [v])
+collectTyDictArgs _           = ([], [])
+
 -- | Tries to create a wrapper of evidence applications,
 -- using an entry from the type-indexed list
 -- if the type matches that of the wrapper.
@@ -596,7 +660,7 @@ mkEvWrapSimilar :: HsWrapper -> [CoreExpr] -> [(Type, Var)] -> HsWrapper
 mkEvWrapSimilar = go []
   where
     go _      _                 []     _             = WpHole
-    go ws     (WpTyApp _  )     (v:vs) []            =
+    go ws     (WpTyApp _  )     (v:vs) []            = 
                            WpEvApp (EvExpr v)        <.> gos ws vs []
     go ws     (WpTyApp ty1)     (v:vs) ((ty2, c):cs)
       | ty1 `eqType` ty2 = WpEvApp (EvExpr (evId c)) <.> gos ws vs cs

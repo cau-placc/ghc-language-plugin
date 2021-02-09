@@ -16,10 +16,14 @@ import Control.Monad
 
 import GHC.Hs.Extension
 import GHC.Hs.Decls
-import TcRnTypes
-import GhcPlugins
-import TcRnMonad
-import PrelNames
+import GHC.Tc.Types
+import GHC.Tc.Utils.Monad
+import GHC.Unit.Module.Imported
+import GHC.Unit.Module.ModDetails
+import GHC.Unit.Home.ModInfo
+import GHC.Unit.External
+import GHC.Builtin.Names
+import GHC.Plugins
 
 import Plugin.Effect.Annotation
 
@@ -43,7 +47,7 @@ checkImports env = do
   external <- readTcRef externalRef
   home <- hsc_HPT <$> getTopEnv
   -- Get the name of the current compilation unit/module.
-  let unit = moduleUnitId (tcg_semantic_mod env)
+  let unit = moduleUnit (tcg_semantic_mod env)
   -- Get the environment of all external annotations.
   let annEnvExt = eps_ann_env external
   -- Get the annotations for each imported module, except Data.Kind.
@@ -59,18 +63,18 @@ checkImports env = do
 
 isDataKind :: (Module, [ImportedBy]) -> Bool
 isDataKind (Module u n, _) =
-  mkModuleName "Data.Kind" == n && u == baseUnitId
+  mkModuleName "Data.Kind" == n && u == baseUnit
 
 -- | Get any 'NondetTag' module annotations for a given module
 -- and the source span of the import declaration, if available.
-getAnnFor :: UnitId -> HomePackageTable -> AnnEnv -> Module -> [ImportedBy]
+getAnnFor :: Unit -> HomePackageTable -> AnnEnv -> Module -> [ImportedBy]
           -> (Module, [NondetTag], Maybe SrcSpan)
 getAnnFor unit modinfo annsExt mdl imps = (mdl, ann, imp)
   where
     Just info = lookupHpt modinfo (moduleName mdl)
     annsHome = mkAnnEnv (md_anns (hm_details info))
-    anns | unit == moduleUnitId mdl = annsHome
-         | otherwise                = annsExt
+    anns | unit == moduleUnit mdl = annsHome
+         | otherwise              = annsExt
     ann = findAnns deserializeWithData anns (ModuleTarget mdl)
     imp = msum (map importSpanMaybe imps)
 

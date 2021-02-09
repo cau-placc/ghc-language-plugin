@@ -1,4 +1,5 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell   #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-|
 Module      : Plugin.Trans.CreateSyntax
 Description : Helper functions to create parts of GHC's AST
@@ -10,49 +11,49 @@ syntactic constructs for GHC's abstract syntax tree.
 -}
 module Plugin.Trans.CreateSyntax where
 
-import Control.Monad
-
+import GHC.Plugins hiding (getSrcSpanM)
 import GHC.Hs.Binds
 import GHC.Hs.Extension
 import GHC.Hs.Pat
-import GHC.Hs.Utils
 import GHC.Hs.Expr
-import TcRnMonad
-import TcHsSyn
-import TysWiredIn
-import TyCoRep
-import SrcLoc
-import ConLike
-import GhcPlugins
-import TcEvidence
-import TcSimplify
-import Constraint
-import Bag
+import GHC.Tc.Types
+import GHC.Tc.Types.Evidence
+import GHC.Tc.Types.Constraint
+import GHC.Tc.Utils.Monad
+import GHC.Tc.Utils.Env
+import GHC.Tc.Utils.Zonk
+import GHC.Tc.Solver
+import GHC.Types.Fixity
+import GHC.Types.Error
+import GHC.Core.TyCo.Rep
+import GHC.Core.ConLike
+import GHC.Data.Bag
 
 import Plugin.Effect.Monad
 import Plugin.Trans.Constr
 import Plugin.Trans.Type
 import Plugin.Trans.Util
 import Plugin.Trans.Var
+import Plugin.Trans.ConstraintSolver
 
 -- | Create the lambda functions used to lift value constructors.
 -- Newtypes have to be treated differently.
 -- Look at their lifting for details.
-mkConLam :: Maybe HsWrapper -> DataCon -> [Type] -> [Id]
-     -> TcM (LHsExpr GhcTc, Type)
+mkConLam :: TyConMap -> Maybe HsWrapper -> DataCon
+         -> [(Scaled Type, HsImplBang)] -> [Id] -> TcM (LHsExpr GhcTc, Type)
 -- list of types is empty -> apply the collected variables.
-mkConLam mw c [] vs
+mkConLam _ mw c [] vs
   | isNewTyCon (dataConTyCon c),
     [v] <- vs = do
       -- Use the given wrapper for the constructor.
       let wrap = case mw of
-            Just w  -> HsWrap noExtField w
+            Just w  -> XExpr . WrapExpr . HsWrap w
             Nothing -> id
       let ce = noLoc (wrap (HsConLikeOut noExtField (RealDataCon c)))
       -- Create the lambda-bound variable.
       let arg = noLoc (HsVar noExtField (noLoc v))
       -- Get the constructor result type.
-      cetype <- funResultTy <$> getTypeOrPanic ce
+      cetype <- funResultTy <$> getTypeOrPanic ce -- ok
       -- Get the lifted, but unwrapped, constructor argument type.
       let argtype = bindingType (varType v)
       -- create the term "fmap con v"
@@ -62,45 +63,63 @@ mkConLam mw c [] vs
   | otherwise = do
     -- Use the given wrapper for the constructor.
     let wrap = case mw of
-          Just w  -> HsWrap noExtField w
+          Just w  -> XExpr . WrapExpr . HsWrap w
           Nothing -> id
     -- Apply all variables in reverse to the constructor.
     let e = foldl ((noLoc .) . HsApp noExtField)
             (noLoc (wrap (HsConLikeOut noExtField (RealDataCon c))))
             (map (noLoc . HsVar noExtField . noLoc) $ reverse vs)
     -- Get the result type of the constructor.
-    ty <- snd . splitFunTys <$> getTypeOrPanic e
+    ty <- snd . splitFunTys <$> getTypeOrPanic e -- ok
     -- Wrap the whole term in a 'return'.
     e' <- mkApp mkNewReturnTh ty [noLoc $ HsPar noExtField e]
     mty <- mkTyConTy <$> getMonadTycon
     return (e', mkAppTy mty ty)
 -- Create lambdas for the remaining types.
-mkConLam w c (ty:tys) vs = do
+mkConLam tcs w c ((Scaled _ ty, strictness) : tys) vs = do
   mtc <- getMonadTycon
   -- Despite the argument being unlifted for newtypes, we want to create
   -- a lifted function to replace the constructor.
   -- This is why we manually lift the parameter for newtypes.
   let ty' = if isNewTyCon (dataConTyCon c) then mkTyConApp mtc [ty] else ty
-  -- Create the new variable for the lambda.
-  v <- freshVar ty'
+  -- Create the new variable to be applied to the constructor.
+  let vty' = Scaled Many ty'
+  v <- freshVar (Scaled Many ty')
   -- Create the inner part of the term with the remaining type arguments.
-  (e, resty) <- mkConLam w c tys (v:vs)
+  (e, resty) <- mkConLam tcs w c tys (v:vs) -- (return \xs -> Cons x xs, SML (List a -> List a)
+  let lamty = mkVisFunTyMany ty' resty      -- a -> SML (List a -> List a)
+  -- Add a seq if C is strict in this arg
+  (e', v') <- case strictness of
+    HsLazy -> return (e, v)
+    -- | strict or unpacked
+    _      -> do
+      -- create the lambda-bound variable, that needs to be shared
+      v' <- freshVar vty'
+      -- create share
+      s <- mkApp (mkNewShareTh tcs) ty' [noLoc (HsVar noExtField (noLoc v'))]
+      mtycon <- getMonadTycon
+      -- create seqValue
+      seqE <- mkApp (mkNewSeqValueTh (bindingType ty')) (bindingType resty)
+                [noLoc (HsVar noExtField (noLoc v)), e]
+      let l = noLoc (HsPar noExtField (mkLam (noLoc v) vty' seqE resty))
+      let sty = mkTyConApp mtycon [ty']
+      shareE <- mkBind (noLoc (HsPar noExtField s)) sty l resty
+      return (shareE, v')
   -- Make the lambda for this variable
-  let e' = mkLam (noLoc v) ty' e resty
-  let lamty = mkVisFunTy ty' resty
+  let e'' = mkLam (noLoc v') (Scaled Many ty') e' resty
   -- Wrap the whole term in a 'return'.
-  e'' <- mkApp mkNewReturnTh lamty [noLoc $ HsPar noExtField e']
+  e''' <- mkApp mkNewReturnTh lamty [noLoc $ HsPar noExtField e'']
   let mty = mkTyConTy mtc
-  return (e'', mkAppTy mty lamty)
+  return (e''', mkAppTy mty lamty)
 
 -- | Create the lambda to be used after '(>>=)'.
-mkBindLam :: Type -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
-mkBindLam ty e1' = do
+mkBindLam :: Scaled Type -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
+mkBindLam (Scaled m ty) e1' = do
   let ty' = bindingType ty
-  v <- noLoc <$> freshVar ty'
+  v <- noLoc <$> freshVar (Scaled m ty')
   let bdy = noLoc $ HsApp noExtField (noLoc (HsVar noExtField v)) e1'
-  resty <- getTypeOrPanic bdy
-  return (mkLam v ty' bdy resty)
+  let (_ , _, resty) = splitFunTy (varType (unLoc v))
+  return (mkLam v (Scaled m ty') bdy resty)
 
 -- | Create a '(>>=)' for the given arguments and apply them.
 mkBind :: LHsExpr GhcTc -> Type -> LHsExpr GhcTc -> Type
@@ -121,19 +140,17 @@ mkApp = flip mkAppWith []
 mkAppWith :: (Type -> TcM (LHsExpr GhcTc))
           -> [Ct] -> Type -> [LHsExpr GhcTc]
           -> TcM (LHsExpr GhcTc)
-mkAppWith con cts typ args = do
-  (e', WC wanted impls) <- captureConstraints (con typ)
-  let constraints = WC (unionBags wanted (listToBag cts)) impls
-  wrapper <- mkWpLet . EvBinds <$> simplifyTop constraints
-  zonkTopLExpr (foldl mkHsApp (mkLHsWrap wrapper e') args)
+mkAppWith con _ typ args = do
+  e' <- con typ
+  return $ foldl mkHsApp e' args
 
 -- | Create a 'return' for the given argument types.
 mkNewReturnTh :: Type -> TcM (LHsExpr GhcTc)
 mkNewReturnTh etype = do
   mtycon <- getMonadTycon
-  th_expr <- liftQ [| return |]
+  th_expr <- liftQ [| rtrn |]
   let mty = mkTyConTy mtycon
-  let expType = mkVisFunTy etype $ -- 'e ->
+  let expType = mkVisFunTyMany etype $ -- 'e ->
                 mkAppTy mty etype  -- m 'e
   mkNewAny th_expr expType
 
@@ -141,39 +158,86 @@ mkNewReturnTh etype = do
 mkNewBindTh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewBindTh etype btype = do
   mtycon <- getMonadTycon
-  th_expr <- liftQ [| (>>=) |]
+  th_expr <- liftQ [| bind |]
   let mty = mkTyConTy mtycon
   let resty = mkAppTy mty btype
-  let expType = mkVisFunTy (mkAppTy mty etype) $    -- m 'e ->
-                mkVisFunTy (mkVisFunTy etype resty) -- (e' -> m b) ->
-                  resty                             -- m b
+  let expType = mkVisFunTyMany (mkAppTy mty etype) $        -- m 'e ->
+                mkVisFunTyMany (mkVisFunTyMany etype resty) -- (e' -> m b) ->
+                  resty                                     -- m b
+  mkNewAny th_expr expType
+
+-- | Make a seq for ordinary values (The "Prelude.seq")
+mkNewSeqTh :: Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewSeqTh atype btype = do
+  th_expr <- liftQ [| seq |]
+  let expType = mkVisFunTyMany atype $     -- a ->
+                mkVisFunTyMany btype btype -- b -> b
+  mkNewAny th_expr expType
+
+-- | Make a seq for lifted values.
+mkNewSeqValueTh :: Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewSeqValueTh atype btype = do
+  mtc <- getMonadTycon
+  th_expr <- liftQ [| seqValue |]
+  let expType = mkVisFunTyMany (mkTyConApp mtc [atype]) $ -- m a ->
+                mkVisFunTyMany (mkTyConApp mtc [btype])   -- m b ->
+                (mkTyConApp mtc [btype])                  -- m b
   mkNewAny th_expr expType
 
 -- | Create a 'fmap' for the given argument types.
 mkNewFmapTh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewFmapTh etype btype = do
   mtycon <- getMonadTycon
-  th_expr <- liftQ [| fmap |]
+  th_expr <- liftQ [| fmp |]
   let appMty = mkTyConApp mtycon . (:[])
-  let expType = mkVisFunTy (mkVisFunTy etype btype) $     -- ('e -> 'b) ->
-                mkVisFunTy (appMty etype) (appMty btype)  -- m 'e -> m 'b
+  let expType = mkVisFunTyMany (mkVisFunTyMany etype btype) $     -- ('e -> 'b) ->
+                mkVisFunTyMany (appMty etype) (appMty btype)  -- m 'e -> m 'b
   mkNewAny th_expr expType
 
 -- | Create a 'share' for the given argument types.
-mkNewShareTh :: Type -> TcM (LHsExpr GhcTc)
-mkNewShareTh ty = do
+mkNewShareTh :: TyConMap -> Type -> TcM (LHsExpr GhcTc)
+mkNewShareTh tcs ty
+  | isForAllTy ty = do
+    sp <- getSrcSpanM
+    ctxt <- getErrCtxt
+    tidyEnv <- tcInitTidyEnv
+    errrInfo <- mkErrInfo tidyEnv ctxt
+    mtc <- getMonadTycon
+    stc <- getShareClassTycon
+    let docImportant = "Cannot share polymorphic values."
+    (ty', _) <- liftIO $ removeNondetShareable tcs mtc stc ty
+    let docSuppl = "For a variable with type" <+> ppr ty'
+    msg <- mkErrDocAt sp (errDoc [docImportant] [docSuppl, errrInfo] [])
+    reportError msg
+    let expType = mkVisFunTyMany ty $ -- a ->
+                  mkTyConApp mtc [ty] -- m a
+    u <- getUniqueM
+    let nm = mkSystemName u $ mkVarOcc "share_hole"
+    return (noLoc $ HsVar noExtField $ noLoc $ mkVanillaGlobal nm expType)
+  | otherwise     = do
   mtycon <- getMonadTycon
-  th_expr <- liftQ [| share |]
-  let expType = mkVisFunTy ty $        -- a ->
+  th_expr <- liftQ [| shre |]
+  let expType = mkVisFunTyMany ty $    -- a ->
                 mkTyConApp mtycon [ty] -- m a
   mkNewAny th_expr expType
+
+mkNewShareTop :: (Int, String) -> Type -> TcM (LHsExpr GhcTc)
+mkNewShareTop key ty = do
+  th_expr <- liftQ [| shreTopLevel |]
+  let tup = mkTupleTy Boxed [intTy, stringTy]
+  let expType = mkVisFunTyMany tup $
+                mkVisFunTyMany ty ty -- (Int, String) -> ty -> ty
+  e <- mkNewAny th_expr expType
+  th_arg <- liftQ [| key |]
+  arg <- mkNewAny th_arg tup
+  return (mkHsApp e arg)
 
 -- | Create a 'liftE' for the given argument types.
 mkNewLiftETh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewLiftETh ty1 ty2 = do
   mty <- (. (: [])) . mkTyConApp <$> getMonadTycon
   th_expr <- liftQ [| liftE |]
-  let expType = mkVisFunTy (mty ty1) (mty ty2) -- m a -> m b
+  let expType = mkVisFunTyMany (mty ty1) (mty ty2) -- m a -> m b
   mkNewAny th_expr expType
 
 -- | Create a 'nf' for the given argument types.
@@ -181,7 +245,7 @@ mkNewNfTh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewNfTh ty1 ty2 = do
   mty <- (. (: [])) . mkTyConApp <$> getMonadTycon
   th_expr <- liftQ [| nf |]
-  let expType = mkVisFunTy (mty ty1) (mty ty2) -- m a -> m b
+  let expType = mkVisFunTyMany (mty ty1) (mty ty2) -- m a -> m b
   mkNewAny th_expr expType
 
 -- | Create a 'apply1' for the given argument types.
@@ -190,10 +254,10 @@ mkNewApply1 ty1 ty2 = do
   mtycon <- getMonadTycon
   th_expr <- liftQ [| apply1 |]
   let expType =
-        mkVisFunTy (mkTyConApp mtycon                     -- Nondet
-                  [mkVisFunTy (mkTyConApp mtycon [ty1])   --  ( Nondet a ->
+        mkVisFunTyMany (mkTyConApp mtycon                     -- Nondet
+                  [mkVisFunTyMany (mkTyConApp mtycon [ty1])   --  ( Nondet a ->
                            (mkTyConApp mtycon [ty2])])    --    Nondet b ) ->
-          (mkVisFunTy (mkTyConApp mtycon [ty1])           -- Nondet a ->
+          (mkVisFunTyMany (mkTyConApp mtycon [ty1])           -- Nondet a ->
                    (mkTyConApp mtycon [ty2]))             -- Nondet b
   mkNewAny th_expr expType
 
@@ -204,13 +268,13 @@ mkNewApply2 ty1 ty2 ty3 = do
   th_expr <- liftQ [| apply2 |]
   let expType =
         mkTyConApp mtycon                                    -- Nondet
-                  [mkVisFunTy (mkTyConApp mtycon [ty1])      --  (Nondet a ->
+                  [mkVisFunTyMany (mkTyConApp mtycon [ty1])      --  (Nondet a ->
                     (mkTyConApp mtycon                       --   Nondet
-                       [mkVisFunTy (mkTyConApp mtycon [ty2]) --     (Nondet b ->
+                       [mkVisFunTyMany (mkTyConApp mtycon [ty2]) --     (Nondet b ->
                          (mkTyConApp mtycon [ty3])])]        --      Nondet c )
-        `mkVisFunTy`                                         --  ) ->
-        mkVisFunTy (mkTyConApp mtycon [ty1])                 -- Nondet a ->
-          (mkVisFunTy (mkTyConApp mtycon [ty2])              -- Nondet b ->
+        `mkVisFunTyMany`                                         --  ) ->
+        mkVisFunTyMany (mkTyConApp mtycon [ty1])                 -- Nondet a ->
+          (mkVisFunTyMany (mkTyConApp mtycon [ty2])              -- Nondet b ->
                    (mkTyConApp mtycon [ty3]))                -- Nondet c
   mkNewAny th_expr expType
 
@@ -221,76 +285,86 @@ mkNewApply2Unlifted ty1 ty2 ty3 = do
   th_expr <- liftQ [| apply2Unlifted |]
   let expType =
         mkTyConApp mtycon                                 -- Nondet
-                  [mkVisFunTy (mkTyConApp mtycon [ty1])      --  ( Nondet a ->
+                  [mkVisFunTyMany (mkTyConApp mtycon [ty1])      --  ( Nondet a ->
                     (mkTyConApp mtycon                    --    Nondet
-                       [mkVisFunTy (mkTyConApp mtycon [ty2]) --      ( Nondet b ->
+                       [mkVisFunTyMany (mkTyConApp mtycon [ty2]) --      ( Nondet b ->
                          (mkTyConApp mtycon [ty3])])]     --        Nondet c )
-        `mkVisFunTy`                                         --  ) ->
-        mkVisFunTy (mkTyConApp mtycon [ty1])                 -- Nondet a ->
-          (mkVisFunTy                     ty2                --        b ->
+        `mkVisFunTyMany`                                         --  ) ->
+        mkVisFunTyMany (mkTyConApp mtycon [ty1])                 -- Nondet a ->
+          (mkVisFunTyMany                     ty2                --        b ->
                    (mkTyConApp mtycon [ty3]))             -- Nondet c
   mkNewAny th_expr expType
 
 -- | Create a '(>>=)' specialized to lists for list comprehensions.
-mkListBind :: Type -> Type -> TcM (SyntaxExpr GhcTc)
+mkListBind :: Type -> Type -> TcM SyntaxExprTc
 mkListBind a b = do
-  e <- mkApp mk b []
-  return (SyntaxExpr (unLoc e) [WpHole, WpHole] WpHole)
+  (e, constraints) <- captureConstraints (mkApp mk b [])
+  wrapper <- mkWpLet . EvBinds <$> simplifyTop constraints
+  res <- zonkTopLExpr (noLoc (mkHsWrap wrapper (unLoc e)))
+  return (SyntaxExprTc (unLoc res) [WpHole, WpHole] WpHole)
   where
     mk _ = do
       th_expr <- liftQ [| (>>=) |]
       let expType = mkTyConApp listTyCon [a]
-                    `mkVisFunTy`
-                    ((a `mkVisFunTy` mkTyConApp listTyCon [b])
-                      `mkVisFunTy`
+                    `mkVisFunTyMany`
+                    ((a `mkVisFunTyMany` mkTyConApp listTyCon [b])
+                      `mkVisFunTyMany`
                       mkTyConApp listTyCon [b])
       mkNewAny th_expr expType
 
 -- | Create a 'return' specialized to lists for list comprehensions.
-mkListReturn :: Type -> TcM (SyntaxExpr GhcTc)
+mkListReturn :: Type -> TcM SyntaxExprTc
 mkListReturn a = do
-  e <- mkApp mk a []
-  return (SyntaxExpr (unLoc e) [WpHole, WpHole] WpHole)
+  (e, constraints) <- captureConstraints (mkApp mk a [])
+  wrapper <- mkWpLet . EvBinds <$> simplifyTop constraints
+  res <- zonkTopLExpr (noLoc (mkHsWrap wrapper (unLoc e)))
+  return (SyntaxExprTc (unLoc res) [WpHole] WpHole)
   where
     mk _ = do
-      th_expr <- liftQ [| return |]
-      let expType = a `mkVisFunTy` mkTyConApp listTyCon [a]
+      th_expr <- liftQ [| \x -> (:) x [] |]
+      let expType = a `mkVisFunTyMany` mkTyConApp listTyCon [a]
       mkNewAny th_expr expType
 
 -- | Create a 'fail' specialized to lists for list comprehensions.
-mkListFail :: Type -> TcM (SyntaxExpr GhcTc)
+mkListFail :: Type -> TcM SyntaxExprTc
 mkListFail a = do
-  e <- mkApp mk a []
-  return (SyntaxExpr (unLoc e) [WpHole, WpHole] WpHole)
+  (e, constraints) <- captureConstraints (mkApp mk a [])
+  wrapper <- mkWpLet . EvBinds <$> simplifyTop constraints
+  res <- zonkTopLExpr (noLoc (mkHsWrap wrapper (unLoc e)))
+  return (SyntaxExprTc (unLoc res) [WpHole] WpHole)
   where
     mk _ = do
-      th_expr <- liftQ [| fail |]
-      let expType = stringTy `mkVisFunTy` mkTyConApp listTyCon [a]
+      th_expr <- liftQ [|  \_ -> [] |]
+      let expType = stringTy `mkVisFunTyMany` mkTyConApp listTyCon [a]
       mkNewAny th_expr expType
 
 -- | Create a 'guard' specialized to lists for list comprehensions.
-mkListGuard :: TcM (SyntaxExpr GhcTc)
+mkListGuard :: TcM SyntaxExprTc
 mkListGuard = do
-  e <- mkApp mk unitTy []
-  return (SyntaxExpr (unLoc e) [WpHole, WpHole] WpHole)
+  (e, constraints) <- captureConstraints (mkApp mk unitTy [])
+  wrapper <- mkWpLet . EvBinds <$> simplifyTop constraints
+  res <- zonkTopLExpr (noLoc (mkHsWrap wrapper (unLoc e)))
+  return (SyntaxExprTc (unLoc res) [WpHole] WpHole)
   where
     mk _ = do
-      th_expr <- liftQ [| guard |]
-      let expType = boolTy `mkVisFunTy` mkTyConApp listTyCon [unitTy]
+      th_expr <- liftQ [| \b -> if b then [()] else [] |]
+      let expType = boolTy `mkVisFunTyMany` mkTyConApp listTyCon [unitTy]
       mkNewAny th_expr expType
 
 -- | Create a '(>>)' specialized to lists for list comprehensions.
-mkListSeq :: Type -> Type -> TcM (SyntaxExpr GhcTc)
+mkListSeq :: Type -> Type -> TcM SyntaxExprTc
 mkListSeq a b = do
-  e <- mkApp mk b []
-  return (SyntaxExpr (unLoc e) [WpHole, WpHole] WpHole)
+  (e, constraints) <- captureConstraints (mkApp mk b [])
+  wrapper <- mkWpLet . EvBinds <$> simplifyTop constraints
+  res <- zonkTopLExpr (noLoc (mkHsWrap wrapper (unLoc e)))
+  return (SyntaxExprTc (unLoc res) [WpHole, WpHole] WpHole)
   where
     mk _ = do
       th_expr <- liftQ [| (>>) |]
       let expType = mkTyConApp listTyCon [a]
-                    `mkVisFunTy`
+                    `mkVisFunTyMany`
                     (mkTyConApp listTyCon [b]
-                      `mkVisFunTy`
+                      `mkVisFunTyMany`
                       mkTyConApp listTyCon [b])
       mkNewAny th_expr expType
 
@@ -298,19 +372,19 @@ mkListSeq a b = do
 mkEmptyList :: Type -> TyConMap -> TcM (LHsExpr GhcTc)
 mkEmptyList ty tcs = do
   dc <- liftIO (getLiftedCon nilDataCon tcs)
-  return (noLoc (HsWrap noExtField (WpTyApp ty)
-    (HsConLikeOut noExtField (RealDataCon dc))))
+  return (noLoc (XExpr (WrapExpr (HsWrap (WpTyApp ty)
+    (HsConLikeOut noExtField (RealDataCon dc))))))
 
 -- | Create a lifted cons list constructor.
 mkConsList :: Type -> TyConMap -> TcM (LHsExpr GhcTc)
 mkConsList ty tcs = do
   dc <- liftIO (getLiftedCon consDataCon tcs)
-  return (noLoc (HsWrap noExtField (WpTyApp ty)
-    (HsConLikeOut noExtField (RealDataCon dc))))
+  return (noLoc (XExpr (WrapExpr (HsWrap (WpTyApp ty)
+    (HsConLikeOut noExtField (RealDataCon dc))))))
 
 
 -- | Create a general lambda that binds one variable on its left side.
-mkLam :: Located Id -> Type -> LHsExpr GhcTc -> Type -> LHsExpr GhcTc
+mkLam :: Located Id -> Scaled Type -> LHsExpr GhcTc -> Type -> LHsExpr GhcTc
 mkLam v ty' bdy resty =
   let pat = VarPat noExtField v
       grhs = GRHS noExtField ([] :: [GuardLStmt GhcTc]) bdy
@@ -331,7 +405,7 @@ mkSimpleLet f scr e v a =
       alt = Match noExtField ctxt [] grhss
       mgtc = MatchGroupTc [] a
       mg = MG mgtc (noLoc [noLoc alt]) Generated
-      b = FunBind emptyUniqSet (noLoc v) mg WpHole []
+      b = FunBind WpHole (noLoc v) mg []
       nbs = NValBinds [(f, listToBag [noLoc b])] []
       bs = HsValBinds noExtField (XValBindsLR nbs)
   in HsLet noExtField (noLoc bs) e
@@ -343,13 +417,13 @@ mkSimplePatLet :: Type -> LHsExpr GhcTc -> LPat GhcTc -> LHsExpr GhcTc
 mkSimplePatLet ty scr p e =
   let grhs = GRHS noExtField [] scr
       grhss = GRHSs noExtField [noLoc grhs] (noLoc (EmptyLocalBinds noExtField))
-      b = PatBind (NPatBindTc emptyNameSet ty) p grhss ([], [[]])
+      b = PatBind ty p grhss ([], [[]])
       nbs = NValBinds [(Recursive, listToBag [noLoc b])] []
       bs = HsValBinds noExtField (XValBindsLR nbs)
   in HsLet noExtField (noLoc bs) e
 
 -- | Create a simple (case) alternative with the given right side and patterns.
-mkSimpleAlt :: HsMatchContext Name -> LHsExpr GhcTc -> [LPat GhcTc]
+mkSimpleAlt :: HsMatchContext (NoGhcTc GhcTc) -> LHsExpr GhcTc -> [LPat GhcTc]
             -> Match GhcTc (LHsExpr GhcTc)
 mkSimpleAlt ctxt e ps =
   let grhs = GRHS noExtField [] e
@@ -371,5 +445,9 @@ toLetExpr :: (RecFlag, LHsBinds GhcTc) -> LHsExpr GhcTc -> LHsExpr GhcTc
 toLetExpr b e = noLoc
   (HsLet noExtField (noLoc
     (HsValBinds noExtField (XValBindsLR (NValBinds [b] [])))) e)
+
+mkHsWrap :: HsWrapper -> HsExpr GhcTc -> HsExpr GhcTc
+mkHsWrap WpHole e = e
+mkHsWrap w      e = XExpr (WrapExpr (HsWrap w e))
 
 {- HLINT ignore "Reduce duplication "-}

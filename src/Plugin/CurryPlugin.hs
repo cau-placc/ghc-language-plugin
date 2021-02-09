@@ -13,28 +13,33 @@ the functional-logic programming language Curry.
 module Plugin.CurryPlugin (plugin) where
 
 import Data.List
+import Data.Syb
 import Data.IORef
 import Data.Maybe
 import Control.Exception
 import Language.Haskell.TH (Extension(..))
 
+import GHC.Plugins
 import GHC.Hs
-import Plugins
-import TcRnTypes
-import TcEvidence
-import GhcPlugins
-import TcDeriv
-import TcBinds
-import TcInstDcls
-import Bag
-import TcSimplify
-import TcEnv
-import TcMType
-import TcHsSyn
-import TcRnMonad
-import UniqMap
-import InstEnv
-import ErrUtils
+import GHC.Types.TypeEnv
+import GHC.Types.SourceText
+import GHC.Tc.Types
+import GHC.Tc.Solver
+import GHC.Tc.Types.Evidence
+import GHC.Tc.TyCl.Instance
+import GHC.Tc.Deriv
+import GHC.Tc.Instance.Family
+import GHC.Tc.Gen.Bind
+import GHC.Tc.Utils.Monad
+import GHC.Tc.Utils.Env
+import GHC.Tc.Utils.Zonk
+import GHC.Tc.Utils.TcMType
+import GHC.Unit.Module.Graph
+import GHC.HsToCore
+import GHC.Utils.Error
+import GHC.Core.InstEnv
+import GHC.Core.TyCo.Rep
+import GHC.Data.Bag
 
 import Plugin.Dump
 import Plugin.Trans.Expr
@@ -48,7 +53,9 @@ import Plugin.Trans.TysWiredIn
 import Plugin.Trans.ConstraintSolver
 import Plugin.Trans.Preprocess
 import Plugin.Trans.Class
+import Plugin.Trans.Rule
 import Plugin.Trans.Constr
+import Plugin.Trans.Warn
 import Plugin.Effect.Annotation
 
 -- | This GHC plugin turns GHC into a "compiler" for
@@ -77,17 +84,16 @@ plugin = defaultPlugin
     addPreludeImport p@(HsParsedModule (L l
                           m@HsModule { hsmodImports = im }) _ _) = do
       flgs <- getDynFlags
-      if opt `elem` pluginModNameOpts flgs || any isCurryPrelImport im
+      if opt `elem` (pluginModNameOpts flgs) || any isCurryPrelImport im
         then return p
         else return (p { hpm_module = L l (m { hsmodImports = prel:im }) })
       where
         prel = noLoc (ImportDecl noExtField NoSourceText (noLoc prelName)
-                        Nothing False False NotQualified True Nothing Nothing)
+                        Nothing NotBoot False NotQualified True Nothing Nothing)
 
     isCurryPrelImport :: LImportDecl GhcPs -> Bool
-    isCurryPrelImport (L _ ImportDecl { ideclName = L _ nm }) =
+    isCurryPrelImport (L _ (ImportDecl { ideclName = L _ nm })) =
       nm == prelName
-    isCurryPrelImport _ = False
 
     conPlugin = TcPlugin
       { tcPluginInit  = unsafeTcPluginTcM loadDefaultTyConMap
@@ -98,7 +104,7 @@ plugin = defaultPlugin
 -- | This type checker plugin implements the lifting of declarations
 -- for the Curry plugin.
 liftMonadPlugin :: Maybe DumpOpts -> TcGblEnv -> TcM TcGblEnv
-liftMonadPlugin mdopts env = do
+liftMonadPlugin mdopts env = setGblEnv env $ do
   dopts <- case mdopts of
     Just xs -> return xs
     Nothing -> addErrTc "Error! Unrecognized plugin option" >>
@@ -109,23 +115,44 @@ liftMonadPlugin mdopts env = do
   dumpWith DumpOriginalInstEnv dopts (tcg_inst_env env)
   dumpWith DumpOriginalTypeEnv dopts (tcg_type_env env)
 
+  mtycon <- getMonadTycon
+
   -- remove any dummy evidence introduced by the constraint solver plugin
   let tcg_ev_binds' = filterBag (not . isDummyEv) (tcg_ev_binds env)
 
   hsc <- getTopEnv
+  flags <- getDynFlags
+  case mgLookupModule (hsc_mod_graph hsc) (tcg_mod env) of
+    Just modSumm -> setDynFlags flags' $ do
+      ((w,e), _) <- liftIO $ deSugar hsc' (ms_location modSumm) env'
+      let msgs = (mapBag addNondetWarn w, e)
+      addMessages msgs
+      where
+        flags' = gopt_unset flags Opt_DoCoreLinting
+        hsc' = hsc { hsc_dflags = flags' }
+        env' = env { tcg_binds = everywhere (mkT rmNondetVar) (tcg_binds env)}
+        rmNondetVar :: HsExpr GhcTc -> HsExpr GhcTc
+        rmNondetVar (HsVar x (L l v)) = (HsVar x (L l (setVarType v
+          (everywhere (mkT rmNondet) (varType v)))))
+        rmNondetVar e = e
+        rmNondet (TyConApp tc [inner])
+          | mtycon == tc = inner
+        rmNondet other   = other
+    Nothing -> return ()
+
   mapRef <- loadDefaultTyConMap
   let tyconsMap = (hsc, mapRef)
 
   -- lift datatypes, we need the result for the lifting of datatypes itself
   s <- getUniqueSupplyM
-  mtycon <- getMonadTycon
   stycon <- getShareClassTycon
+  instEnvs <- tcGetFamInstEnvs
   res <- liftIO ((mdo
     liftedTycns <- snd <$>
-      mapAccumM (\s' t -> liftTycon stycon mtycon s' tnsM tyconsMap t)
+      mapAccumM (\s' t -> liftTycon flags instEnvs stycon mtycon s' tnsM tyconsMap t)
         s (tcg_tcs env)
     let tycns = mapMaybe (\(a,b) -> fmap (a,) b) liftedTycns
-    let tnsM = listToUniqMap tycns
+    let tnsM = listToUFM tycns
     return (Right (tycns, liftedTycns)))
     `catch` (return . Left))
 
@@ -133,14 +160,12 @@ liftMonadPlugin mdopts env = do
   (tycons, liftedTycons) <- case res of
     Left e | Just (ClassLiftingException cls reason) <- fromException e
             -> do
-              flags <- getDynFlags
               let l = srcLocSpan (nameSrcLoc (getName cls))
               reportError (mkErrMsg flags l neverQualify (text reason))
               failIfErrsM
               return ([], [])
            | Just (RecordLiftingException _ p reason) <- fromException e
             -> do
-              flags <- getDynFlags
               let l = srcLocSpan (nameSrcLoc (getName p))
               reportError (mkErrMsg flags l neverQualify (text reason))
               failIfErrsM
@@ -183,7 +208,6 @@ liftMonadPlugin mdopts env = do
 
     -- set temporary flags needed for all further steps
     -- (enable some language extentions and disable all warnings)
-    flags <- getDynFlags
     setDynFlags (flip (foldl wopt_unset) [toEnum 0 ..] $
                  flip (foldl xopt_set) requiredExtensions
                  (flags { cachedPlugins = [], staticPlugins = [] })) $ do
@@ -241,7 +265,7 @@ liftMonadPlugin mdopts env = do
 
               -- compile pattern matching
               prep <- bagToList <$>
-                liftBag (preprocessBinding False) (tcg_binds env3)
+                liftBag (preprocessBinding tyconsMap False) (tcg_binds env3)
               dumpWith DumpPatternMatched dopts prep
 
               -- lift instance information
@@ -268,10 +292,17 @@ liftMonadPlugin mdopts env = do
                 -- finally do the monadic lifting for functions and dicts
                 tcg_binds' <- liftBindings tyconsMap newInsts prep
 
+                tcg_rules' <- mapM (liftRule tyconsMap) (tcg_rules env4)
+
+                (_, finalEvBinds, finalBinds, _, _, finalRules) <-
+                  zonkTopDecls emptyBag (listToBag tcg_binds') tcg_rules'
+                    [] []
+
                 -- create the final environment with restored plugin field
-                let finalEnv = env4 { tcg_binds      = listToBag tcg_binds'
+                let finalEnv = env4 { tcg_binds      = finalBinds
                                     , tcg_tc_plugins = tcg_tc_plugins env
-                                    , tcg_ev_binds   = emptyBag
+                                    , tcg_ev_binds   = finalEvBinds
+                                    , tcg_rules      = finalRules
                                     }
                       `addTypecheckedBinds` [bs']
 
@@ -305,19 +336,19 @@ createRdrEnv = mkGlobalRdrEnv . concatMap createEntries
 
 -- | Insert the given list of type constructors into the TyConMap.
 insertNewTycons :: [(TyCon, Maybe TyCon)]
-                -> ( UniqMap TyCon TyCon
-                   , UniqMap TyCon TyCon
+                -> ( UniqFM TyCon TyCon
+                   , UniqFM TyCon TyCon
                    , UniqSet TyCon
                    , UniqSet TyCon )
-                -> ( UniqMap TyCon TyCon
-                   , UniqMap TyCon TyCon
+                -> ( UniqFM TyCon TyCon
+                   , UniqFM TyCon TyCon
                    , UniqSet TyCon
                    , UniqSet TyCon )
 insertNewTycons = flip (foldr insertNew)
   where
     insertNew (tc, mbtc) (m1, m2, s1, s2) =
-      (maybe m1 (addToUniqMap m1 tc) mbtc,
-       maybe m2 (flip (addToUniqMap m2) tc) mbtc,
+      (maybe m1 (addToUFM m1 tc) mbtc,
+       maybe m2 (flip (addToUFM m2) tc) mbtc,
        addOneToUniqSet s1 tc,
        maybe s2 (addOneToUniqSet s2) mbtc)
 
@@ -334,4 +365,5 @@ requiredExtensions =
   , MultiParamTypeClasses
   , TypeFamilies
   , QuantifiedConstraints
+  , ImpredicativeTypes
   , RankNTypes ]
