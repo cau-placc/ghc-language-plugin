@@ -1000,23 +1000,16 @@ shareVars tcs vs evs e' ety = do
   foldM (shareVar ety) e' vs
   where
     -- share v1 >>= \v2 -> e
-    shareVar ty e (v1,v2)
-      | countVarOcc v2 e <= 1 = return (substitute v1 v2 e)
-      | Many <- varMult v2     = do
-        let v1e = noLoc (HsVar noExtField (noLoc v1))
-        let v1ty = varType v1
-        s <- noLoc . HsPar noExtField
-          <$> mkAppWith (mkNewShareTh tcs) evs v1ty [v1e]
-        mtycon <- getMonadTycon
-        let sty = mkTyConApp mtycon [v1ty]
-        let v2ty = Scaled (varMult v2) (varType v2)
-        let l = noLoc (HsPar noExtField (mkLam (noLoc v2) v2ty e ty))
-        mkBind s sty l ty
-      -- Interestingly, we know that v1 and v2 do not ocurr more than once in e,
-      -- as long as their multiplicity is not Many. Even if the multiplicity
-      -- is polymorphic we know this, as the function could not have
-      -- such a multiplicity if the function could not be linear in v1/v2.
-      | otherwise = return (substitute v1 v2 e)
+    shareVar ty e (v1,v2) = do
+      let v1e = noLoc (HsVar noExtField (noLoc v1))
+      let v1ty = varType v1
+      s <- noLoc . HsPar noExtField
+        <$> mkAppWith (mkNewShareTh tcs) evs v1ty [v1e]
+      mtycon <- getMonadTycon
+      let sty = mkTyConApp mtycon [v1ty]
+      let v2ty = Scaled (varMult v2) (varType v2)
+      let l = noLoc (HsPar noExtField (mkLam (noLoc v2) v2ty e ty))
+      mkBind s sty l ty
 
 shareTopLevel :: Maybe Var -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
 shareTopLevel Nothing  e = return e

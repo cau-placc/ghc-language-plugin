@@ -44,6 +44,11 @@ mkNewAny ex ty = do
     Right res -> return res
   fmap fst (rnLExpr ps_expr) >>= flip tcCheckMonoExpr ty
 
+mkNewPs :: RdrName -> Type -> TcM (LHsExpr GhcTc)
+mkNewPs nm ty = do
+  let ps_expr = noLoc (HsVar noExtField (noLoc nm))
+  fmap fst (rnLExpr ps_expr) >>= flip tcCheckMonoExpr ty
+
 -- | Get the type of the given expression or return Nothing
 -- if its type annotations are inconsistent.
 getType :: LHsExpr GhcTc -> TcM (Maybe Type)

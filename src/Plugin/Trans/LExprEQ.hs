@@ -1,53 +1,27 @@
 {-|
 Module      : Plugin.Trans.LExprEQ
-Description : Lift pattern expressions
-Copyright   : (c) Kai-Oliver Prott (2020)
-Maintainer  : kai.prott@hotmail.de
+Description : Weak comparison of expressions for views
+Copyright   :
+  (c) The University of Glasgow 2006
+  (c) The GRASP/AQUA Project, Glasgow University, 1992-1998
 
 This module provides a conservative function to compare expressions
-from view pattern for their compatibility to be used together. 
+from view pattern for their compatibility to be used together.
+The function is copied from module GHC.HsToCore.Match from the GHC project.
 -}
 module Plugin.Trans.LExprEQ where
 
-import Data.List
-import Data.Syb
-import Data.Maybe
-import Data.Tuple.Extra
-import Control.Monad
-import Language.Haskell.TH (Extension(..))
+import Prelude (Bool(..), (&&), (==), and)
 
 import GHC.Plugins
-import GHC.Hs.Binds
 import GHC.Hs.Extension
-import GHC.Hs.Pat
 import GHC.Hs.Lit
 import GHC.Hs.Expr
-import GHC.Hs.Type
-import GHC.Builtin.Names
-import GHC.Unit.Finder
-import GHC.Types.SourceText
-import GHC.Types.Fixity
-import GHC.Types.Id.Make
-import GHC.Tc.Types
 import GHC.Tc.Types.Evidence
-import GHC.Tc.Utils.Monad
-import GHC.Tc.Utils.Env
-import GHC.Tc.Utils.Zonk
-import GHC.Utils.Error
-import GHC.Iface.Env
 import GHC.Core.TyCo.Rep
-import GHC.Core.PatSyn
-import GHC.Core.ConLike
-import GHC.Data.Bag
-
-import Plugin.Trans.Var
-import Plugin.Trans.Type
-import Plugin.Trans.CreateSyntax
-import Plugin.Trans.Util
-import Plugin.Trans.TysWiredIn
 
 viewLExprEq :: (LHsExpr GhcTc,Type) -> (LHsExpr GhcTc,Type) -> Bool
-viewLExprEq (e1,_) (e2,_) = lexp e1 e2
+viewLExprEq (e1Orig,_) (e2Orig,_) = lexp e1Orig e2Orig
   where
     lexp :: LHsExpr GhcTc -> LHsExpr GhcTc -> Bool
     lexp e e' = exp (unLoc e) (unLoc e')

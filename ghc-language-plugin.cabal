@@ -1,5 +1,5 @@
 cabal-version: 3.0
-name:          curry-ghc-plugin
+name:          ghc-language-plugin
 synopsis:      A compiler plugin to provide nondeterminism as a language feature
 version:       0.1.0.0
 license:       BSD-3-Clause
@@ -70,9 +70,7 @@ common deps
   other-modules:
     Data.Syb
     Plugin.Dump
-    Plugin.CurryPlugin.ForeignExport
-    Plugin.Effect.Tree
-    Plugin.Effect.THEval
+    Plugin.Trans.Config
     Plugin.Trans.Expr
     Plugin.Trans.Import
     Plugin.Trans.Constr
@@ -100,38 +98,6 @@ common deps
 library
   import: deps
   exposed-modules:
-    Plugin.CurryPlugin
-    Plugin.CurryPlugin.BuiltIn
-    Plugin.CurryPlugin.Encapsulation
-    Plugin.CurryPlugin.Prelude
-    Plugin.Effect.Monad
+    Plugin.LanguagePlugin
     Plugin.Effect.Classes
     Plugin.Effect.Annotation
-    Plugin.Effect.CurryEffect
-
-test-suite tests
-  import:         deps
-  type:           detailed-0.9
-  hs-source-dirs: test
-  test-module:    Tests
-  other-modules:
-    SemanticTests
-    Tests.Guards
-    Tests.UnknownNat
-    Tests.LetPattern
-    Tests.Bang
-
-    Plugin.CurryPlugin
-    Plugin.CurryPlugin.BuiltIn
-    Plugin.CurryPlugin.Encapsulation
-    Plugin.CurryPlugin.Prelude
-    Plugin.Effect.Monad
-    Plugin.Effect.Classes
-    Plugin.Effect.Annotation
-    Plugin.Effect.CurryEffect
-  build-depends:
-    curry-ghc-plugin,
-    process   -any,
-    filepath  -any,
-    directory -any,
-    Cabal     ^>= 3.4.0.0

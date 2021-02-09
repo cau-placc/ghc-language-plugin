@@ -10,7 +10,7 @@ Maintainer  : kai.prott@hotmail.de
 This module contains a GHC plugin that turns GHC into a "compiler" for
 the functional-logic programming language Curry.
 -}
-module Plugin.CurryPlugin (plugin) where
+module Plugin.LanguagePlugin (languagePlugin) where
 
 import Data.List
 import Data.Syb
@@ -60,8 +60,8 @@ import Plugin.Effect.Annotation
 
 -- | This GHC plugin turns GHC into a "compiler" for
 -- the functional-logic programming language Curry.
-plugin :: Plugin
-plugin = defaultPlugin
+languagePlugin :: Plugin
+languagePlugin = defaultPlugin
   { parsedResultAction    = const . const addPreludeImport
   , renamedResultAction   = const processImportPlugin
   , typeCheckResultAction = const . liftMonadPlugin . parseDumpOpts
@@ -78,7 +78,7 @@ plugin = defaultPlugin
         return (dflags { pluginModNameOpts = opt:pluginModNameOpts dflags })
 
     opt = (prelName , "NoImplicitPrelude")
-    prelName = mkModuleName "Plugin.CurryPlugin.Prelude"
+    prelName = mkModuleName "Plugin.LanguagePlugin.Prelude"
 
     addPreludeImport :: HsParsedModule -> Hsc HsParsedModule
     addPreludeImport p@(HsParsedModule (L l

@@ -33,6 +33,8 @@ import GHC.Core.Class
 import GHC.Core.TyCo.Rep
 import GHC.Core.Predicate
 
+import Plugin.Trans.Config
+
 -- This Type contains an IORef, because looking up the mapping between
 -- new <-> old type constructors needs IO.
 -- We do not want to lookup the full mapping on plugin startup, as
@@ -46,8 +48,10 @@ type TyConMap = (HscEnv, TcRef (UniqFM TyCon TyCon, -- Old -> New
 
 -- | Get the 'Nondet' monad type constructor.
 getMonadTycon :: TcM TyCon
-getMonadTycon = getTyCon "Plugin.Effect.Monad" "Nondet"
-
+getMonadTycon = do
+  mdlStr <- lookupConfig monadModConfigStr
+  nmStr  <- lookupConfig monadNameConfigStr
+  getTyCon mdlStr nmStr
 
 -- | Get the 'Shareable' class type constructor.
 getShareClassTycon :: TcM TyCon
@@ -660,7 +664,7 @@ mkEvWrapSimilar :: HsWrapper -> [CoreExpr] -> [(Type, Var)] -> HsWrapper
 mkEvWrapSimilar = go []
   where
     go _      _                 []     _             = WpHole
-    go ws     (WpTyApp _  )     (v:vs) []            = 
+    go ws     (WpTyApp _  )     (v:vs) []            =
                            WpEvApp (EvExpr v)        <.> gos ws vs []
     go ws     (WpTyApp ty1)     (v:vs) ((ty2, c):cs)
       | ty1 `eqType` ty2 = WpEvApp (EvExpr (evId c)) <.> gos ws vs cs
