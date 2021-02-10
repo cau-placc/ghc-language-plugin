@@ -19,7 +19,6 @@ import Control.Monad
 
 import GHC.Types.Name.Occurrence hiding (varName)
 import GHC.Plugins hiding (substTy, extendTvSubst)
-import GHC.Unit.Finder
 import GHC.Unit.External
 import GHC.Tc.Types
 import GHC.Tc.Types.Evidence
@@ -34,6 +33,7 @@ import GHC.Core.TyCo.Rep
 import GHC.Core.Predicate
 
 import Plugin.Trans.Config
+import Plugin.Trans.Util
 
 -- This Type contains an IORef, because looking up the mapping between
 -- new <-> old type constructors needs IO.
@@ -82,9 +82,7 @@ getTyCon :: String    -- ^ Module name
          -> String    -- ^ TyCon name
          -> TcM TyCon
 getTyCon mname name = do
-  hscEnv <- getTopEnv
-  Found _ mdl <- liftIO $
-    findImportedModule hscEnv (mkModuleName mname) Nothing
+  mdl <- findImportedOrPanic mname
   tcLookupTyCon =<< lookupOrig mdl ( mkTcOcc name )
 
 {- If we have a type like (T (a -> b)), the correct lifted type is

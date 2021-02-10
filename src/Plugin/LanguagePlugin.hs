@@ -42,6 +42,7 @@ import GHC.Core.TyCo.Rep
 import GHC.Data.Bag
 
 import Plugin.Dump
+import Plugin.Trans.Config
 import Plugin.Trans.Expr
 import Plugin.Trans.Type
 import Plugin.Trans.Util
@@ -75,24 +76,26 @@ languagePlugin = defaultPlugin
       | ImplicitPrelude `xopt` dflags =
         return (dflags `xopt_unset` ImplicitPrelude)
       | otherwise =
-        return (dflags { pluginModNameOpts = opt:pluginModNameOpts dflags })
+        return (dflags { pluginModNameOpts = implicitOpt
+                                           : pluginModNameOpts dflags })
 
-    opt = (prelName , "NoImplicitPrelude")
-    prelName = mkModuleName "Plugin.LanguagePlugin.Prelude"
+    implicitOpt = ( mkModuleName "Plugin.LanguagePlugin.PreludeImplicit"
+                  , "NoImplicitPrelude")
 
     addPreludeImport :: HsParsedModule -> Hsc HsParsedModule
     addPreludeImport p@(HsParsedModule (L l
                           m@HsModule { hsmodImports = im }) _ _) = do
       flgs <- getDynFlags
-      if opt `elem` (pluginModNameOpts flgs) || any isCurryPrelImport im
+      prel <- mkModuleName <$> lookupConfig preludeModConfigStr
+      let prelIm = noLoc (ImportDecl noExtField NoSourceText (noLoc prel)
+                      Nothing NotBoot False NotQualified True Nothing Nothing)
+      if implicitOpt `elem` (pluginModNameOpts flgs)
+           || any (isCurryPrelImport prel) im
         then return p
-        else return (p { hpm_module = L l (m { hsmodImports = prel:im }) })
-      where
-        prel = noLoc (ImportDecl noExtField NoSourceText (noLoc prelName)
-                        Nothing NotBoot False NotQualified True Nothing Nothing)
+        else return (p { hpm_module = L l (m { hsmodImports = prelIm:im }) })
 
-    isCurryPrelImport :: LImportDecl GhcPs -> Bool
-    isCurryPrelImport (L _ (ImportDecl { ideclName = L _ nm })) =
+    isCurryPrelImport :: ModuleName -> LImportDecl GhcPs -> Bool
+    isCurryPrelImport prelName (L _ (ImportDecl { ideclName = L _ nm })) =
       nm == prelName
 
     conPlugin = TcPlugin

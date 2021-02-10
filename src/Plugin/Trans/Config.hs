@@ -12,19 +12,27 @@ module Plugin.Trans.Config where
 
 import GHC.Types.Name.Occurrence hiding (varName)
 import GHC.Plugins hiding (substTy, extendTvSubst)
-import GHC.Unit.Finder
 import GHC.Tc.Types
 import GHC.Tc.Utils.Monad
 import GHC.Iface.Env
 
 import Plugin.Trans.Util
 
-lookupConfig :: (String, String) -> TcM String
+lookupConfig :: (HasDynFlags m, MonadIO m) => (String, String) -> m String
 lookupConfig (configStr, errStr) = do
   opts <- pluginModNameOpts <$> getDynFlags
   case lookup (mkModuleName configStr) opts of
     Just x  -> return x
     Nothing -> panicAny errStr ()
+
+setConfigFlagsFor :: [(String, String)] -> Plugin -> Plugin
+setConfigFlagsFor flgs p@(Plugin { dynflagsPlugin = dflagsPl }) =
+  p { dynflagsPlugin = setFlags }
+  where
+    setFlags opts dflags =
+      let currentPluginOpts = pluginModNameOpts dflags
+          newOpts = currentPluginOpts ++ [(mkModuleName m, v) | (m, v) <- flgs]
+      in dflagsPl opts (dflags { pluginModNameOpts = newOpts })
 
 monadModConfigStr :: (String, String)
 monadModConfigStr =
@@ -36,11 +44,19 @@ monadNameConfigStr =
   ( "Plugin.LanguagePlugin.MonadName"
   , "Missing name configuration for effect monad" )
 
+preludeModConfigStr :: (String, String)
+preludeModConfigStr =
+  ( "Plugin.LanguagePlugin.PreludeMod"
+  , "Missing module configuration for Prelude" )
+
+builtInModConfigStr :: (String, String)
+builtInModConfigStr =
+  ( "Plugin.LanguagePlugin.BuiltInMod"
+  , "Missing module configuration for BuiltIns" )
+
 queryBuiltinFunctionName :: String -> TcM RdrName
 queryBuiltinFunctionName fname = do
   modName <- lookupConfig monadModConfigStr
-  hscEnv <- getTopEnv
-  Found _ mdl <- liftIO $
-    findImportedModule hscEnv (mkModuleName modName) Nothing
+  mdl <- findImportedOrPanic modName
   nm <- lookupOrig mdl (mkVarOcc fname)
   return (Exact nm)

@@ -31,7 +31,6 @@ import GHC.Hs.Lit
 import GHC.Hs.Expr
 import GHC.Hs.Type
 import GHC.Builtin.Names
-import GHC.Unit.Finder
 import GHC.Types.SourceText
 import GHC.Types.Fixity
 import GHC.Types.Id.Make
@@ -48,10 +47,10 @@ import GHC.Core.ConLike
 import GHC.Data.Bag
 
 import Plugin.Trans.Var
+import Plugin.Trans.Config
 import Plugin.Trans.Type
 import Plugin.Trans.CreateSyntax
 import Plugin.Trans.Util
-import Plugin.Trans.TysWiredIn
 import Plugin.Trans.LExprEQ
 
 {-
@@ -1051,9 +1050,8 @@ mkErrorLit = noLoc . HsLit noExtField . HsString NoSourceText . mkFastString
 
 mkErrorWith :: Type -> String -> TcM (LHsExpr GhcTc)
 mkErrorWith ty s = do
-  hscEnv <- getTopEnv
-  Found _ mdl <- liftIO $
-    findImportedModule hscEnv (mkModuleName builtInModule) Nothing
+  builtInModule <- lookupConfig builtInModConfigStr
+  mdl <- findImportedOrPanic builtInModule
   tv <- freshSimpleTVar
   let ty' = mkForAllTy tv Inferred
               (mkVisFunTyMany (mkListTy charTy) (mkTyVarTy tv))

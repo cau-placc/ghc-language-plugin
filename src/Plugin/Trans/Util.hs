@@ -25,6 +25,7 @@ import GHC.Tc.Types
 import GHC.Tc.Gen.Expr
 import GHC.Tc.Types.Evidence
 import GHC.Tc.Utils.Monad
+import GHC.Unit.Finder
 import GHC.Rename.Expr
 import GHC.Data.Bag
 import GHC.Types.SourceText
@@ -32,6 +33,14 @@ import GHC.Types.SourceText
 -- | Lift a computation from the 'Q' monad to the type checker monad.
 liftQ :: Q a -> TcM a
 liftQ = liftIO . runQ
+
+findImportedOrPanic :: String -> TcM Module
+findImportedOrPanic mname = do
+  hscEnv <- getTopEnv
+  res <- liftIO $ findImportedModule hscEnv (mkModuleName mname) Nothing
+  case res of
+    Found _ mdl -> return mdl
+    _           -> panicAny "Could not find module" mname
 
 -- | Convert a given TemplateHaskell expression into GHC's representation
 -- and type check it against the given type.
