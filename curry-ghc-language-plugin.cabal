@@ -112,3 +112,34 @@ library
     Plugin.Effect.CurryEffect
     Plugin.Effect.THEval
     Plugin.Effect.Tree
+
+test-suite tests
+  import:         deps
+  type:           detailed-0.9
+  hs-source-dirs: test
+  test-module:    Tests
+  other-modules:
+    SemanticTests
+    Tests.Guards
+    Tests.UnknownNat
+    Tests.LetPattern
+    Tests.Bang
+
+    Plugin.LanguagePlugin
+    Plugin.CurryPlugin
+    Plugin.CurryPlugin.BuiltIn
+    Plugin.CurryPlugin.ForeignExport
+    Plugin.CurryPlugin.Encapsulation
+    Plugin.CurryPlugin.Prelude
+    Plugin.Effect.Monad
+    Plugin.Effect.Classes
+    Plugin.Effect.Annotation
+    Plugin.Effect.CurryEffect
+    Plugin.Effect.THEval
+    Plugin.Effect.Tree
+  build-depends:
+    curry-ghc-language-plugin,
+    process   -any,
+    filepath  -any,
+    directory -any,
+    Cabal     ^>= 3.4.0.0
