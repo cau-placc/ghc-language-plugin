@@ -19,7 +19,6 @@ import Control.Monad
 
 import GHC.Types.Name.Occurrence hiding (varName)
 import GHC.Plugins hiding (substTy, extendTvSubst)
-import GHC.Unit.Finder
 import GHC.Unit.External
 import GHC.Tc.Types
 import GHC.Tc.Types.Evidence
@@ -32,6 +31,9 @@ import GHC.Iface.Env
 import GHC.Core.Class
 import GHC.Core.TyCo.Rep
 import GHC.Core.Predicate
+
+import Plugin.Trans.Config
+import Plugin.Trans.Util
 
 -- This Type contains an IORef, because looking up the mapping between
 -- new <-> old type constructors needs IO.
@@ -46,8 +48,10 @@ type TyConMap = (HscEnv, TcRef (UniqFM TyCon TyCon, -- Old -> New
 
 -- | Get the 'Nondet' monad type constructor.
 getMonadTycon :: TcM TyCon
-getMonadTycon = getTyCon "Plugin.Effect.Monad" "Nondet"
-
+getMonadTycon = do
+  mdlStr <- lookupConfig monadModConfigStr
+  nmStr  <- lookupConfig monadNameConfigStr
+  getTyCon mdlStr nmStr
 
 -- | Get the 'Shareable' class type constructor.
 getShareClassTycon :: TcM TyCon
@@ -78,9 +82,7 @@ getTyCon :: String    -- ^ Module name
          -> String    -- ^ TyCon name
          -> TcM TyCon
 getTyCon mname name = do
-  hscEnv <- getTopEnv
-  Found _ mdl <- liftIO $
-    findImportedModule hscEnv (mkModuleName mname) Nothing
+  mdl <- findImportedOrPanic mname
   tcLookupTyCon =<< lookupOrig mdl ( mkTcOcc name )
 
 {- If we have a type like (T (a -> b)), the correct lifted type is
@@ -660,7 +662,7 @@ mkEvWrapSimilar :: HsWrapper -> [CoreExpr] -> [(Type, Var)] -> HsWrapper
 mkEvWrapSimilar = go []
   where
     go _      _                 []     _             = WpHole
-    go ws     (WpTyApp _  )     (v:vs) []            = 
+    go ws     (WpTyApp _  )     (v:vs) []            =
                            WpEvApp (EvExpr v)        <.> gos ws vs []
     go ws     (WpTyApp ty1)     (v:vs) ((ty2, c):cs)
       | ty1 `eqType` ty2 = WpEvApp (EvExpr (evId c)) <.> gos ws vs cs

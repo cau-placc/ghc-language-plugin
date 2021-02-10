@@ -30,8 +30,8 @@ module Plugin.Effect.Monad
 import Language.Haskell.TH.Syntax
 import Control.Monad
 
-import Plugin.Effect.CurryEffect
-import Plugin.Effect.Classes     (Sharing(..), Shareable(..), Normalform(..))
+import Plugin.Effect.CurryEffect (Lazy, collect, memo, pureL)
+import Plugin.Effect.Classes
 import Plugin.Effect.Tree
 import Plugin.Effect.Annotation
 

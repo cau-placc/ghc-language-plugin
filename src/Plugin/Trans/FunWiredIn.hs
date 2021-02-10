@@ -21,20 +21,20 @@ import Data.List
 
 import GHC.Types.Name.Occurrence hiding (varName)
 import GHC.Plugins
-import GHC.Unit.Finder
 import GHC.Tc.Types
-import GHC.Tc.Utils.Monad
 import GHC.Tc.Utils.Env
 import GHC.Iface.Env
 import GHC.Builtin.Names
 import GHC.Core.Class
 
-import Plugin.Trans.TysWiredIn
+import Plugin.Trans.Config
+import Plugin.Trans.Util
 
 -- | look up the replacement for the default implementation of a built-in
 -- type class function.
 lookupDefaultReplacement :: TyCon -> TyCon -> Name -> TcM Var
 lookupDefaultReplacement tc tc' oldnm = do
+    builtInModule <- lookupConfig builtInModConfigStr
     -- detect the old and new class first.
     let Just oldCls = tyConClass_maybe tc
         Just newCls = tyConClass_maybe tc'
@@ -45,9 +45,7 @@ lookupDefaultReplacement tc tc' oldnm = do
       Nothing -> tcLookupId newnm
       -- Create the required replacement variable and get its type.
       Just nm -> do
-        hscEnv <- getTopEnv
-        Found _ mdl <- liftIO $
-          findImportedModule hscEnv (mkModuleName builtInModule) Nothing
+        mdl <- findImportedOrPanic builtInModule
         tcLookupId =<< lookupOrig mdl nm
   where
     defLike n (_ , Just (n', _)) = occName n == occName n'
@@ -58,12 +56,11 @@ lookupDefaultReplacement tc tc' oldnm = do
 lookupWiredInFunc :: Var -> TcM (Maybe Var)
 lookupWiredInFunc v = do
   wired <- mapM lookupRdrBase wiredIn
+  builtInModule <- lookupConfig builtInModConfigStr
   case find (== varName v) wired of
     Nothing -> return Nothing
     Just n -> Just <$> do
-      hscEnv <- getTopEnv
-      Found _ mdl <- liftIO $
-        findImportedModule hscEnv (mkModuleName builtInModule) Nothing
+      mdl <- findImportedOrPanic builtInModule
       tcLookupId =<< lookupOrig mdl (occName n)
 
 -- | Enumeration of all type class function classifications with respect to the

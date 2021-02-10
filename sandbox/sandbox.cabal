@@ -15,7 +15,7 @@ common deps
   other-extensions:  NoImplicitPrelude
   build-depends:
     base             ^>=4.16.0.0,
-    curry-ghc-plugin -any
+    curry-ghc-language-plugin -any
 
 library
   import: deps

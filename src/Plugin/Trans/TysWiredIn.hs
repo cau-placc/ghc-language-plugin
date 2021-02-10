@@ -8,21 +8,21 @@ This module contains the function to load the initial type constructor map that
 connects lifted and unlifted versions of a type constructor.
 The map is initialized with some of GHC's built-in types.
 -}
-module Plugin.Trans.TysWiredIn (loadDefaultTyConMap, builtInModule) where
+module Plugin.Trans.TysWiredIn (loadDefaultTyConMap) where
 
 import Data.IORef
 import Data.Tuple
 
 import GHC.Types.Name.Occurrence
 import GHC.Plugins
-import GHC.Unit.Finder
 import GHC.Tc.Types
-import GHC.Tc.Utils.Monad
 import GHC.Tc.Utils.Env
 import GHC.Iface.Env
 import GHC.Builtin.Names
 
 import Plugin.Trans.Type
+import Plugin.Trans.Config
+import Plugin.Trans.Util
 
 -- | Load the mapping between lifted and unlifted
 -- for all built-in type constructors.
@@ -49,6 +49,7 @@ loadDefaultTyConMap = do
 load :: (Name, String) -> TcM (TyCon, TyCon)
 load (n, s) = do
   old <- tcLookupTyCon n
+  builtInModule <- lookupConfig builtInModConfigStr
   new <- getTyCon builtInModule s
   return (old, new)
 
@@ -56,10 +57,9 @@ load (n, s) = do
 -- not in 'PrelNames' for some reason.
 loadAdditional :: TcM [(TyCon, TyCon)]
 loadAdditional = do
+  builtInModule <- lookupConfig builtInModConfigStr
   -- AlternativeClassName in PrelNames is incorrect, so we look it up manually
-  hscEnv <- getTopEnv
-  Found _ bse <- liftIO $
-    findImportedModule hscEnv (mkModuleName "GHC.Base") Nothing
+  bse  <- findImportedOrPanic "GHC.Base"
   altA <- tcLookupTyCon =<< lookupOrig bse ( mkTcOcc "Alternative" )
   newA <- getTyCon builtInModule "AlternativeND"
 
@@ -68,14 +68,12 @@ loadAdditional = do
   newS <- getTyCon builtInModule "StringND"
 
   -- And again for ShowS.
-  Found _ shw <- liftIO $
-    findImportedModule hscEnv (mkModuleName "GHC.Show") Nothing
+  shw  <- findImportedOrPanic "GHC.Show"
   altH <- tcLookupTyCon =<< lookupOrig shw ( mkTcOcc "ShowS" )
   newH <- getTyCon builtInModule "ShowSND"
 
   -- And again for Real.
-  Found _ real <- liftIO $
-    findImportedModule hscEnv (mkModuleName "GHC.Real") Nothing
+  real <- findImportedOrPanic "GHC.Real"
   altR <- tcLookupTyCon =<< lookupOrig real ( mkTcOcc "Real" )
   newR <- getTyCon builtInModule "RealND"
 
@@ -117,7 +115,3 @@ tupleWithArity n = (tupleTyConName BoxedTuple n, "Tuple" ++ show n ++ "ND")
 -- have to be added to 'Plugin.CurryPlugin.BuiltIn'.
 maxTupleArity :: Int
 maxTupleArity = 2
-
--- | Name of the module that contains all built-in plugin definitions
-builtInModule :: String
-builtInModule = "Plugin.CurryPlugin.BuiltIn"

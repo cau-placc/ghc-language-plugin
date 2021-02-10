@@ -30,20 +30,21 @@ import           Control.Applicative
 import           Unsafe.Coerce
 
 import Plugin.Effect.Classes
+import Plugin.Effect.Tree
 
 -- | A Lazy implementation of a monad for nondeterminism
 -- with support for explicit sharing.
 newtype Lazy a = Lazy {
-    fromLazy :: forall n . Nondet n => (a -> Store -> n) -> Store -> n
+    fromLazy :: forall n . NondetOps n => (a -> Store -> n) -> Store -> n
   } deriving Functor
 
 -- | Collect all results into a given nondeterministic
 -- and monadic data structure.
-collect :: (Monad m, Nondet (m n)) => Lazy n -> (m n)
+collect :: (Monad m, NondetOps (m n)) => Lazy n -> (m n)
 collect a = runLazy (fmap return a)
 
 -- | Collect all results into a given nondeterministic data structure.
-runLazy :: Nondet n => Lazy n -> n
+runLazy :: NondetOps n => Lazy n -> n
 runLazy m = fromLazy m (\a _ -> a) emptyStore
 
 instance Applicative Lazy where
@@ -90,6 +91,14 @@ instance Sharing Lazy where
   type ShareConstraints Lazy a = Shareable Lazy a
   share a = memo (a >>= shareArgs share)
   shareTopLevel = const id
+
+class NondetOps n where
+  failure :: n
+  (?)     :: n -> n -> n
+
+instance NondetOps (Tree a) where
+  failure = Failed
+  (?)     = Choice
 
 -- | A data type to label and store shared nondeterministic values
 -- on an untyped heap.

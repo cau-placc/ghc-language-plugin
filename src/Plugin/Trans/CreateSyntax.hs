@@ -29,7 +29,8 @@ import GHC.Core.TyCo.Rep
 import GHC.Core.ConLike
 import GHC.Data.Bag
 
-import Plugin.Effect.Monad
+import Plugin.Effect.Classes
+import Plugin.Trans.Config
 import Plugin.Trans.Constr
 import Plugin.Trans.Type
 import Plugin.Trans.Util
@@ -148,23 +149,23 @@ mkAppWith con _ typ args = do
 mkNewReturnTh :: Type -> TcM (LHsExpr GhcTc)
 mkNewReturnTh etype = do
   mtycon <- getMonadTycon
-  th_expr <- liftQ [| rtrn |]
+  ps_expr <- queryBuiltinFunctionName "rtrn"
   let mty = mkTyConTy mtycon
   let expType = mkVisFunTyMany etype $ -- 'e ->
                 mkAppTy mty etype  -- m 'e
-  mkNewAny th_expr expType
+  mkNewPs ps_expr expType
 
 -- | Create a '(>>=)' for the given argument types.
 mkNewBindTh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewBindTh etype btype = do
   mtycon <- getMonadTycon
-  th_expr <- liftQ [| bind |]
+  ps_expr <- queryBuiltinFunctionName "bind"
   let mty = mkTyConTy mtycon
   let resty = mkAppTy mty btype
   let expType = mkVisFunTyMany (mkAppTy mty etype) $        -- m 'e ->
                 mkVisFunTyMany (mkVisFunTyMany etype resty) -- (e' -> m b) ->
                   resty                                     -- m b
-  mkNewAny th_expr expType
+  mkNewPs ps_expr expType
 
 -- | Make a seq for ordinary values (The "Prelude.seq")
 mkNewSeqTh :: Type -> Type -> TcM (LHsExpr GhcTc)
@@ -178,21 +179,21 @@ mkNewSeqTh atype btype = do
 mkNewSeqValueTh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewSeqValueTh atype btype = do
   mtc <- getMonadTycon
-  th_expr <- liftQ [| seqValue |]
+  ps_expr <- queryBuiltinFunctionName "seqValue"
   let expType = mkVisFunTyMany (mkTyConApp mtc [atype]) $ -- m a ->
                 mkVisFunTyMany (mkTyConApp mtc [btype])   -- m b ->
                 (mkTyConApp mtc [btype])                  -- m b
-  mkNewAny th_expr expType
+  mkNewPs ps_expr expType
 
 -- | Create a 'fmap' for the given argument types.
 mkNewFmapTh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewFmapTh etype btype = do
   mtycon <- getMonadTycon
-  th_expr <- liftQ [| fmp |]
+  ps_expr <- queryBuiltinFunctionName "fmp"
   let appMty = mkTyConApp mtycon . (:[])
   let expType = mkVisFunTyMany (mkVisFunTyMany etype btype) $     -- ('e -> 'b) ->
                 mkVisFunTyMany (appMty etype) (appMty btype)  -- m 'e -> m 'b
-  mkNewAny th_expr expType
+  mkNewPs ps_expr expType
 
 -- | Create a 'share' for the given argument types.
 mkNewShareTh :: TyConMap -> Type -> TcM (LHsExpr GhcTc)
@@ -216,18 +217,18 @@ mkNewShareTh tcs ty
     return (noLoc $ HsVar noExtField $ noLoc $ mkVanillaGlobal nm expType)
   | otherwise     = do
   mtycon <- getMonadTycon
-  th_expr <- liftQ [| shre |]
+  ps_expr <- queryBuiltinFunctionName "shre"
   let expType = mkVisFunTyMany ty $    -- a ->
                 mkTyConApp mtycon [ty] -- m a
-  mkNewAny th_expr expType
+  mkNewPs ps_expr expType
 
 mkNewShareTop :: (Int, String) -> Type -> TcM (LHsExpr GhcTc)
 mkNewShareTop key ty = do
-  th_expr <- liftQ [| shreTopLevel |]
+  ps_expr <- queryBuiltinFunctionName "shreTopLevel"
   let tup = mkTupleTy Boxed [intTy, stringTy]
   let expType = mkVisFunTyMany tup $
                 mkVisFunTyMany ty ty -- (Int, String) -> ty -> ty
-  e <- mkNewAny th_expr expType
+  e <- mkNewPs ps_expr expType
   th_arg <- liftQ [| key |]
   arg <- mkNewAny th_arg tup
   return (mkHsApp e arg)
@@ -252,20 +253,20 @@ mkNewNfTh ty1 ty2 = do
 mkNewApply1 :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewApply1 ty1 ty2 = do
   mtycon <- getMonadTycon
-  th_expr <- liftQ [| apply1 |]
+  ps_expr <- queryBuiltinFunctionName "apply1"
   let expType =
         mkVisFunTyMany (mkTyConApp mtycon                     -- Nondet
                   [mkVisFunTyMany (mkTyConApp mtycon [ty1])   --  ( Nondet a ->
                            (mkTyConApp mtycon [ty2])])    --    Nondet b ) ->
           (mkVisFunTyMany (mkTyConApp mtycon [ty1])           -- Nondet a ->
                    (mkTyConApp mtycon [ty2]))             -- Nondet b
-  mkNewAny th_expr expType
+  mkNewPs ps_expr expType
 
 -- | Create a 'apply2' for the given argument types.
 mkNewApply2 :: Type -> Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewApply2 ty1 ty2 ty3 = do
   mtycon <- getMonadTycon
-  th_expr <- liftQ [| apply2 |]
+  ps_expr <- queryBuiltinFunctionName "apply2"
   let expType =
         mkTyConApp mtycon                                    -- Nondet
                   [mkVisFunTyMany (mkTyConApp mtycon [ty1])      --  (Nondet a ->
@@ -276,13 +277,13 @@ mkNewApply2 ty1 ty2 ty3 = do
         mkVisFunTyMany (mkTyConApp mtycon [ty1])                 -- Nondet a ->
           (mkVisFunTyMany (mkTyConApp mtycon [ty2])              -- Nondet b ->
                    (mkTyConApp mtycon [ty3]))                -- Nondet c
-  mkNewAny th_expr expType
+  mkNewPs ps_expr expType
 
 -- | Create a 'apply2Unlifted' for the given argument types.
 mkNewApply2Unlifted :: Type -> Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewApply2Unlifted ty1 ty2 ty3 = do
   mtycon <- getMonadTycon
-  th_expr <- liftQ [| apply2Unlifted |]
+  ps_expr <- queryBuiltinFunctionName "apply2Unlifted"
   let expType =
         mkTyConApp mtycon                                 -- Nondet
                   [mkVisFunTyMany (mkTyConApp mtycon [ty1])      --  ( Nondet a ->
@@ -293,7 +294,7 @@ mkNewApply2Unlifted ty1 ty2 ty3 = do
         mkVisFunTyMany (mkTyConApp mtycon [ty1])                 -- Nondet a ->
           (mkVisFunTyMany                     ty2                --        b ->
                    (mkTyConApp mtycon [ty3]))             -- Nondet c
-  mkNewAny th_expr expType
+  mkNewPs ps_expr expType
 
 -- | Create a '(>>=)' specialized to lists for list comprehensions.
 mkListBind :: Type -> Type -> TcM SyntaxExprTc

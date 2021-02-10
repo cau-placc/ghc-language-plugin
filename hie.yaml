@@ -11,6 +11,6 @@ cradle:
         cradle:
           stack:
             - path: ./src
-              component: "curry-ghc-plugin:lib"
+              component: "curry-ghc-language-plugin:lib"
             - path: ./test
-              component: "curry-ghc-plugin:test:tests"
+              component: "curry-ghc-language-plugin:test:tests"
