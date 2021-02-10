@@ -1,4 +1,5 @@
 {-# OPTIONS_GHC -fplugin Plugin.CurryPlugin #-}
+{-# OPTIONS_GHC -Wno-incomplete-patterns    #-}
 {-# LANGUAGE NoImplicitPrelude              #-}
 {-# LANGUAGE MultiParamTypeClasses          #-}
 {-# LANGUAGE FunctionalDependencies         #-}
