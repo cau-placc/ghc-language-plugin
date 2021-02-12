@@ -100,4 +100,5 @@ library
   exposed-modules:
     Plugin.LanguagePlugin
     Plugin.Effect.Classes
+    Plugin.Effect.Transformers
     Plugin.Effect.Annotation

@@ -33,9 +33,10 @@ class Monad s => Sharing s where
   type instance ShareConstraints s a = ()
   share :: ShareConstraints s a => s a -> s (s a)
 
-  type family ShareTopLevelConstraints s a :: Constraint
-  type instance ShareTopLevelConstraints s a = ()
-  shareTopLevel :: (ShareTopLevelConstraints s a) => (Int, String) -> s a -> s a
+-- | A class for Monads with support for explicit sharing of top-level effects.
+class Monad s => SharingTop s where
+  shareTopLevel :: (Int, String) -> s a -> s a
+  shareTopLevel = const id
 
 {-# RULES
 "shareTopLevel/return" forall x i. shareTopLevel i (return x) = return x
