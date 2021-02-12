@@ -1014,8 +1014,6 @@ shareVars tcs vs evs e' ety = do
 shareTopLevel :: Maybe Var -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
 shareTopLevel Nothing  e = return e
 shareTopLevel (Just v) e = do
-  --printBndrUnsafe "v" v
-  --printAny "e" e
   let u = varUnique v
   let i = getKey u
   mdl <- tcg_mod <$> getGblEnv

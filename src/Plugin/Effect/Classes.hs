@@ -52,7 +52,7 @@ class Shareable m a where
 
 -- | A class for conversion between lifted and unlifted data types.
 -- For types with a generic instance, it can be derived automatically.
-class Monad m => Normalform m a b | a -> b, b -> a where
+class Monad m => Normalform m a b | a -> b where
   -- | Convert a data type to its unlifted representation and
   -- compute its normal form.
   nf :: m a -> m b
@@ -204,14 +204,12 @@ instance (Monad m) => Normalform m Char Char where
   nf    = id
   liftE = id
 
-instance (Monad m, Normalform m a1 a2, Normalform m b1 b2)
-  => Normalform m (m a1 -> m b1) (m a2 -> m b2) where
-    nf mf = do
-      f <- mf
-      return $ \a -> nf (f (liftE a))
+instance (Monad m, Normalform m a1 a2, Normalform m b1 b2, (a1m ~ m a1), (b1m ~ m b1))
+  => Normalform m (a1m -> b1m) (a2 -> b2) where
+    nf    mf = mf >> return (error "Plugin Error: Cannot capture function types")
     liftE mf = do
       f <- mf
-      return $ \a -> liftE (f (nf a))
+      return $ (liftE . fmap f . nf)
 
 -- * Instances for Shareable
 
