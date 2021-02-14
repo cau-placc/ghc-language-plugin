@@ -44,11 +44,10 @@ class Monad s => SharingTop s where
 
 -- | A class for deep sharing of nested effects.
 -- For types with a generic instance, it can be derived automatically.
-class Shareable m a where
-  shareArgs :: (Monad n) =>
-    (forall b. (Shareable m b => m b -> n (m b))) -> a -> n a
-  default shareArgs :: (Gen.Generic a, ShareableGen m (Gen.Rep a), Monad n) =>
-    (forall b. (Shareable m b => m b -> n (m b))) -> a -> n a
+class Monad m => Shareable m a where
+  shareArgs :: (forall b. (Shareable m b => m b -> m (m b))) -> a -> m a
+  default shareArgs :: (Gen.Generic a, ShareableGen m (Gen.Rep a)) =>
+    (forall b. (Shareable m b => m b -> m (m b))) -> a -> m a
   shareArgs f a = Gen.to <$> shareArgsGen f (Gen.from a)
 
 -- | A class for conversion between lifted and unlifted data types.
@@ -132,8 +131,7 @@ instance (Monad m, NormalformGen m f g) =>
       Gen.M1 x -> Gen.M1 <$> liftEGen (return x)
 
 class ShareableGen m f where
-  shareArgsGen :: (Monad n) =>
-    (forall b. (Shareable m b => m b -> n (m b))) -> f x -> n (f x)
+  shareArgsGen :: (forall b. (Shareable m b => m b -> m (m b))) -> f x -> m (f x)
 
 instance (Monad m) => ShareableGen m Gen.V1 where
   shareArgsGen _ _ = undefined

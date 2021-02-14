@@ -5,12 +5,17 @@
 {-# LANGUAGE TypeFamilies              #-}
 {-# LANGUAGE FlexibleContexts          #-}
 {-# LANGUAGE StandaloneDeriving        #-}
+{-# LANGUAGE ScopedTypeVariables       #-}
+{-# LANGUAGE AllowAmbiguousTypes       #-}
+{-# LANGUAGE TypeApplications          #-}
 module Plugin.Effect.Transformers where
 
 import qualified Data.IntMap         as IntMap
 import qualified Data.Map.Strict     as Map
+import           Data.Coerce
 import           Unsafe.Coerce
 import           Control.Monad
+import           Control.Applicative
 import           Control.Monad.State ( MonadState(..), gets, modify )
 import           Control.Monad.Trans.Class
 
@@ -20,17 +25,37 @@ newtype LazyT m a = LazyT {
     fromLazyT :: forall r. (a -> Store -> m r) -> Store -> m r
   }
 
+runLazyT :: Monad m => LazyT m a -> m a
+runLazyT m = fromLazyT m (\a _ -> return a) emptyStore
+
+mkShareNeedImpl :: forall n m a.
+                   ( Sharing m
+                   , Coercible (m a) (LazyT n a)
+                   , Coercible (LazyT n (LazyT n a)) (m (m a)))
+                => (a -> m a) -> m a -> m (m a)
+mkShareNeedImpl sargs a =
+  coerce (memo (coerce a >>= (coerce @(m a) @(LazyT n a)) . sargs))
+
 newtype StrictT m a = StrictT {
     fromStrictT :: m a
   }
+
+runStrictT :: Monad m => StrictT m a -> m a
+runStrictT = fromStrictT
 
 newtype NameT m a = NameT {
     fromNameT :: m a
   }
 
+runNameT :: Monad m => NameT m a -> m a
+runNameT = fromNameT
+
 newtype TopSharingT m a = TopSharingT {
     fromTopSharingT :: forall r. (a -> TopStore -> m r) -> TopStore -> m r
   }
+
+runTopSharingT :: Monad m => TopSharingT m a -> m a
+runTopSharingT m = fromTopSharingT m (\a _ -> return a) emptyTopStore
 
 instance MonadTrans LazyT where
   lift ma = LazyT $ \c s -> ma >>= \a -> c a s
@@ -82,6 +107,14 @@ instance Monad m => Monad (NameT m) where
 instance Monad (TopSharingT m) where
   a >>= k =
     TopSharingT (\c s -> fromTopSharingT a (\x -> fromTopSharingT (k x) c) s)
+
+instance Alternative m => Alternative (LazyT m) where
+  empty = LazyT (\_ _ -> empty)
+  m1 <|> m2 = LazyT (\c s -> fromLazyT m1 c s <|> fromLazyT m2 c s)
+
+instance MonadPlus m => MonadPlus (LazyT m) where
+  mzero = lift mzero
+  m1 `mplus` m2 = LazyT (\c s -> fromLazyT m1 c s `mplus` fromLazyT m2 c s)
 
 
 -- instance Alternative m => Alternative (LazyT m) where

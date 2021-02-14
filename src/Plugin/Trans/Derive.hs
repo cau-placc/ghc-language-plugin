@@ -153,7 +153,7 @@ mkDerivingNF _ = return Nothing
 -- | Return a types its LHsType representation, without the outer Monad type.
 getRequired :: Name -> Type -> Maybe (LHsType GhcRn)
 getRequired tycon (TyConApp tc [ty])
-  | tyConName tc == tycon = getRequired ty
+  | tyConName tc == tycon = getRequired tycon ty
 getRequired _ ty
   | noFreeVarsOfType ty   = Nothing
   | otherwise             = Just (typeToLHsType ty)
