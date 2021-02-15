@@ -10,6 +10,8 @@
 {-# LANGUAGE LinearTypes            #-}
 {-# LANGUAGE ConstraintKinds        #-}
 {-# LANGUAGE TypeFamilies           #-}
+
+{-# OPTIONS_GHC -Wno-inline-rule-shadowing #-}
 {-|
 Module      : Plugin.Effect.Classes
 Description : Type classes used for the effect implementation
@@ -33,9 +35,10 @@ class Monad s => Sharing s where
   type instance ShareConstraints s a = ()
   share :: ShareConstraints s a => s a -> s (s a)
 
-  type family ShareTopLevelConstraints s a :: Constraint
-  type instance ShareTopLevelConstraints s a = ()
-  shareTopLevel :: (ShareTopLevelConstraints s a) => (Int, String) -> s a -> s a
+-- | A class for Monads with support for explicit sharing of top-level effects.
+class Monad s => SharingTop s where
+  shareTopLevel :: (Int, String) -> s a -> s a
+  shareTopLevel = const id
 
 {-# RULES
 "shareTopLevel/return" forall x i. shareTopLevel i (return x) = return x
@@ -43,16 +46,15 @@ class Monad s => Sharing s where
 
 -- | A class for deep sharing of nested effects.
 -- For types with a generic instance, it can be derived automatically.
-class Shareable m a where
-  shareArgs :: (Monad n) =>
-    (forall b. (Shareable m b => m b -> n (m b))) -> a -> n a
-  default shareArgs :: (Gen.Generic a, ShareableGen m (Gen.Rep a), Monad n) =>
-    (forall b. (Shareable m b => m b -> n (m b))) -> a -> n a
+class Monad m => Shareable m a where
+  shareArgs :: (forall b. (Shareable m b => m b -> m (m b))) -> a -> m a
+  default shareArgs :: (Gen.Generic a, ShareableGen m (Gen.Rep a)) =>
+    (forall b. (Shareable m b => m b -> m (m b))) -> a -> m a
   shareArgs f a = Gen.to <$> shareArgsGen f (Gen.from a)
 
 -- | A class for conversion between lifted and unlifted data types.
 -- For types with a generic instance, it can be derived automatically.
-class Monad m => Normalform m a b | a -> b, b -> a where
+class Monad m => Normalform m a b | m a -> b, m b -> a where
   -- | Convert a data type to its unlifted representation and
   -- compute its normal form.
   nf :: m a -> m b
@@ -131,8 +133,7 @@ instance (Monad m, NormalformGen m f g) =>
       Gen.M1 x -> Gen.M1 <$> liftEGen (return x)
 
 class ShareableGen m f where
-  shareArgsGen :: (Monad n) =>
-    (forall b. (Shareable m b => m b -> n (m b))) -> f x -> n (f x)
+  shareArgsGen :: (forall b. (Shareable m b => m b -> m (m b))) -> f x -> m (f x)
 
 instance (Monad m) => ShareableGen m Gen.V1 where
   shareArgsGen _ _ = undefined
@@ -205,13 +206,12 @@ instance (Monad m) => Normalform m Char Char where
   liftE = id
 
 instance (Monad m, Normalform m a1 a2, Normalform m b1 b2)
-  => Normalform m (m a1 -> m b1) (m a2 -> m b2) where
-    nf mf = do
-      f <- mf
-      return $ \a -> nf (f (liftE a))
+  => Normalform m (m a1 -> m b1) (a2 -> b2) where
+    nf    mf =
+      mf >> return (error "Plugin Error: Cannot capture function types")
     liftE mf = do
       f <- mf
-      return $ \a -> liftE (f (nf a))
+      return $ (liftE . fmap f . nf)
 
 -- * Instances for Shareable
 

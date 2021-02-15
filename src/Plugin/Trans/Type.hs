@@ -168,12 +168,14 @@ liftTypeParametrized sh stc mty s tcs t
       | otherwise = ForAllTy b <$> liftTypeParametrized sh stc mty us tcs ty
     -- Types to the left of and invisible function type (=>) are constraints.
     liftType' us (FunTy InvisArg m ty1 ty2) =
-        FunTy InvisArg m <$> replaceTyconTy tcs ty1 <*> liftType' us ty2
+        FunTy InvisArg m <$> liftInnerTyParametrized sh stc mty s tcs ty1
+                         <*> liftType' us ty2
     -- Wrap a visible function type in our monad, except when it is a
     -- visible dictionary applictation (not possible in GHC yet).-
     liftType' us (FunTy VisArg m ty1 ty2)
       | isDictTy ty1 =
-        FunTy VisArg m <$> replaceTyconTy tcs ty1 <*> liftType' us ty2
+        FunTy VisArg m <$> liftInnerTyParametrized sh stc mty s tcs ty1
+                       <*> liftType' us ty2
       | otherwise =
         let (u1, u2) = splitUniqSupply us
         in (mkAppTy mty .) . FunTy VisArg m <$> liftType' u1 ty1
@@ -367,10 +369,15 @@ replaceTyconTy tcs = replaceTyconTy'
       return (LitTy l)
     replaceTyconTy' (AppTy ty1 ty2) =
       AppTy <$> replaceTyconTy' ty1 <*> replaceTyconTy' ty2
-    replaceTyconTy' (TyConApp tc tys) = do
-      tc' <- lookupTyConMap GetNew tcs tc
-      tys' <- mapM (replaceTyconTy tcs) tys
-      return (TyConApp tc' tys')
+    replaceTyconTy' (TyConApp tc tys)
+      | tc == unrestrictedFunTyCon = do
+        tc' <- lookupTyConMap GetNew tcs funTyCon
+        tys' <- mapM (replaceTyconTy tcs) tys
+        return (TyConApp tc' (manyDataConTy : tys'))
+      | otherwise                  = do
+        tc' <- lookupTyConMap GetNew tcs tc
+        tys' <- mapM (replaceTyconTy tcs) tys
+        return (TyConApp tc' tys')
     replaceTyconTy' (TyVarTy v) =
       return (TyVarTy v)
 

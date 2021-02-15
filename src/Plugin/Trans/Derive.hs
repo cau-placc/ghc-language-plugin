@@ -46,7 +46,7 @@ mkDerivingGen (old, new) | isVanillaAlgTyCon new = do
   -- Get all type variables of the lifted type constructor.
   let newvars = map varName $ tyConTyVars new
   -- Apply the class to the fully saturated lifted type constructor.
-  let newbdy = mkHsAppTy clsty (foldr appVars newtyconty newvars)
+  let newbdy = mkHsAppTy clsty (foldr appVars newtyconty (reverse newvars))
   let newty = newbdy
   -- Add the type variables to the set of bound variables.
   let newinstty = mkEmptyWildCardBndrs $ HsIB newvars newty
@@ -90,7 +90,7 @@ mkDerivingShare (_, tycon) | isVanillaAlgTyCon tycon = do
   let ctxt = map (mkHsAppTy (mkHsAppTy scty mty)) requireds
   let clsty = mkHsAppTy scty mty
   -- Apply the class to the fully saturated lifted type constructor.
-  let bdy = mkHsAppTy clsty (foldr appVars tyconty varsname)
+  let bdy = mkHsAppTy clsty (foldr appVars tyconty (reverse varsname))
   -- Include all Shareable contexts in the type and
   -- add the type variables to the set of bound variables.
   let ib = HsIB varsname (noLoc (HsQualTy noExtField (noLoc ctxt) bdy))
@@ -133,8 +133,8 @@ mkDerivingNF (old, new) | isVanillaAlgTyCon new = do
 
   let ctxt = zipWith (mkHsAppTy . mkHsAppTy (mkHsAppTy nfcty mty)) newreq oldreq
   let clsty = mkHsAppTy nfcty mty
-  let bdy = mkHsAppTy (mkHsAppTy clsty (foldr appVars newtyconty newvarsname))
-                                       (foldr appVars oldtyconty oldvarsname)
+  let bdy = mkHsAppTy (mkHsAppTy clsty (foldr appVars newtyconty (reverse newvarsname)))
+                                       (foldr appVars oldtyconty (reverse oldvarsname))
   let ty = noLoc (HsQualTy noExtField (noLoc ctxt) bdy)
   let instty = mkEmptyWildCardBndrs $ HsIB (newvarsname ++ oldvarsname) ty
   return (Just (noLoc (DerivDecl noExtField instty Nothing Nothing)))
@@ -150,13 +150,13 @@ mkDerivingNF (old, new) | isVanillaAlgTyCon new = do
       in tidyNameOcc (setNameUnique n u) occname'
 mkDerivingNF _ = return Nothing
 
--- | Check if a type contains free variables.
--- If it does, return its LHsType representation.
+-- | Return a types its LHsType representation, without the outer Monad type.
 getRequired :: Name -> Type -> Maybe (LHsType GhcRn)
-getRequired tycon ty =
-  if noFreeVarsOfType ty
-    then Nothing
-    else Just (typeToLHsType tycon ty)
+getRequired tycon (TyConApp tc [ty])
+  | tyConName tc == tycon = getRequired tycon ty
+getRequired _ ty
+  | noFreeVarsOfType ty   = Nothing
+  | otherwise             = Just (typeToLHsType ty)
 
 -- | Apply a list of type variables to a type constructor.
 appVars :: Name -> LHsType GhcRn -> LHsType GhcRn
@@ -168,8 +168,8 @@ toTy n = noLoc (HsTyVar noExtField NotPromoted (noLoc n))
 
 -- | Convert a Type to a pre-typecheck LHsType.
 -- Mostly copied from GHC sources.
-typeToLHsType :: Name -> Type -> LHsType GhcRn
-typeToLHsType mtc = go
+typeToLHsType :: Type -> LHsType GhcRn
+typeToLHsType = go
   where
     go :: Type -> LHsType GhcRn
     go ty@(FunTy _ _  arg _)
@@ -186,9 +186,6 @@ typeToLHsType mtc = go
                           , hst_xforall = noExtField
                           , hst_body = go ty })
     go (AppTy t1 t2)        = nlHsAppTy (go t1) (go t2)
-    go (TyConApp tc args)
-      | mtc == tyConName tc, [x] <- args
-      = go x
     go ty = noLoc (XHsType (NHsCoreTy ty))
 
    -- Source-language types have _invisible_ kind arguments,

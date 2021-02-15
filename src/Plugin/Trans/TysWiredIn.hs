@@ -80,7 +80,16 @@ loadAdditional = do
   -- And again for Integral
   altI <- tcLookupTyCon =<< lookupOrig real ( mkTcOcc "Integral" )
   newI <- getTyCon builtInModule "IntegralND"
-  return [(altH, newH), (altR, newR), (altI, newI), (altA, newA), (altS, newS)]
+
+  -- And again for (->)
+  altF <- return unrestrictedFunTyCon
+  newF <- getTyCon builtInModule ":->"
+
+  altFR <- return funTyCon
+  newFR <- getTyCon builtInModule ":-->"
+
+  return [ (altH, newH), (altR, newR), (altI, newI), (altA, newA)
+         , (altS, newS), (altF, newF), (altFR, newFR)]
 
 -- | A list of GHC's built-in type constructor names and the names of
 -- their plugin replacement version.
