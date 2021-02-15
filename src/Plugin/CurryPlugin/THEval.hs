@@ -1,7 +1,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections   #-}
 {-|
-Module      : Plugin.Effect.THEval
+Module      : Plugin.CurryPlugin.THEval
 Description : TemplateHaskell functions to generate wrappers.
 Copyright   : (c) Kai-Oliver Prott (2020)
 Maintainer  : kai.prott@hotmail.de
@@ -9,13 +9,13 @@ Maintainer  : kai.prott@hotmail.de
 This module contains functions to automatically generate the correct wrapper
 for functions with an arbitrary arity.
 -}
-module Plugin.Effect.THEval (evalGeneric, evalN) where
+module Plugin.CurryPlugin.THEval (evalGeneric, evalN) where
 
 import Control.Monad
 
 import Language.Haskell.TH
 
-import Plugin.Effect.Monad
+import Plugin.CurryPlugin.Monad
 
 -- | 'evalGeneric' encapsulates a nondeterministic computation and traverses its
 --   results via the given search strategy. This encapsulation can handle

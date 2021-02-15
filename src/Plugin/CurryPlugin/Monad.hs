@@ -10,7 +10,7 @@
 {-# LANGUAGE DeriveAnyClass             #-}
 {-# LANGUAGE DerivingStrategies         #-}
 {-|
-Module      : Plugin.Effect.Monad
+Module      : Plugin.CurryPlugin.Monad
 Description : Convenience wrapper for the effect
 Copyright   : (c) Kai-Oliver Prott (2020)
 Maintainer  : kai.prott@hotmail.de
@@ -20,7 +20,7 @@ convenicence functions.
 The monad type is a wrapper over the
 'Lazy' type from 'Plugin.Effect.CurryEffect'.
 -}
-module Plugin.Effect.Monad
+module Plugin.CurryPlugin.Monad
   ( Nondet(..), type (-->), (?), failed, share
   , SearchMode(..)
   , Normalform(..), modeOp, allValues, allValuesNF
@@ -34,7 +34,7 @@ import Language.Haskell.TH.Syntax
 import Control.Monad
 
 import Plugin.Effect.Classes
-import Plugin.Effect.Tree
+import Plugin.CurryPlugin.Tree
 import Plugin.Effect.Annotation
 import Plugin.Effect.Transformers
 

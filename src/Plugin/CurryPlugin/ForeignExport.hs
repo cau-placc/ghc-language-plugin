@@ -25,7 +25,7 @@ import Data.String
 
 import Control.Applicative
 
-import Plugin.Effect.Monad
+import Plugin.CurryPlugin.Monad
 import Plugin.CurryPlugin.BuiltIn ()
 
 {-# ANN module Nondeterministic #-}

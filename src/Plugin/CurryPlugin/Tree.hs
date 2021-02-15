@@ -4,7 +4,7 @@
 {-# LANGUAGE ViewPatterns    #-}
 {-# LANGUAGE OverloadedLists #-}
 {-|
-Module      : Plugin.Effect.THEval
+Module      : Plugin.CurryPlugin.THEval
 Description : Definition of choice trees and search algorithms
 Copyright   : (c) Kai-Oliver Prott (2020)
 Maintainer  : kai.prott@hotmail.de
@@ -12,7 +12,7 @@ Maintainer  : kai.prott@hotmail.de
 This module contains the definition of the choice tree data structure and
 search strategies used to collect nondeterministic results into a list.
 -}
-module Plugin.Effect.Tree (Tree(..), dfs, bfs) where
+module Plugin.CurryPlugin.Tree (Tree(..), dfs, bfs) where
 
 import Control.Monad
 import Control.Applicative

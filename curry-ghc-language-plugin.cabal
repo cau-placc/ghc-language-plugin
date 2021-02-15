@@ -107,11 +107,11 @@ library
     Plugin.CurryPlugin.Prelude
     Plugin.CurryPlugin.BuiltIn
     Plugin.CurryPlugin.Encapsulation
-    Plugin.Effect.Monad
+    Plugin.CurryPlugin.Monad
   other-modules:
     Plugin.CurryPlugin.ForeignExport
-    Plugin.Effect.THEval
-    Plugin.Effect.Tree
+    Plugin.CurryPlugin.THEval
+    Plugin.CurryPlugin.Tree
 
 test-suite tests
   import:         deps
@@ -131,11 +131,11 @@ test-suite tests
     Plugin.CurryPlugin.ForeignExport
     Plugin.CurryPlugin.Encapsulation
     Plugin.CurryPlugin.Prelude
-    Plugin.Effect.Monad
+    Plugin.CurryPlugin.Monad
     Plugin.Effect.Classes
     Plugin.Effect.Annotation
-    Plugin.Effect.THEval
-    Plugin.Effect.Tree
+    Plugin.CurryPlugin.THEval
+    Plugin.CurryPlugin.Tree
   build-depends:
     curry-ghc-language-plugin,
     process   -any,

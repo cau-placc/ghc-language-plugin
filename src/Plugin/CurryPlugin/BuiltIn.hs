@@ -33,7 +33,7 @@ import qualified GHC.Real               as P
 import           Unsafe.Coerce
 import           GHC.Types (RuntimeRep)
 
-import Plugin.Effect.Monad
+import Plugin.CurryPlugin.Monad
 import Plugin.Effect.Classes (Shareable(..))
 
 -- | This is a lifted version of the unrestricted function type constructor

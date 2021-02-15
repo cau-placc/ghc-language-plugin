@@ -16,8 +16,8 @@ module Plugin.CurryPlugin.Encapsulation
   , evalGeneric, evalN, eval, eval1, eval2
   ) where
 
-import Plugin.Effect.THEval
-import Plugin.Effect.Monad
+import Plugin.CurryPlugin.THEval
+import Plugin.CurryPlugin.Monad
 
 -- | Evaluate a nullary nondeterministic function
 -- with the given search strategy.
