@@ -42,6 +42,20 @@ findImportedOrPanic mname = do
     Found _ mdl -> return mdl
     _           -> panicAny "Could not find module" mname
 
+findImportedPkgOrPanic :: String -> String -> TcM Module
+findImportedPkgOrPanic mname pkgname = do
+  hscEnv <- getTopEnv
+  res <- liftIO $ findImportedModule hscEnv (mkModuleName mname) Nothing
+  case res of
+    Found _ mdl -> return mdl
+    _ -> do
+      res2 <- liftIO $ findImportedModule hscEnv (mkModuleName mname)
+                        (Just (mkFastString pkgname))
+      case res2 of
+        Found _ mdl -> return mdl
+        _           -> panicAny "Could not find module"
+                        (mkFastString (pkgname ++ ":" ++ mname))
+
 -- | Convert a given TemplateHaskell expression into GHC's representation
 -- and type check it against the given type.
 mkNewAny :: Exp -> Type -> TcM (LHsExpr GhcTc)
