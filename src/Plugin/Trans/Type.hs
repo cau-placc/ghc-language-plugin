@@ -1,5 +1,6 @@
 {-# LANGUAGE ViewPatterns        #-}
 {-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE TemplateHaskell     #-}
 {-|
 Module      : Plugin.Trans.Type
 Description : Various functions to get or lift type-related things
@@ -16,6 +17,8 @@ import Data.List
 import Data.Maybe
 import Data.Syb
 import Control.Monad
+import Language.Haskell.TH.Syntax ( OccName(..), ModName(..), PkgName(..)
+                                  , Name(..), NameFlavour(..) )
 
 import GHC.Types.Name.Occurrence hiding (varName)
 import GHC.Plugins hiding (substTy, extendTvSubst)
@@ -32,6 +35,7 @@ import GHC.Core.Class
 import GHC.Core.TyCo.Rep
 import GHC.Core.Predicate
 
+import Plugin.Effect.Classes
 import Plugin.Trans.Config
 import Plugin.Trans.Util
 
@@ -55,7 +59,10 @@ getMonadTycon = do
 
 -- | Get the 'Shareable' class type constructor.
 getShareClassTycon :: TcM TyCon
-getShareClassTycon = getTyCon "Plugin.Effect.Classes" "Shareable"
+getShareClassTycon = case ''Shareable of
+  Name (OccName occ) (NameG _ (PkgName pkg) (ModName mdl))
+    -> getTyConPkg pkg mdl occ
+  _ -> panicAny "Failed to retrieve Shareable TyCon" ()
 
 -- | Get the 'Shareable' class.
 getShareClass :: TcM Class
@@ -71,11 +78,14 @@ getShareClassDictType = do
 
 -- | Get the 'Normalform' class type constructor.
 getNFClassTycon :: TcM TyCon
-getNFClassTycon = getTyCon "Plugin.Effect.Classes" "Normalform"
+getNFClassTycon = case ''Normalform of
+  Name (OccName occ) (NameG _ (PkgName pkg) (ModName mdl))
+    -> getTyConPkg pkg mdl occ
+  _ -> panicAny "Failed to retrieve Normalform TyCon" ()
 
 -- | Get the 'Generic' class type constructor.
 getGenericClassTycon :: TcM TyCon
-getGenericClassTycon = getTyCon "GHC.Generics" "Generic"
+getGenericClassTycon = getTyConPkg "base" "GHC.Generics" "Generic"
 
 -- | Get a type constructor from the given module and with the given name.
 getTyCon :: String    -- ^ Module name
@@ -83,6 +93,16 @@ getTyCon :: String    -- ^ Module name
          -> TcM TyCon
 getTyCon mname name = do
   mdl <- findImportedOrPanic mname
+  tcLookupTyCon =<< lookupOrig mdl ( mkTcOcc name )
+
+-- | Get a type constructor from the given
+-- package, module and with the given name.
+getTyConPkg :: String    -- ^ Package name
+            -> String    -- ^ Module name
+            -> String    -- ^ TyCon name
+            -> TcM TyCon
+getTyConPkg pname mname name = do
+  mdl <- findImportedPkgOrPanic mname pname
   tcLookupTyCon =<< lookupOrig mdl ( mkTcOcc name )
 
 {- If we have a type like (T (a -> b)), the correct lifted type is
