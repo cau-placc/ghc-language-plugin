@@ -10,6 +10,8 @@
 {-# LANGUAGE LinearTypes            #-}
 {-# LANGUAGE ConstraintKinds        #-}
 {-# LANGUAGE TypeFamilies           #-}
+
+{-# OPTIONS_GHC -Wno-inline-rule-shadowing #-}
 {-|
 Module      : Plugin.Effect.Classes
 Description : Type classes used for the effect implementation
@@ -52,7 +54,7 @@ class Monad m => Shareable m a where
 
 -- | A class for conversion between lifted and unlifted data types.
 -- For types with a generic instance, it can be derived automatically.
-class Monad m => Normalform m a b | a -> b where
+class Monad m => Normalform m a b | m a -> b, m b -> a where
   -- | Convert a data type to its unlifted representation and
   -- compute its normal form.
   nf :: m a -> m b
@@ -203,9 +205,10 @@ instance (Monad m) => Normalform m Char Char where
   nf    = id
   liftE = id
 
-instance (Monad m, Normalform m a1 a2, Normalform m b1 b2, (a1m ~ m a1), (b1m ~ m b1))
-  => Normalform m (a1m -> b1m) (a2 -> b2) where
-    nf    mf = mf >> return (error "Plugin Error: Cannot capture function types")
+instance (Monad m, Normalform m a1 a2, Normalform m b1 b2)
+  => Normalform m (m a1 -> m b1) (a2 -> b2) where
+    nf    mf =
+      mf >> return (error "Plugin Error: Cannot capture function types")
     liftE mf = do
       f <- mf
       return $ (liftE . fmap f . nf)
