@@ -36,6 +36,12 @@ import           GHC.Types (RuntimeRep)
 import Plugin.Effect.Monad
 import Plugin.Effect.Classes (Shareable(..))
 
+-- | This is a lifted version of the unrestricted function type constructor
+type (:->) r s a b = (Nondet a -> Nondet b)
+
+-- | This is a lifted version of the restricted function type constructor
+type (:-->) m r s a b = (Nondet a -> Nondet b)
+
 -- | Alias for Shareable constraint specialized to the nondeterminism monad.
 type ShareableN a = Shareable Nondet a
 

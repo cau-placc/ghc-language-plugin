@@ -110,7 +110,6 @@ library
     Plugin.Effect.Monad
   other-modules:
     Plugin.CurryPlugin.ForeignExport
-    Plugin.Effect.CurryEffect
     Plugin.Effect.THEval
     Plugin.Effect.Tree
 
@@ -135,7 +134,6 @@ test-suite tests
     Plugin.Effect.Monad
     Plugin.Effect.Classes
     Plugin.Effect.Annotation
-    Plugin.Effect.CurryEffect
     Plugin.Effect.THEval
     Plugin.Effect.Tree
   build-depends:

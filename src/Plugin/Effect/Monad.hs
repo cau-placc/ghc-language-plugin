@@ -6,6 +6,9 @@
 {-# LANGUAGE TypeApplications           #-}
 {-# LANGUAGE DeriveLift                 #-}
 {-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE GeneralisedNewtypeDeriving #-}
+{-# LANGUAGE DeriveAnyClass             #-}
+{-# LANGUAGE DerivingStrategies         #-}
 {-|
 Module      : Plugin.Effect.Monad
 Description : Convenience wrapper for the effect
@@ -30,34 +33,39 @@ module Plugin.Effect.Monad
 import Language.Haskell.TH.Syntax
 import Control.Monad
 
-import Plugin.Effect.CurryEffect (Lazy, collect, memo, pureL)
 import Plugin.Effect.Classes
 import Plugin.Effect.Tree
 import Plugin.Effect.Annotation
+import Plugin.Effect.Transformers
 
 -- | The actual monad for nondeterminism used by the plugin.
-data Nondet a = Nondet { unNondet :: Lazy a }
-  deriving Functor
+newtype Nondet a = Nondet { unNondet :: LazyT Tree a }
+  deriving newtype  (Functor, Applicative, Monad)
+  deriving anyclass (SharingTop)
 
 {-# INLINE[0] bind #-}
 bind :: Nondet a -> (a -> Nondet b) -> Nondet b
-bind (Nondet a) f = Nondet (a >>= unNondet . f)
+bind = (>>=)
 
 {-# INLINE[0] rtrn #-}
 rtrn :: a -> Nondet a
-rtrn a = Nondet (pureL a)
+rtrn = pure
 
 {-# INLINE[0] fmp #-}
 fmp :: (a -> b) -> Nondet a -> Nondet b
-fmp f (Nondet a) = Nondet (fmap f a)
+fmp = fmap
 
 {-# INLINE[0] shre #-}
 shre :: Shareable Nondet a => Nondet a -> Nondet (Nondet a)
-shre m = Nondet $ fmap Nondet $ memo (unNondet (m >>= shareArgs share))
+shre a = mkShareNeedImpl @Tree (shareArgs shre) a
+
+instance Sharing Nondet where
+  type ShareConstraints Nondet a = Shareable Nondet a
+  share = shre
 
 {-# INLINE[0] shreTopLevel #-}
 shreTopLevel :: (Int, String) -> Nondet a -> Nondet a
-shreTopLevel = const id
+shreTopLevel = shareTopLevel
 
 {-# INLINE seqValue #-}
 seqValue :: Nondet a -> Nondet b -> Nondet b
@@ -68,21 +76,6 @@ seqValue a b = a >>= \a' -> a' `seq` b
 "shreTopLevel" forall x i. shreTopLevel i x = x
   #-}
   -- "bind/rtrn'let"   forall e x. let b = e in rtrn x = rtrn (let b = e in x)
-
-instance Applicative Nondet where
-  pure = rtrn
-  Nondet f <*> Nondet a = Nondet (f <*> a)
-
-instance Monad Nondet where
-  (>>=) = bind
-
-instance (Normalform Nondet a1 a2, Show a2) => Show (Nondet a1) where
-  show = show . allValuesNF
-
-instance Sharing Nondet where
-  type ShareConstraints Nondet a = Shareable Nondet a
-  share = shre
-  shareTopLevel = shreTopLevel
 
 -- | Nondeterministic failure
 failed :: Shareable Nondet a => Nondet a
@@ -114,7 +107,7 @@ allValuesNF = allValues . nf
 
 -- | Collect the results of a nondeterministic computation in a tree.
 allValues :: Nondet a -> Tree a
-allValues = collect . unNondet
+allValues = runLazyT . unNondet
 
 infixr 0 -->
 type a --> b = (Nondet a -> Nondet b)
