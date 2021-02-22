@@ -633,13 +633,13 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
               then trans1 r
               else return r
       return (L l (LastStmt x e' a r'), [])
-    liftMonadicStmt (L l (BindStmt (XBindStmtTc b m x f) p e)) = do
+    liftMonadicStmt (L l (BindStmt (XBindStmtTc b x m f) p e)) = do
       -- p is definitely just a varPat and f is NoSyntaxExprTc or Nothing
       (p', vs, _) <- liftPattern tcs p
       e' <- liftMonadicExpr given tcs e
       x' <- liftTypeTcM tcs x
       b' <- transBind b
-      return (L l (BindStmt (XBindStmtTc b' m x' f) p' e'), vs)
+      return (L l (BindStmt (XBindStmtTc b' x' m f) p' e'), vs)
     liftMonadicStmt (L l (ApplicativeStmt _ _ _)) = do
       flags <- getDynFlags
       reportError (mkErrMsg flags l neverQualify
