@@ -96,7 +96,7 @@ matchExpr (HsMultiIf ty grhs) = do
   unLoc <$> foldM compileGuard err grhs
 matchExpr (HsLet _ bs e) = do
   (bs', vss) <- compileLet bs
-  strict <- foldrM mkSeq e vss
+  strict <- foldrM mkSeq e (reverse $ map unLoc $ sortBy cmpLocated vss)
   let eLet = foldr toLetExpr strict bs'
   return (unLoc eLet)
 matchExpr (HsDo x ctxt (L l stmts)) = do
@@ -175,7 +175,7 @@ compileDo ty ctxt (L _ (LetStmt _ bs) : xs) = do
     else do
       let ctxt' = if swapCtxt then DoExpr Nothing else ctxt
       let rest = noLoc (HsDo ty ctxt' (noLoc xs'))
-      e <- foldrM mkSeq rest vss
+      e <- foldrM mkSeq rest (reverse $ map unLoc $ sortBy cmpLocated vss)
       let lastS = noLoc (LastStmt noExtField e Nothing NoSyntaxExprTc)
       return (lets ++ [lastS], swapCtxt)
 compileDo _ _ (L l (ApplicativeStmt _ _ _) : _) = do
@@ -213,7 +213,7 @@ compileDo _ _ (L l (RecStmt _ _ _ _ _ _ _) : _) =  do
 
 -- | Desugars pattern bindings in the given let-bindings.
 -- This is done by introducing selector functions for each of them.
-compileLet :: LHsLocalBinds GhcTc -> TcM ([(RecFlag, LHsBinds GhcTc)], [Var])
+compileLet :: LHsLocalBinds GhcTc -> TcM ([(RecFlag, LHsBinds GhcTc)], [Located Var])
 compileLet (L _ (HsValBinds _ (XValBindsLR (NValBinds bs _)))) = do
   (bs', vss) <- unzip <$> mapM compileValBs bs
   return (bs', concat vss)
@@ -232,7 +232,7 @@ compileLet _ = return ([], [])
 -- | Desugars pattern bindings in the given let-binding.
 -- This is done by introducing (multiple) selector functions
 -- for the single binding. Also returns a lift of strict variables
-compileLetBind :: LHsBindLR GhcTc GhcTc -> TcM ([LHsBindLR GhcTc GhcTc], [Var])
+compileLetBind :: LHsBindLR GhcTc GhcTc -> TcM ([LHsBindLR GhcTc GhcTc], [Located Var])
 compileLetBind (L l (AbsBinds x tvs evs ex ev bs sig)) = do
   (bss, vss) <- unzip <$> mapM compileLetBind (bagToList bs)
   let bs' = listToBag $ concat bss
@@ -240,16 +240,16 @@ compileLetBind (L l (AbsBinds x tvs evs ex ev bs sig)) = do
   (realVs, mbex) <- unzip <$> mapM (getRealVar ex) vs
   return ([L l (AbsBinds x tvs evs (ex ++ catMaybes mbex) ev bs' sig)], realVs)
   where
-    getRealVar [] v = do
+    getRealVar [] (L l' v) = do
       u <- getUniqueM
       let p = setVarUnique v u
       -- Not currently exported, so create an export that we can seq later
-      return (p, Just (ABE noExtField p v WpHole (SpecPrags [])))
-    getRealVar (ABE _ p m _ _ : _) v
-      | v == m             = return (p, Nothing)
+      return (L l' p, Just (ABE noExtField p v WpHole (SpecPrags [])))
+    getRealVar (ABE _ p m _ _ : _) (L l' v)
+      | v == m             = return (L l' p, Nothing)
     getRealVar (_ : ex') v = getRealVar ex' v
 
-compileLetBind (L _ (PatBind ty p grhss _)) = do
+compileLetBind (L l (PatBind ty p grhss _)) = do
   mtc <- getMonadTycon
   -- we do not use ConstraintSolver.removeNondet,
   -- as TyConMap is not available and not required
@@ -261,7 +261,7 @@ compileLetBind (L _ (PatBind ty p grhss _)) = do
   flags <- getDynFlags
   let decidedStrict = isBangPat p ||
                       (Strict `xopt` flags && isNoLazyPat p)
-  return (b : bs, if decidedStrict then [fname] else [])
+  return (b : bs, if decidedStrict then [L l fname] else [])
   where
     origStrictness
       | isBangPat   p = SrcStrict
@@ -384,7 +384,7 @@ compileLetBind (L _ (PatBind ty p grhss _)) = do
 
     removeOtherField new (L l1 (HsRecField v p1 pun)) =
       L l1 (HsRecField v (removeOtherPatterns new p1) pun)
-compileLetBind b@(L _ (FunBind _ (L _ fname)
+compileLetBind b@(L l (FunBind _ (L _ fname)
                (MG (MatchGroupTc args _) (L _ (L _ (Match _
                (FunRhs _ _ strict) _ _):_)) _) _)) = do
   flags <- getDynFlags
@@ -393,7 +393,7 @@ compileLetBind b@(L _ (FunBind _ (L _ fname)
   let decidedStrict = null args &&
                       (strict == SrcStrict ||
                       (strict == NoSrcStrict && Strict `xopt` flags))
-  return ([b], if decidedStrict then [fname] else [])
+  return ([b], if decidedStrict then [L l fname] else [])
 compileLetBind b = return ([b], [])
 
 -- | Checks if the first term contains the second term.
