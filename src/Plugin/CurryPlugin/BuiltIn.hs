@@ -60,8 +60,8 @@ cons = P.return $ \a -> P.return $ \as -> P.return (Cons a as)
 
 -- | Shareable instance for lists.
 instance Shareable Nondet a => Shareable Nondet (ListND a) where
-  shareArgs _ Nil         = P.return Nil
-  shareArgs f (Cons x xs) = Cons P.<$> f x P.<*> f xs
+  shareArgs Nil         = P.return Nil
+  shareArgs (Cons x xs) = Cons P.<$> share x P.<*> share xs
 
 -- | Normalform instance for lists
 instance Normalform Nondet a1 a2 => Normalform Nondet (ListND a1) [a2] where
@@ -89,7 +89,7 @@ snd = P.return $ \t -> t P.>>= \(Tuple2 _ b) -> b
 -- | Shareable instance for 2-ary tuple
 instance (Shareable Nondet a, Shareable Nondet b) =>
   Shareable Nondet (Tuple2ND a b) where
-    shareArgs f (Tuple2 a b) = Tuple2 P.<$> f a P.<*> f b
+    shareArgs (Tuple2 a b) = Tuple2 P.<$> share a P.<*> share b
 
 -- | Normalform instance for 2-ary tuple
 instance (Normalform Nondet a1 a2, Normalform Nondet b1 b2) =>
@@ -109,7 +109,7 @@ data RatioND a = !(Nondet a) :% !(Nondet a)
 -- | Shareable instance for Ratios
 instance (Shareable Nondet a) =>
   Shareable Nondet (RatioND a) where
-    shareArgs f (a :% b) = (:%) P.<$> f a P.<*> f b
+    shareArgs (a :% b) = (:%) P.<$> share a P.<*> share b
 
 -- | Normalform instance for Ratios
 instance (Normalform Nondet a1 a2) =>

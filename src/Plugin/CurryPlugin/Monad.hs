@@ -9,6 +9,7 @@
 {-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE DeriveAnyClass             #-}
 {-# LANGUAGE DerivingStrategies         #-}
+{-# LANGUAGE DerivingVia                #-}
 {-|
 Module      : Plugin.CurryPlugin.Monad
 Description : Convenience wrapper for the effect
@@ -39,8 +40,8 @@ import Plugin.Effect.Annotation
 import Plugin.Effect.Transformers
 
 -- | The actual monad for nondeterminism used by the plugin.
-newtype Nondet a = Nondet { unNondet :: LazyT Tree a }
-  deriving newtype  (Functor, Applicative, Monad)
+newtype Nondet a = Nondet { unNondet :: LazyT Nondet Tree a }
+  deriving (Functor, Applicative, Monad, Sharing) via LazyT Nondet Tree
   deriving anyclass (SharingTop)
 
 {-# INLINE[0] bind #-}
@@ -57,11 +58,7 @@ fmp = fmap
 
 {-# INLINE[0] shre #-}
 shre :: Shareable Nondet a => Nondet a -> Nondet (Nondet a)
-shre a = mkShareNeedImpl @Tree (shareArgs shre) a
-
-instance Sharing Nondet where
-  type ShareConstraints Nondet a = Shareable Nondet a
-  share = shre
+shre = share
 
 {-# INLINE[0] shreTopLevel #-}
 shreTopLevel :: (Int, String) -> Nondet a -> Nondet a
