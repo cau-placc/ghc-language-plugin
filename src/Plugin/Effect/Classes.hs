@@ -10,6 +10,8 @@
 {-# LANGUAGE LinearTypes            #-}
 {-# LANGUAGE ConstraintKinds        #-}
 {-# LANGUAGE TypeFamilies           #-}
+{-# LANGUAGE ScopedTypeVariables    #-}
+{-# LANGUAGE TypeApplications       #-}
 
 {-# OPTIONS_GHC -Wno-inline-rule-shadowing #-}
 {-|
@@ -28,6 +30,7 @@ module Plugin.Effect.Classes where
 
 import GHC.Generics as Gen
 import Data.Kind
+import Data.Coerce
 
 -- | A class for Monads with support for explicit sharing of effects.
 class Monad s => Sharing s where
@@ -37,7 +40,9 @@ class Monad s => Sharing s where
 
 -- | A class for Monads with support for explicit sharing of top-level effects.
 class Monad s => SharingTop s where
-  shareTopLevel :: (Int, String) -> s a -> s a
+  type family ShareTopConstraints s a :: Constraint
+  type instance ShareTopConstraints s a = ()
+  shareTopLevel :: ShareTopConstraints s a => (Int, String) -> s a -> s a
   shareTopLevel = const id
 
 {-# RULES
@@ -46,11 +51,11 @@ class Monad s => SharingTop s where
 
 -- | A class for deep sharing of nested effects.
 -- For types with a generic instance, it can be derived automatically.
-class Monad m => Shareable m a where
-  shareArgs :: (forall b. (Shareable m b => m b -> m (m b))) -> a -> m a
-  default shareArgs :: (Gen.Generic a, ShareableGen m (Gen.Rep a)) =>
-    (forall b. (Shareable m b => m b -> m (m b))) -> a -> m a
-  shareArgs f a = Gen.to <$> shareArgsGen f (Gen.from a)
+class Sharing m => Shareable m a where
+  shareArgs :: a -> m a
+  default shareArgs :: (Gen.Generic a, ShareableGen m (Gen.Rep a))
+                    => a -> m a
+  shareArgs a = Gen.to <$> shareArgsGen (Gen.from a)
 
 -- | A class for conversion between lifted and unlifted data types.
 -- For types with a generic instance, it can be derived automatically.
@@ -132,44 +137,44 @@ instance (Monad m, NormalformGen m f g) =>
     liftEGen mx = mx >>= \case
       Gen.M1 x -> Gen.M1 <$> liftEGen (return x)
 
-class ShareableGen m f where
-  shareArgsGen :: (forall b. (Shareable m b => m b -> m (m b))) -> f x -> m (f x)
+class Sharing m => ShareableGen m f where
+  shareArgsGen :: f x -> m (f x)
 
-instance (Monad m) => ShareableGen m Gen.V1 where
-  shareArgsGen _ _ = undefined
+instance (Sharing m) => ShareableGen m Gen.V1 where
+  shareArgsGen _ = undefined
 
-instance (Monad m) => ShareableGen m Gen.U1 where
-  shareArgsGen _ = return
+instance (Sharing m) => ShareableGen m Gen.U1 where
+  shareArgsGen = return
 
-instance (Monad m, ShareableGen m f, ShareableGen m g) =>
+instance (Sharing m, ShareableGen m f, ShareableGen m g) =>
   ShareableGen m (f Gen.:+: g) where
-    shareArgsGen f (Gen.L1 x) = Gen.L1 <$> shareArgsGen f x
-    shareArgsGen f (Gen.R1 x) = Gen.R1 <$> shareArgsGen f x
+    shareArgsGen (Gen.L1 x) = Gen.L1 <$> shareArgsGen x
+    shareArgsGen (Gen.R1 x) = Gen.R1 <$> shareArgsGen x
 
-instance (Monad m, ShareableGen m f, ShareableGen m g) =>
+instance (Sharing m, ShareableGen m f, ShareableGen m g) =>
   ShareableGen m (f Gen.:*: g) where
-    shareArgsGen f (x Gen.:*: y) =
-      (Gen.:*:) <$> shareArgsGen f x <*> shareArgsGen f y
+    shareArgsGen (x Gen.:*: y) =
+      (Gen.:*:) <$> shareArgsGen x <*> shareArgsGen y
 
 -- | This instance overlaps the next instance.
 -- Any lifted type defined by a data declaration uses this instance,
 -- where we assume that the constructor arguments have the form (m b)
 -- with m ~ Nondet and a Shareable instance for b
 -- the other instance is used for lifted newtypes.
-instance {-# OVERLAPPING #-} (Monad m, Shareable m b)
+instance {-# OVERLAPPING #-} (Sharing m, ShareConstraints m b)
   => ShareableGen m (Gen.K1 i (m b)) where
-    shareArgsGen f (Gen.K1 x) = Gen.K1 <$> f x
+    shareArgsGen (Gen.K1 x) = Gen.K1 <$> share x
 
 -- | A lifted type defined by a newtype declaration
 -- does not have a type wrapped with Nondet as its constructor argument.
 -- The instance above is thus not applicable for a lifted newtype and we use
 -- this one instead.
-instance {-# OVERLAPPABLE #-} (Monad m, Shareable m c)
+instance {-# OVERLAPPABLE #-} (Sharing m, Shareable m c)
   => ShareableGen m (Gen.K1 i c) where
-    shareArgsGen f (Gen.K1 x) = Gen.K1 <$> shareArgs f x
+    shareArgsGen (Gen.K1 x) = Gen.K1 <$> shareArgs x
 
-instance (Monad m, ShareableGen m f) => ShareableGen m (Gen.M1 i t f) where
-  shareArgsGen f (Gen.M1 x) = Gen.M1 <$> shareArgsGen f x
+instance (Sharing m, ShareableGen m f) => ShareableGen m (Gen.M1 i t f) where
+  shareArgsGen (Gen.M1 x) = Gen.M1 <$> shareArgsGen x
 
 -- * Instances for Normalform
 
@@ -215,29 +220,29 @@ instance (Monad m, Normalform m a1 a2, Normalform m b1 b2)
 
 -- * Instances for Shareable
 
-instance (Monad m) => Shareable m () where
-  shareArgs _ = return
+instance (Sharing m) => Shareable m () where
+  shareArgs = return
 
-instance (Monad m) => Shareable m Ordering where
-  shareArgs _ = return
+instance (Sharing m) => Shareable m Ordering where
+  shareArgs = return
 
-instance (Monad m) => Shareable m Bool where
-  shareArgs _ = return
+instance (Sharing m) => Shareable m Bool where
+  shareArgs = return
 
-instance (Monad m) => Shareable m Int where
-  shareArgs _ = return
+instance (Sharing m) => Shareable m Int where
+  shareArgs = return
 
-instance (Monad m) => Shareable m Integer where
-  shareArgs _ = return
+instance (Sharing m) => Shareable m Integer where
+  shareArgs = return
 
-instance (Monad m) => Shareable m Float where
-  shareArgs _ = return
+instance (Sharing m) => Shareable m Float where
+  shareArgs = return
 
-instance (Monad m) => Shareable m Double where
-  shareArgs _ = return
+instance (Sharing m) => Shareable m Double where
+  shareArgs = return
 
-instance (Monad m) => Shareable m Char where
-  shareArgs _ = return
+instance (Sharing m) => Shareable m Char where
+  shareArgs = return
 
-instance (Monad m) => Shareable m (a %n -> b) where
-  shareArgs _ = return
+instance (Sharing m) => Shareable m (a %n -> b) where
+  shareArgs = return
