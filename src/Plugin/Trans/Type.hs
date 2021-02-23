@@ -473,8 +473,10 @@ liftWrapper b stc mty us tcs = liftWrapper'
                   stc mty us tcs ty
     liftWrapper' (WpCast (SubCo (Refl ty))) =
       WpCast . SubCo . Refl <$> replaceTyconTy tcs ty
-    liftWrapper' (WpTyApp app) =
-      WpTyApp <$> liftInnerTy stc mty us tcs app
+    liftWrapper' (WpTyApp app)
+      | TyConApp tc [inner] <- app,
+        mkTyConTy tc `eqType` mty = WpTyApp <$> replaceTyconTy tcs inner
+      | otherwise                 = WpTyApp <$> liftInnerTy stc mty us tcs app
     liftWrapper' (WpTyLam v)  = return (WpTyLam v)
     -- remove any other thing that was here after typechecking
     liftWrapper' _ = return WpHole
