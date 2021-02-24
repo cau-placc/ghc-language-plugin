@@ -457,16 +457,34 @@ liftMonadicExpr given tcs (L l (NegApp _ e (SyntaxExprTc n ws w))) =
 liftMonadicExpr _ _ (L _ (NegApp _ _ NoSyntaxExprTc)) = undefined
 liftMonadicExpr given tcs (L l (HsPar x e)) =
   L l . HsPar x <$> liftMonadicExpr given tcs e
-liftMonadicExpr given tcs (L l (SectionL _ e1 e2)) =
-  liftMonadicExpr given tcs (L l (HsApp noExtField e2 e1))
+liftMonadicExpr given tcs (L _ (SectionL _ e1 e2)) = do
+-- (x op) -> (\x -> \y -> x `op` y)) x
+  ty <- getTypeOrPanic e2 -- ok
+  let (m1, arg1, ty') = splitFunTy ty
+  let scaled1 = Scaled m1 arg1
+  let (m2, arg2, res) = splitFunTy ty'
+  let scaled2 = Scaled m2 arg2
+  v1 <- freshVar scaled1
+  v2 <- freshVar scaled2
+  let v1e = noLoc (HsVar noExtField (noLoc v1))
+  let v2e = noLoc (HsVar noExtField (noLoc v2))
+  let lam1 = mkLam (noLoc v2) scaled2 (mkHsApp (mkHsApp e2 v1e) v2e) res
+  let lam2 = mkLam (noLoc v1) scaled1 lam1 (mkVisFunTy m2 arg2 res)
+  liftMonadicExpr given tcs (mkHsApp (noLoc (HsPar noExtField lam2)) e1)
 liftMonadicExpr given tcs (L _ (SectionR _ e1 e2)) = do
+-- (op y) -> (\y -> \x -> x `op` y)) y
   ty <- getTypeOrPanic e1 -- ok
   let (m1, arg1, ty') = splitFunTy ty
-  let (_ , _   , res) = splitFunTy ty'
-  v <- noLoc <$> freshVar (Scaled m1 arg1)
-  liftMonadicExpr given tcs
-    (mkLam v (Scaled Many ty)
-    (mkHsApp (mkHsApp e1 (noLoc (HsVar noExtField v))) e2) res)
+  let scaled1 = Scaled m1 arg1
+  let (m2, arg2, res) = splitFunTy ty'
+  let scaled2 = Scaled m2 arg2
+  v1 <- freshVar scaled1
+  v2 <- freshVar scaled2
+  let v1e = noLoc (HsVar noExtField (noLoc v1))
+  let v2e = noLoc (HsVar noExtField (noLoc v2))
+  let lam1 = mkLam (noLoc v1) scaled1 (mkHsApp (mkHsApp e1 v1e) v2e) res
+  let lam2 = mkLam (noLoc v2) scaled2 lam1 (mkVisFunTy m1 arg1 res)
+  liftMonadicExpr given tcs (mkHsApp (noLoc (HsPar noExtField lam2)) e2)
 liftMonadicExpr given tcs (L _ (ExplicitTuple _ args b)) =
   liftExplicitTuple given tcs args b
 liftMonadicExpr _    _   e@(L l ExplicitSum {}) = do
