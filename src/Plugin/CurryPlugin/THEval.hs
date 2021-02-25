@@ -1,5 +1,6 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections   #-}
+{-# LANGUAGE LambdaCase      #-}
 {-|
 Module      : Plugin.CurryPlugin.THEval
 Description : TemplateHaskell functions to generate wrappers.
@@ -29,7 +30,10 @@ import Plugin.CurryPlugin.Monad
 --   >>> $(evalGeneric BFS 'someUnaryFunction  ) arg1
 evalGeneric :: SearchMode -> Name -> Q Exp
 evalGeneric sma fname = do
-  VarI _ ty _ <- reify fname
+  ty <- reify fname >>= \case
+    VarI     _ ty _ -> return ty
+    ClassOpI _ ty _ -> return ty
+    _               -> fail "Only functions can be captured"
   argsT <- collectArgs ty
   vs <- replicateM (length argsT) (newName "x")
   sme <- [| sma |]
