@@ -122,11 +122,6 @@ compileDo ty ctxt [L l (LastStmt x e b r)] = do
       return (NoSyntaxExprTc, noLoc (applySynExpr lr (unLoc e)), True)
     _        -> return (r, e, False)
   return ([L l (LastStmt x e' b r')], ctxtSwap)
-  where
-    applySynExpr NoSyntaxExprTc ex = ex
-    applySynExpr (SyntaxExprTc se _ _) ex = HsApp noExtField
-      (noLoc (HsPar noExtField (noLoc se)))
-      (noLoc (HsPar noExtField (noLoc ex)))
 compileDo _ _ (s@(L _ (LastStmt _ _ _ _)) : _) =
   panicAny "Unexpected last statement in do notation" s
 compileDo ty ctxt (L l (BindStmt (XBindStmtTc b' _ _ f') p e) : stmts) = do
@@ -184,14 +179,15 @@ compileDo _ _ (L l (ApplicativeStmt _ _ _) : _) = do
     "Applicative do-notation is not supported by the plugin")
   failIfErrsM
   return ([], False)
-compileDo ty ctxt (L l (BodyStmt x e s g) : xs) = do
+compileDo ty ctxt (L l (BodyStmt x e@(L el ee) s g) : xs) = do
   (xs', swapCtxt) <- compileDo ty ctxt xs
   -- Add the missing sequence operator (>>) for list comprehensions.
   let ty' = snd (splitAppTy ty)
-  (s', g') <- case ctxt of
-    ListComp -> (,) <$> mkListSeq unitTy ty' <*> mkListGuard
-    _        -> return (s, g)
-  return (L l (BodyStmt x e s' g'):xs', swapCtxt)
+  (s', g', e') <- case ctxt of
+    ListComp -> (,NoSyntaxExprTc,) <$> mkListSeq unitTy ty'
+                                   <*> fmap (L el . (`applySynExpr` ee)) mkListGuard
+    _        -> return (s, g, e)
+  return (L l (BodyStmt x e' s' g'):xs', swapCtxt)
 compileDo _ _ (L l (ParStmt _ _ _ _) : _) = do
   flags <- getDynFlags
   reportError (mkErrMsg flags l neverQualify
@@ -210,6 +206,12 @@ compileDo _ _ (L l (RecStmt _ _ _ _ _ _ _) : _) =  do
     "Recursive do-notation is not supported by the plugin")
   failIfErrsM
   return ([], False)
+
+applySynExpr :: SyntaxExpr GhcTc -> HsExpr GhcTc -> HsExpr GhcTc
+applySynExpr NoSyntaxExprTc ex = ex
+applySynExpr (SyntaxExprTc se _ _) ex = HsApp noExtField
+  (noLoc (HsPar noExtField (noLoc se)))
+  (noLoc (HsPar noExtField (noLoc ex)))
 
 -- | Desugars pattern bindings in the given let-bindings.
 -- This is done by introducing selector functions for each of them.
