@@ -215,7 +215,7 @@ liftTypeParametrized sh stc mty s tcs t
     -- Lift a type application of a type constructor.
     -- If it is a type class constraint or ANY, do not wrap it with our monad.
     liftType' us (TyConApp tc tys)
-      | isClassTyCon tc || anyTyCon == tc = do
+      | isClassTyCon tc = do
         tc' <- lookupTyConMap GetNew tcs tc
         tys' <- mapM (replaceTyconTy tcs) tys
         return (TyConApp tc' tys')
