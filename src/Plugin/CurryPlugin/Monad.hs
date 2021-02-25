@@ -32,6 +32,7 @@ module Plugin.CurryPlugin.Monad
   where
 
 import Language.Haskell.TH.Syntax
+import Control.Applicative
 import Control.Monad
 
 import Plugin.Effect.Classes
@@ -41,7 +42,8 @@ import Plugin.Effect.Transformers
 
 -- | The actual monad for nondeterminism used by the plugin.
 newtype Nondet a = Nondet { unNondet :: LazyT Nondet Tree a }
-  deriving (Functor, Applicative, Monad, Sharing) via LazyT Nondet Tree
+  deriving (Functor, Applicative, Monad, Alternative, MonadPlus, Sharing)
+    via LazyT Nondet Tree
   deriving anyclass (SharingTop)
 
 {-# INLINE[0] bind #-}
@@ -76,15 +78,13 @@ seqValue a b = a >>= \a' -> a' `seq` b
 
 -- | Nondeterministic failure
 failed :: Shareable Nondet a => Nondet a
-failed = Nondet mzero
+failed = mzero
 
 infixr 0 ?
 {-# INLINE (?) #-}
 -- | Nondeterministic choice
 (?) :: Shareable Nondet a => Nondet (a --> a --> a)
-(?) = return $
-  \(Nondet t1) -> return $
-  \(Nondet t2) -> Nondet (t1 `mplus` t2)
+(?) = return $ \t1 -> return $ \t2 -> t1 `mplus` t2
 
 -- | Enumeration of available search modes.
 data SearchMode = DFS -- ^ depth-first search
