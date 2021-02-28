@@ -888,7 +888,7 @@ liftExplicitTuple given tcs args b = do
       let w' = WpTyApp (bindingType ty') <.> w
       let (_, _, resty') = splitFunTy resty
       inner <- liftExplicitTuple' (bindingType resty') (arg:col) w' xs
-      let lam = mkLam v (Scaled m ty') inner resty
+      let lam = mkLam v (Scaled m ty') inner resty'
       mkApp mkNewReturnTh resty [lam]
     liftExplicitTuple' resty col w [] = do
       let exprArgs = reverse col
