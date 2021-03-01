@@ -270,10 +270,6 @@ compileLetBind (L l (PatBind ty p grhss _)) = do
       | isNoLazyPat p = NoSrcStrict
       | otherwise     = SrcLazy
 
-    rmNondet mtc (TyConApp tc [inner])
-      | mtc == tc    = inner
-    rmNondet _ other = other
-
     -- create:
     -- fname = grhss
     createOrdinaryFun ty' = do
@@ -401,6 +397,11 @@ compileLetBind b = return ([b], [])
 -- | Checks if the first term contains the second term.
 contains :: (Eq a, Data r, Typeable a) => r -> a -> Bool
 contains r a = not (null (listify (==a) r))
+
+rmNondet :: TyCon -> Type -> Type
+rmNondet mtc (TyConApp tc [inner])
+  | mtc == tc    = inner
+rmNondet _ other = other
 
 -- | Compile a group of (case) alternatives into a more simple case without
 -- any nested pattern matching.
@@ -559,12 +560,16 @@ bindVarAlt _ (_,m) = return m
 mkSeq :: Var -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
 mkSeq v e = do
   ty <- getTypeOrPanic e -- ok
+  mtc <- getMonadTycon
+  -- we do not use ConstraintSolver.removeNondet,
+  -- as TyConMap is not available and not required
+  let vty = everywhere (mkT (rmNondet mtc)) (varType v)
   return (noLoc (HsApp noExtField (noLoc (HsApp noExtField
     (noLoc (mkHsWrap (WpTyApp ty <.>
-                      WpTyApp (varType v) <.>
+                      WpTyApp vty <.>
                       WpTyApp liftedRepTy)
                      (HsVar noExtField (noLoc seqId))))
-    (noLoc (HsVar noExtField (noLoc v)))))
+    (noLoc (HsVar noExtField (noLoc (setVarType v vty))))))
     e))
 
 mkOtherMatch :: Int -> [Var] -> Type -> LHsExpr GhcTc
