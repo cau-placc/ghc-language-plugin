@@ -674,7 +674,8 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
       return (L l (BodyStmt x' e' se' g'), [])
     liftMonadicStmt (L l (LetStmt x bs)) = do
       (bs', vs) <- liftLocalBinds given tcs bs
-      return (L l (LetStmt x bs'), map (\(x, y) -> (setVarType x (bindingType (varType x)), y)) vs)
+      let typeCorrected = map (both (setVarType <*> (bindingType . varType))) vs
+      return (L l (LetStmt x bs'), typeCorrected)
     liftMonadicStmt (L l (ParStmt _ _ _ _)) = do
       flags <- getDynFlags
       reportError (mkErrMsg flags l neverQualify
