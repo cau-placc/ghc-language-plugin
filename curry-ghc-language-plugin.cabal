@@ -40,6 +40,7 @@ common deps
     transformers     -any,
     mtl              -any,
     extra            -any,
+    split            -any,
   ghc-options:      -Wall
   default-language: Haskell2010
   other-extensions:
