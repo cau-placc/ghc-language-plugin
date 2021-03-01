@@ -45,16 +45,17 @@ findImportedOrPanic mname = do
 findImportedPkgOrPanic :: String -> String -> TcM Module
 findImportedPkgOrPanic mname pkgname = do
   hscEnv <- getTopEnv
+  let strippedPkg = intercalate "-" $ init $ init $ wordsBy (=='-') pkgname
   res <- liftIO $ findImportedModule hscEnv (mkModuleName mname) Nothing
   case res of
     Found _ mdl -> return mdl
     _ -> do
       res2 <- liftIO $ findImportedModule hscEnv (mkModuleName mname)
-                        (Just (mkFastString pkgname))
+                        (Just (mkFastString strippedPkg))
       case res2 of
         Found _ mdl -> return mdl
         _           -> panicAny "Could not find module"
-                        (mkFastString (pkgname ++ ":" ++ mname))
+                        (mkFastString (strippedPkg ++ ":" ++ mname))
 
 -- | Convert a given TemplateHaskell expression into GHC's representation
 -- and type check it against the given type.
