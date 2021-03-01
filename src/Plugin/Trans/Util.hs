@@ -12,6 +12,8 @@ module Plugin.Trans.Util where
 import Language.Haskell.TH            ( Exp, Q, runQ )
 import Control.Monad.IO.Class
 import Data.Tuple.Extra
+import Data.List
+import Data.List.Split
 import Data.Typeable
 import Data.ByteString                ( unpack )
 
