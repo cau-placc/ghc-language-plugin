@@ -625,32 +625,57 @@ mkAlts v vs ty1 ty2 err eqs@((vp@(L _ (ViewPat _ e p)), _) : _) = do
         mgtcI = MatchGroupTc [Scaled Many ty1] ty2
         mgI = MG mgtcI (noLoc remain) Generated
     Right ex   -> Right . noLoc <$> matchExpr (mkCse [noLoc (mkWild ex)])
-mkAlts v vs ty1 ty2 err eqs@((p, alt) : _) = do
-  -- Assuming the first pattern is not a lazy pattern,
-  -- we need every alternative with the same constructor as the first one
-  -- If that is already a lazy pattern, it is assumed to be matching.
-  -- A lazy pattern gets desugared to a let-bound pattern, which then gets
-  -- desugared to selector functions
-  let (strict, rest) = span (isNoLazyPat . fst) eqs
-  let (with, without) = partition (sameTopCon p . fst) strict
-  if isNoLazyPat p
-    then do
-      (p', vs',_) <- flattenPat p
-      alts' <- mkAlts v vs ty1 ty2 err (rest ++ without)
-      eqs' <- mapM flattenEq with
-      bdy <- compileMatching (vs' ++ vs) ty2 eqs' err
-      return (mkNaturalOrSimpleAlt ty1 ty2 v bdy p' alts')
-    else do
-      -- compile any remaining patterns
-      bdy <- compileMatching vs ty2 [alt] err
-      -- construct new pattern binding and translate that
-      let vE = noLoc (HsVar noExtField (noLoc v))
-      letExpr <- matchExpr (mkSimplePatLet ty1 vE p bdy)
-      -- return just this expression to be either placed
-      -- in a new wildcard branch, or to completely replace the case, iff it is
-      -- the first alternative.
-      -- All remaining patterns would be overlapping, so we ignore them
-      return (Right (noLoc letExpr))
+mkAlts v vs ty1 ty2 err eqs@((p, alt) : _)
+  | L _ (c@ConPat {}) <- p,
+    L _ (RealDataCon dc) <- pat_con c,
+    isNewTyCon (dataConTyCon dc) = do
+      (p', [v'], _) <- flattenPat p
+      let patTy = Scaled Many (hsLPatType p')
+      let xty = Scaled Many (varType v')
+      x <- freshVar xty
+      fresh <- freshVar patTy
+      -- create: let x = (\a -> case a of p' -> v') v in rhs
+      let grhs = GRHS noExtField [] (noLoc (HsVar noExtField (noLoc v')))
+          rhs = GRHSs noExtField [noLoc grhs] (noLoc (EmptyLocalBinds noExtField))
+          match = Match noExtField CaseAlt [p'] rhs
+          mgtc = MatchGroupTc [patTy] (varType v')
+          mg = MG mgtc (noLoc [noLoc match]) Generated
+          cse = noLoc (HsCase noExtField (noLoc (HsVar noExtField (noLoc fresh))) mg)
+          lam = mkLam (noLoc fresh) patTy cse (varType v')
+          lamApp = mkHsApp lam (noLoc (HsVar noExtField (noLoc v)))
+
+      eqs' <- mapM flattenEq [(p, alt)]
+      bdy <- compileMatching (x : vs) ty2 eqs' err
+      return $ Right $ noLoc $ mkSimpleLet NonRecursive lamApp bdy x (varType x)
+  | otherwise = do
+    -- Assuming the first pattern is not a lazy pattern,
+    -- we need every alternative with the same constructor as the first one
+    -- If that is already a lazy pattern, it is assumed to be matching.
+    -- A lazy pattern gets desugared to a let-bound pattern, which then gets
+    -- desugared to selector functions
+    let (strict, rest) = span (isNoLazyPat . fst) eqs
+    let (with, without) = partition (sameTopCon p . fst) strict
+    if isNoLazyPat p
+      then do
+        (p', vs',_) <- flattenPat p
+        alts' <- mkAlts v vs ty1 ty2 err (rest ++ without)
+        eqs' <- mapM flattenEq with
+        bdy <- compileMatching (vs' ++ vs) ty2 eqs' err
+        return (mkNaturalOrSimpleAlt ty1 ty2 v bdy p' alts')
+      else do
+        -- compile any remaining patterns
+        bdy <- compileMatching vs ty2 [alt] err
+        -- construct new pattern binding and translate that
+        let vE = noLoc (HsVar noExtField (noLoc v))
+        printAny "bdy" bdy
+        letExpr <- matchExpr (mkSimplePatLet ty1 vE p bdy)
+        printAny "let" (mkSimplePatLet ty1 vE p bdy)
+        printAny "matched" letExpr
+        -- return just this expression to be either placed
+        -- in a new wildcard branch, or to completely replace the case,
+        -- iff it is the first alternative.
+        -- All remaining patterns would be overlapping, so we ignore them
+        return (Right (noLoc letExpr))
 mkAlts _ _  ty1 _ err   [] =
   let grhs = GRHS noExtField [] err
       grhss = GRHSs noExtField [noLoc grhs] (noLoc (EmptyLocalBinds noExtField))
