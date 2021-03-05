@@ -40,11 +40,8 @@ liftRecordSel tcs (AbsBinds _ tvs evs ex evb bs sig)
       us1 <- getUniqueSupplyM
       us2 <- getUniqueSupplyM
 
-      let (parent, normalNewty) = case idDetails p of
-            RecSelId (RecSelData tc)
-                           _ -> (RecSelData tc,
-                                isNewTyCon tc && not (isClassTyCon tc))
-            RecSelId parTc _ -> (parTc, False)
+      let parent = case idDetails p of
+            RecSelId parTc _ -> parTc
             _ -> panicBndrUnsafe
                    "Expected RecSel in record selector definition" p
 
@@ -54,11 +51,9 @@ liftRecordSel tcs (AbsBinds _ tvs evs ex evb bs sig)
       -- Lift its type.
       m' <- setVarType (setVarUnique (
             setVarName m (setNameUnique (varName m) u)) u)
-              <$> if normalNewty
-                then liftIO (replaceTyconTy tcs (varType m))
-                else liftIO (liftResultTy stc mty us2 tcs (varType m))
+              <$> liftIO (liftResultTy stc mty us2 tcs (varType m))
       -- Lift its implementation.
-      mg' <- liftRecSelMG normalNewty tcs m' mg
+      mg' <- liftRecSelMG tcs m' mg
 
       -- Create the correct export entries and stuff.
       let selB = listToBag [L l (FunBind wrap (noLoc m') mg' ticks)]
@@ -74,34 +69,30 @@ liftRecordSel tcs (AbsBinds _ tvs evs ex evb bs sig)
 liftRecordSel _ _ = return Nothing
 
 -- | Lift the MatchGroup of a record selector.
-liftRecSelMG :: Bool -> TyConMap -> Var
+liftRecSelMG :: TyConMap -> Var
              -> MatchGroup GhcTc (LHsExpr GhcTc)
              -> TcM (MatchGroup GhcTc (LHsExpr GhcTc))
-liftRecSelMG normalNewty tcs f (MG (MatchGroupTc args res) (L _ alts) orig)
+liftRecSelMG tcs f (MG (MatchGroupTc args res) (L _ alts) orig)
   = do
     args' <- liftIO (mapM (replaceTyconScaled tcs) args)
     -- Lift the result type of this match group accordingly.
-    res' <- if normalNewty
-      then liftIO (replaceTyconTy tcs res)
-      else liftTypeTcM tcs res
-    alts' <- mapM (liftRecSelAlt normalNewty tcs f) alts
+    res' <- liftTypeTcM tcs res
+    alts' <- mapM (liftRecSelAlt tcs f) alts
     return (MG (MatchGroupTc args' res') (noLoc alts') orig)
 
 -- | Lift an alternative of a record selector.
-liftRecSelAlt :: Bool -> TyConMap -> Var -> LMatch GhcTc (LHsExpr GhcTc)
+liftRecSelAlt :: TyConMap -> Var -> LMatch GhcTc (LHsExpr GhcTc)
               -> TcM (LMatch GhcTc (LHsExpr GhcTc))
-liftRecSelAlt normalNewty tcs f (L _ (Match _ ctxt [pat] rhs)) = do
+liftRecSelAlt tcs f (L _ (Match _ ctxt [pat] rhs)) = do
   -- Lift any left-side pattern.
-  (pat', vss, vsn) <- liftPattern tcs pat
-  -- Potentially lift any unlifted newtype variables.
-  let vs = if normalNewty then vsn else vss
+  (pat', vs) <- liftPattern tcs pat
   let ctxt' = ctxt { mc_fun = noLoc (varName f) }
   -- Replace any variables on the right side.
   -- Thankfully, a record selector is always just a single variable on the rhs.
   rhs' <- everywhere (mkT (replaceVarExpr (map swap vs)))
             <$> everywhereM (mkM (liftErrorWrapper tcs)) rhs
   return (noLoc (Match noExtField ctxt' [pat'] rhs'))
-liftRecSelAlt _ _ _ x = return x
+liftRecSelAlt _ _ x = return x
 
 -- | Substitute variables in the given expression.
 replaceVarExpr :: [(Var, Var)] -> HsExpr GhcTc -> HsExpr GhcTc

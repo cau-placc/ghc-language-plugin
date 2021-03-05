@@ -38,30 +38,11 @@ import Plugin.Trans.Var
 import Plugin.Trans.ConstraintSolver
 
 -- | Create the lambda functions used to lift value constructors.
--- Newtypes have to be treated differently.
 -- Look at their lifting for details.
 mkConLam :: TyConMap -> Maybe HsWrapper -> DataCon
          -> [(Scaled Type, HsImplBang)] -> [Id] -> TcM (LHsExpr GhcTc, Type)
 -- list of types is empty -> apply the collected variables.
-mkConLam _ mw c [] vs
-  | isNewTyCon (dataConTyCon c),
-    [v] <- vs = do
-      -- Use the given wrapper for the constructor.
-      let wrap = case mw of
-            Just w  -> XExpr . WrapExpr . HsWrap w
-            Nothing -> id
-      let ce = noLoc (wrap (HsConLikeOut noExtField (RealDataCon c)))
-      -- Create the lambda-bound variable.
-      let arg = noLoc (HsVar noExtField (noLoc v))
-      -- Get the constructor result type.
-      cetype <- funResultTy <$> getTypeOrPanic ce -- ok
-      -- Get the lifted, but unwrapped, constructor argument type.
-      let argtype = bindingType (varType v)
-      -- create the term "fmap con v"
-      e <- mkApp (mkNewFmapTh argtype) cetype [ce, arg]
-      mty <- mkTyConTy <$> getMonadTycon
-      return (e, mkAppTy mty cetype)
-  | otherwise = do
+mkConLam _ mw c [] vs = do
     -- Use the given wrapper for the constructor.
     let wrap = case mw of
           Just w  -> XExpr . WrapExpr . HsWrap w
@@ -79,16 +60,12 @@ mkConLam _ mw c [] vs
 -- Create lambdas for the remaining types.
 mkConLam tcs w c ((Scaled _ ty, strictness) : tys) vs = do
   mtc <- getMonadTycon
-  -- Despite the argument being unlifted for newtypes, we want to create
-  -- a lifted function to replace the constructor.
-  -- This is why we manually lift the parameter for newtypes.
-  let ty' = if isNewTyCon (dataConTyCon c) then mkTyConApp mtc [ty] else ty
   -- Create the new variable to be applied to the constructor.
-  let vty' = Scaled Many ty'
-  v <- freshVar (Scaled Many ty')
+  let vty' = Scaled Many ty
+  v <- freshVar (Scaled Many ty)
   -- Create the inner part of the term with the remaining type arguments.
   (e, resty) <- mkConLam tcs w c tys (v:vs) -- (return \xs -> Cons x xs, SML (List a -> List a)
-  let lamty = mkVisFunTyMany ty' resty      -- a -> SML (List a -> List a)
+  let lamty = mkVisFunTyMany ty resty      -- a -> SML (List a -> List a)
   -- Add a seq if C is strict in this arg
   (e', v') <- case strictness of
     HsLazy -> return (e, v)
@@ -97,17 +74,17 @@ mkConLam tcs w c ((Scaled _ ty, strictness) : tys) vs = do
       -- create the lambda-bound variable, that needs to be shared
       v' <- freshVar vty'
       -- create share
-      s <- mkApp (mkNewShareTh tcs) ty' [noLoc (HsVar noExtField (noLoc v'))]
+      s <- mkApp (mkNewShareTh tcs) ty [noLoc (HsVar noExtField (noLoc v'))]
       mtycon <- getMonadTycon
       -- create seqValue
-      seqE <- mkApp (mkNewSeqValueTh (bindingType ty')) (bindingType resty)
+      seqE <- mkApp (mkNewSeqValueTh (bindingType ty)) (bindingType resty)
                 [noLoc (HsVar noExtField (noLoc v)), e]
       let l = noLoc (HsPar noExtField (mkLam (noLoc v) vty' seqE resty))
-      let sty = mkTyConApp mtycon [ty']
+      let sty = mkTyConApp mtycon [ty]
       shareE <- mkBind (noLoc (HsPar noExtField s)) sty l resty
       return (shareE, v')
   -- Make the lambda for this variable
-  let e'' = mkLam (noLoc v') (Scaled Many ty') e' resty
+  let e'' = mkLam (noLoc v') (Scaled Many ty) e' resty
   -- Wrap the whole term in a 'return'.
   e''' <- mkApp mkNewReturnTh lamty [noLoc $ HsPar noExtField e'']
   let mty = mkTyConTy mtc

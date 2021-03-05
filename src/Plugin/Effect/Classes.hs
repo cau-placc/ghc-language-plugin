@@ -106,28 +106,12 @@ instance (Monad m,  NormalformGen m f1 g1, NormalformGen m f2 g2) =>
     liftEGen mx = mx >>= \case
       x Gen.:*: y -> (Gen.:*:) <$> liftEGen (return x) <*> liftEGen (return y)
 
--- | This instance overlaps the next instance.
--- Any lifted type defined by a data declaration uses this instance,
--- where we assume that the constructor arguments have the form (m b)
--- with m ~ Nondet and a Shareable instance for b
--- the other instance is used for lifted newtypes.
-instance {-# OVERLAPPING #-} (Monad m, Normalform m a b) =>
+instance (Monad m, Normalform m a b) =>
   NormalformGen m (Gen.K1 i (m a)) (Gen.K1 j b) where
     nfGen mx = mx >>= \case
       Gen.K1 x -> Gen.K1 <$> nf x
     liftEGen mx = mx >>= \case
       Gen.K1 x -> Gen.K1 <$> return (liftE (return x))
-
--- | A lifted type defined by a newtype declaration
--- does not have a type wrapped with Nondet as its constructor argument.
--- The instance above is thus not applicable for a lifted newtype and we use
--- this one instead.
-instance {-# OVERLAPPABLE #-} (Monad m, Normalform m a b) =>
-  NormalformGen m (Gen.K1 i a) (Gen.K1 j b) where
-    nfGen mx = mx >>= \case
-      Gen.K1 x -> Gen.K1 <$> nf (return x)
-    liftEGen mx = mx >>= \case
-      Gen.K1 x -> Gen.K1 <$> liftE (return x)
 
 instance (Monad m, NormalformGen m f g) =>
   NormalformGen m (Gen.M1 i t f) (Gen.M1 j h g) where
@@ -155,22 +139,8 @@ instance (Sharing m, ShareableGen m f, ShareableGen m g) =>
     shareArgsGen (x Gen.:*: y) =
       (Gen.:*:) <$> shareArgsGen x <*> shareArgsGen y
 
--- | This instance overlaps the next instance.
--- Any lifted type defined by a data declaration uses this instance,
--- where we assume that the constructor arguments have the form (m b)
--- with m ~ Nondet and a Shareable instance for b
--- the other instance is used for lifted newtypes.
-instance {-# OVERLAPPING #-} (Sharing m, ShareConstraints m b)
-  => ShareableGen m (Gen.K1 i (m b)) where
+instance (Sharing m, ShareConstraints m b) => ShareableGen m (Gen.K1 i (m b)) where
     shareArgsGen (Gen.K1 x) = Gen.K1 <$> share x
-
--- | A lifted type defined by a newtype declaration
--- does not have a type wrapped with Nondet as its constructor argument.
--- The instance above is thus not applicable for a lifted newtype and we use
--- this one instead.
-instance {-# OVERLAPPABLE #-} (Sharing m, Shareable m c)
-  => ShareableGen m (Gen.K1 i c) where
-    shareArgsGen (Gen.K1 x) = Gen.K1 <$> shareArgs x
 
 instance (Sharing m, ShareableGen m f) => ShareableGen m (Gen.M1 i t f) where
   shareArgsGen (Gen.M1 x) = Gen.M1 <$> shareArgsGen x

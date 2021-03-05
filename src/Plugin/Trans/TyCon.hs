@@ -129,7 +129,7 @@ liftAlgRhs isClass dflags instEnvs stycon mtycon tcs tcsM tycon us
   (DataTyCon cns size ne) = do
     let (u:uss) = listSplitUniqSupply us
     cns' <- zipWithM
-      (liftConstr False isClass dflags instEnvs stycon mtycon tcs tcsM tycon) uss cns
+      (liftConstr isClass dflags instEnvs stycon mtycon tcs tcsM tycon) uss cns
     return (u, DataTyCon cns' size ne)
 liftAlgRhs isClass dflags instEnvs stycon mtycon tcs tcsM tycon us
   -- Depending on the origin of this newtype declaration (class or not),
@@ -138,11 +138,8 @@ liftAlgRhs isClass dflags instEnvs stycon mtycon tcs tcsM tycon us
     let (u1, tmp1) = splitUniqSupply us
         (u2, tmp2) = splitUniqSupply tmp1
         (u3, u4  ) = splitUniqSupply tmp2
-    dc' <- liftConstr (not isClass) isClass dflags instEnvs stycon mtycon tcs tcsM tycon u1 dc
-    rhs' <- replaceTyconTyPure tcs <$>
-      if isClass
-        then liftType    stycon (mkTyConTy mtycon) u2 tcsM rhs
-        else liftInnerTy stycon (mkTyConTy mtycon) u2 tcsM rhs
+    dc' <- liftConstr isClass dflags instEnvs stycon mtycon tcs tcsM tycon u1 dc
+    rhs' <- replaceTyconTyPure tcs <$> liftType stycon (mkTyConTy mtycon) u2 tcsM rhs
 
     -- Only switch unique and name for datatypes, etc.
     -- (see comment above liftTycon)

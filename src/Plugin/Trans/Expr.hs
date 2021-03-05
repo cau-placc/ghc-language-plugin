@@ -365,25 +365,24 @@ liftMonadicAlt :: Maybe Var -> [Ct] -> TyConMap -> Type
                -> LMatch GhcTc (LHsExpr GhcTc)
                -> TcM (LMatch GhcTc (LHsExpr GhcTc))
 liftMonadicAlt mv given tcs resty (L a (Match b c d rhs)) = do
-  (d', s, n) <- unzip3 <$> mapM (liftPattern tcs) d
-  rhs' <- liftMonadicRhs mv (concat s) (concat n) given tcs resty rhs
+  (d', s) <- unzip <$> mapM (liftPattern tcs) d
+  rhs' <- liftMonadicRhs mv (concat s) given tcs resty rhs
   return (L a (Match b c d' rhs'))
 
-liftMonadicRhs :: Maybe Var -> [(Var, Var)] -> [(Var, Var)] -> [Ct] -> TyConMap
+liftMonadicRhs :: Maybe Var -> [(Var, Var)] -> [Ct] -> TyConMap
                -> Type -> GRHSs GhcTc (LHsExpr GhcTc)
                -> TcM (GRHSs GhcTc (LHsExpr GhcTc))
-liftMonadicRhs mv s n given tcs resty (GRHSs a grhs b) = do
-  grhs' <- mapM (liftMonadicGRhs mv s n given tcs resty) grhs
+liftMonadicRhs mv s given tcs resty (GRHSs a grhs b) = do
+  grhs' <- mapM (liftMonadicGRhs mv s given tcs resty) grhs
   return (GRHSs a grhs' b)
 
-liftMonadicGRhs :: Maybe Var -> [(Var, Var)] -> [(Var, Var)] -> [Ct] -> TyConMap
+liftMonadicGRhs :: Maybe Var -> [(Var, Var)] -> [Ct] -> TyConMap
                 -> Type -> LGRHS GhcTc (LHsExpr GhcTc)
                 -> TcM (LGRHS GhcTc (LHsExpr GhcTc))
-liftMonadicGRhs mv s n given tcs bdyty (L a (GRHS b c body)) = do
+liftMonadicGRhs mv s given tcs bdyty (L a (GRHS b c body)) = do
   body' <- liftMonadicExpr given tcs body
   body'' <- shareVars tcs s given body' bdyty
-  body''' <- foldM liftNewTyVar body'' n
-  L a . GRHS b c <$> shareTopLevel mv body'''
+  L a . GRHS b c <$> shareTopLevel mv body''
 
 liftMonadicExpr :: [Ct] -> TyConMap -> LHsExpr GhcTc
                 -> TcM (LHsExpr GhcTc)
@@ -418,7 +417,7 @@ liftMonadicExpr _ tcs (L _ (HsConLikeOut _ (RealDataCon c))) = do
   return $ noLoc $ HsPar noExtField e
 liftMonadicExpr _ tcs (L _ (XExpr (WrapExpr (HsWrap w (HsConLikeOut _ (RealDataCon c)))))) = do
   c' <- liftIO (getLiftedCon c tcs)
-  w' <- liftWrapperTcM (not $ isNewTyCon (dataConTyCon c')) tcs w
+  w' <- liftWrapperTcM True tcs w
   let (apps, absts) = collectTyApps w'
       realApps = drop (length absts) apps
   let tys = conLikeInstOrigArgTys (RealDataCon c') realApps
@@ -653,7 +652,7 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
       return (L l (LastStmt x e' a r'), [])
     liftMonadicStmt (L l (BindStmt (XBindStmtTc b x m f) p e)) = do
       -- p is definitely just a varPat and f is NoSyntaxExprTc or Nothing
-      (p', vs, _) <- liftPattern tcs p
+      (p', vs) <- liftPattern tcs p
       e' <- liftMonadicExpr given tcs e
       x' <- liftTypeTcM tcs x
       b' <- transBind b
@@ -903,42 +902,10 @@ liftExplicitTuple given tcs args b = do
 -- and we want to replace the HsConLike with the lifted constructor version.
 -- HsConLike is the only sensible option for this PostTcExpr for Haskell2010.
 liftConExpr :: TyConMap -> DataCon -> PostTcExpr -> TcM PostTcExpr
-liftConExpr tcs dc (XExpr (WrapExpr (HsWrap w _)))
-  | isNewTyCon (dataConTyCon dc) = liftNewConExpr (Just w) tcs dc
-  | otherwise = do
+liftConExpr tcs dc (XExpr (WrapExpr (HsWrap w _))) = do
     w' <- liftWrapperTcM True tcs w
     return (mkHsWrap w' (HsConLikeOut noExtField (RealDataCon dc)))
-liftConExpr tcs dc _
-  | isNewTyCon (dataConTyCon dc) = liftNewConExpr Nothing tcs dc
-  | otherwise = return (HsConLikeOut noExtField (RealDataCon dc))
-
-liftNewConExpr :: Maybe HsWrapper -> TyConMap -> DataCon -> TcM PostTcExpr
-liftNewConExpr mw tcs dc = do
-  -- lift wrapper
-  mty <- mkTyConTy <$> getMonadTycon
-  w' <- case mw of
-    Just w  -> liftWrapperTcM False tcs w
-    Nothing -> return WpHole
-
-  -- get the argument type
-  let (apps, absts) = collectTyApps w'
-  let realApps = drop (length absts) apps
-  let [Scaled m ty] = conLikeInstOrigArgTys (RealDataCon dc) realApps
-  let ty' = mkAppTy mty ty
-
-  -- create a fresh var with that type
-  v <- freshVar (Scaled Many ty')
-
-  -- create the constructor mapped with "fmap" over v
-  let de = HsConLikeOut noExtField (RealDataCon dc)
-  let ce = noLoc (mkHsWrap w' de)
-  let arg = noLoc (HsVar noExtField (noLoc v))
-  cetype <- funResultTy <$> getTypeOrPanic ce -- ok
-  let argtype = bindingType (varType v)
-  e <- mkApp (mkNewFmapTh argtype) cetype [ce, arg]
-
-  -- return lambda abstraction
-  return (unLoc (mkLam (noLoc v) (Scaled m ty') e (mkAppTy mty cetype)))
+liftConExpr _ dc _ = return (HsConLikeOut noExtField (RealDataCon dc))
 
 liftMonadicRecFields :: [Ct] -> TyConMap
                      -> HsRecordBinds GhcTc
@@ -1006,12 +973,6 @@ liftTick tcs (Breakpoint i ids) = Breakpoint i <$> mapM transId ids
   where
     transId v = setVarType v <$> liftTypeTcM tcs (varType v)
 liftTick _ t = return t
-
-liftNewTyVar :: LHsExpr GhcTc -> (Var, Var) -> TcM (LHsExpr GhcTc)
-liftNewTyVar e (old, new) = do
-  le <- mkApp mkNewReturnTh (varType old) [noLoc (HsVar noExtField (noLoc old))]
-  ty <- flip mkTyConApp [varType old] <$> getMonadTycon
-  return (noLoc (mkSimpleLet NonRecursive le e new ty))
 
 shareVars :: TyConMap -> [(Var, Var)] -> [Ct] -> LHsExpr GhcTc -> Type
           -> TcM (LHsExpr GhcTc)

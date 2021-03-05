@@ -5,6 +5,7 @@ packages:
 extra-deps:
   - extra-1.7.8
   - clock-0.8
+  - split-0.2.3.4
 ghc-options :
   "$everything": -Wall
 system-ghc: true

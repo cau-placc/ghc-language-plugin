@@ -53,8 +53,7 @@ instance Exception RecordLiftingException
 -- Note that this is part of a fixed-point computation, where the
 -- 'UniqFM' in the fifth parameter and the
 -- 'TyCon' in the seventh parameter depend on the output of the computation.
-liftConstr :: Bool                -- ^ True iff the type constructor stems from a newtype declaration
-           -> Bool                -- ^ True iff the type constructor should not be renamed
+liftConstr :: Bool                -- ^ True iff the type constructor should not be renamed
            -> DynFlags            -- ^ Compiler flags
            -> FamInstEnvs         -- ^ Family Instance Environments, both home and external
            -> TyCon               -- ^ 'Shareable' type constructor
@@ -65,7 +64,7 @@ liftConstr :: Bool                -- ^ True iff the type constructor stems from 
            -> UniqSupply          -- ^ Supply of fresh unique keys
            -> DataCon             -- ^ Constructor to be lifted
            -> IO DataCon          -- ^ Lifted constructor
-liftConstr normalNewty noRename dflags instEnvs stycon mtycon tcs tcsM tycon s cn = do
+liftConstr noRename dflags instEnvs stycon mtycon tcs tcsM tycon s cn = do
 
   -- Create all required unique keys.
   let (s1, tmp1) = splitUniqSupply s
@@ -114,13 +113,7 @@ liftConstr normalNewty noRename dflags instEnvs stycon mtycon tcs tcsM tycon s c
   return dc
   where
     mty = mkTyConTy mtycon
-    -- Use the inner type lifting for constructors from newtype declarations,
-    -- because we otherwise get a 'Nondet' too much if we coerce its type.
-    liftAndReplaceType us (Scaled m ty )
-      | normalNewty = Scaled <$>
-          (replaceTyconTyPure tcs <$> replaceTyconTy tcsM m) <*>
-          (replaceTyconTyPure tcs <$> liftInnerTy stycon mty us tcsM ty)
-      | otherwise   = Scaled <$>
+    liftAndReplaceType us (Scaled m ty) = Scaled <$>
           (replaceTyconTyPure tcs <$> replaceTyconTy tcsM m) <*>
           (replaceTyconTyPure tcs <$> liftType    stycon mty us tcsM ty)
     replaceCon = fmap (replaceTyconTyPure tcs) . replaceTyconTy tcsM
