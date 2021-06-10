@@ -120,11 +120,11 @@ liftConstr noRename dflags instEnvs stycon mtycon tcs tcsM tycon s cn = do
 
 -- | Lift a record field by renaming its labels.
 liftField :: FieldLabel -> Unique -> FieldLabel
-liftField (FieldLabel str over sel) u = FieldLabel strND over selND
+liftField (FieldLabel str over sel selName) u = FieldLabel strND over sel selND
   where
     strND = str `appendFS` "ND"
-    occND = mkOccNameFS (occNameSpace (occName sel)) strND
-    selND = setNameUnique (tidyNameOcc sel occND) u
+    occND = mkOccNameFS (occNameSpace (occName selName)) strND
+    selND = setNameUnique (tidyNameOcc selName occND) u
 
 -- | Get a lifted value constructor from the given one and the TyCon map.
 getLiftedCon :: DataCon -> TyConMap -> IO DataCon

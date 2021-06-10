@@ -120,11 +120,11 @@ liftDictExpr cls w tcs (L l ex) = L l <$> liftDictExpr' ex
       -- then split off as many invisible function args as possible.
       -- But we only do all of this, if the type is not already lifted
       let ty = varType v
-      dfLifted <- case splitTyConApp_maybe (snd (splitPiTysInvisible ty)) of
+      dfLifted <- case splitTyConApp_maybe (snd (splitInvisPiTys ty)) of
         Just (tc, _) | tc == mtc
           -> setVarType v <$> liftIO (replaceTyconTy tcs ty)
         _ -> do
-          let (bs1, ty1) = splitPiTysInvisibleN (length (is_tvs cls)) ty
+          let (bs1, ty1) = splitInvisPiTysN (length (is_tvs cls)) ty
               (bs2, ty2) = splitInvisFunTys ty1
               named = filter isNamedBinder bs1
           uss <- replicateM (length named) getUniqueSupplyM

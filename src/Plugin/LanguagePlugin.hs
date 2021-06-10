@@ -164,13 +164,13 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
     Left e | Just (ClassLiftingException cls reason) <- fromException e
             -> do
               let l = srcLocSpan (nameSrcLoc (getName cls))
-              reportError (mkErrMsg flags l neverQualify (text reason))
+              reportError (mkMsgEnvelope l neverQualify (text reason))
               failIfErrsM
               return ([], [])
            | Just (RecordLiftingException _ p reason) <- fromException e
             -> do
               let l = srcLocSpan (nameSrcLoc (getName p))
-              reportError (mkErrMsg flags l neverQualify (text reason))
+              reportError (mkMsgEnvelope l neverQualify (text reason))
               failIfErrsM
               return ([], [])
            | otherwise

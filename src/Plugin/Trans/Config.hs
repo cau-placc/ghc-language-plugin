@@ -26,13 +26,15 @@ lookupConfig (configStr, errStr) = do
     Nothing -> panicAny errStr ()
 
 setConfigFlagsFor :: [(String, String)] -> Plugin -> Plugin
-setConfigFlagsFor flgs p@(Plugin { dynflagsPlugin = dflagsPl }) =
-  p { dynflagsPlugin = setFlags }
+setConfigFlagsFor flgs p@(Plugin { driverPlugin = dflagsPl }) =
+  p { driverPlugin = setFlags }
   where
-    setFlags opts dflags =
-      let currentPluginOpts = pluginModNameOpts dflags
+    setFlags opts hscEnv =
+      let dflags = hsc_dflags hscEnv
+          currentPluginOpts = pluginModNameOpts dflags
           newOpts = currentPluginOpts ++ [(mkModuleName m, v) | (m, v) <- flgs]
-      in dflagsPl opts (dflags { pluginModNameOpts = newOpts })
+          newHsc = hscEnv { hsc_dflags = dflags { pluginModNameOpts = newOpts }}
+      in dflagsPl opts newHsc
 
 monadModConfigStr :: (String, String)
 monadModConfigStr =

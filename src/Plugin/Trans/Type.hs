@@ -170,7 +170,7 @@ liftTypeParametrized sh stc mty s tcs t
             (u1, u2) = splitUniqSupply us
             uss = listSplitUniqSupply u1
             -- Split off invisible pi-types (e.g., forall and constraints)
-            (pis, inner) = splitPiTysInvisible ft
+            (pis, inner) = splitInvisPiTys ft
             -- Get all named binders (e.g., forall)
             named = filter isNamedBinder pis
             -- Get all bound variables
@@ -274,7 +274,7 @@ liftTypeIfRequiredTcM tcs ty = do
 liftTypeIfRequired :: TyCon -> TyCon -> UniqSupply -> TyConMap -> Type
                    -> IO Type
 liftTypeIfRequired stc mtycon us tcs ty =
-  case splitTyConApp_maybe (snd (splitPiTysInvisible ty)) of
+  case splitTyConApp_maybe (snd (splitInvisPiTys ty)) of
     -- The type might already be lifted, if this is a class method
     -- from an imported (non built-in) class
     Just (tc, _) | tc == mtycon -> replaceTyconTy tcs ty
@@ -417,7 +417,7 @@ liftDefaultType :: TyConMap -> Class -> Type -> TcM Type
 liftDefaultType tcs cls ty = do
   -- if cls has N class type variables,
   -- we have to split off N forall's and the class constraint.
-  let (bs1, ty1) = splitPiTysInvisibleN (classArity cls + 1) ty
+  let (bs1, ty1) = splitInvisPiTysN (classArity cls + 1) ty
       named = filter isNamedBinder bs1
   uss <- replicateM (length named) getUniqueSupplyM
   mtc <- getMonadTycon
@@ -643,7 +643,7 @@ namedTyBinders = mapMaybe (\case { Named b -> Just b; Anon _ _ -> Nothing })
 -- | Instantiate a type with the given type arguments.
 instantiateWith :: [Type] -> Type -> Type
 instantiateWith apps ty =
-  let (hd, rty) = splitPiTysInvisible ty
+  let (hd, rty) = splitInvisPiTys ty
       isNamed (Named _) = True
       isNamed _         = False
       (named, anon) = partition isNamed hd
@@ -657,7 +657,7 @@ instantiateWith apps ty =
 -- type and evidence applications.
 createWrapperFor :: Type -> [Type] -> [Var] -> HsWrapper
 createWrapperFor ty apps evids =
-  let (hd, _) = splitPiTysInvisible ty
+  let (hd, _) = splitInvisPiTys ty
   in (wrapperArg hd apps evids)
   where
     wrapperArg (Named _ :xs) (a:as) evs    =

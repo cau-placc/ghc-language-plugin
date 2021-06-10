@@ -100,11 +100,11 @@ transformWanted :: TyConMap -> Class -> Ct
 -- "t1 ~# t2" via a transformation to irreducible constraints.
 -- The irreducible constraints are handled by the same function below.
 transformWanted m c (CNonCanonical (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
-  (HoleDest (CoercionHole var _ href)) si loc))
+  (HoleDest (CoercionHole var href)) si loc))
     | tc == eqPrimTyCon = do
       res <- transformWanted m c (CIrredCan
                (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
-                 (HoleDest (CoercionHole var NoBlockSubst href)) si loc)
+                 (HoleDest (CoercionHole var href)) si loc)
                OtherCIS)
       case res of
         Just ((EvExpr (Coercion co), (CIrredCan w' _)), Just new) ->
@@ -113,7 +113,7 @@ transformWanted m c (CNonCanonical (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
 -- Transform irreducible constraints like
 -- "(Nondet t1) ~# (Nondet t2)" to "t1 ~# t2".
 transformWanted m _ w@(CIrredCan (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
-  (HoleDest (CoercionHole var _ href)) si loc) _)
+  (HoleDest (CoercionHole var href)) si loc) _)
     | tc == eqPrimTyCon
     = unsafeTcPluginTcM $ do
       mtc <- getMonadTycon
@@ -138,7 +138,7 @@ transformWanted m _ w@(CIrredCan (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
                              , ctl_env    = (ctl_env loc) { tcl_ctxt = [] }
                              }
                   -- Create the new coercion hole for the new constraint.
-                  d' = HoleDest (CoercionHole var NoBlockSubst newhref)
+                  d' = HoleDest (CoercionHole var newhref)
                   -- Create the new wanted constraint.
                   newev = CtWanted (TyConApp tc [k1, k2, ty1', ty2']) d' si loc'
                   new = CNonCanonical newev
@@ -283,5 +283,5 @@ mkImplications given tvs lvl env bindsVar (WC simpl impl holes) =
     givenVars = map (ctEvEvId . cc_ev) $ filter isGivenCt given
 
     mkImplication c =
-      Implic lvl tvs UnkSkol givenVars False False env c bindsVar emptyVarSet
-                emptyVarSet IC_Unsolved
+      Implic lvl tvs UnkSkol givenVars MaybeGivenEqs False env c bindsVar
+        emptyVarSet emptyVarSet IC_Unsolved

@@ -94,7 +94,7 @@ liftClassOpItem dflags stycon mtycon tcs tcsM us clsOld clsNew (v, mbdef) = do
   -- including those constraints raises a type error.
   -- So we first split off as many foralls, as there are variables.
   let varCount = length (classTyVars clsOld)
-  let (bndr, liftingType) = splitPiTysInvisibleN varCount (varType v)
+  let (bndr, liftingType) = splitInvisPiTysN varCount (varType v)
   -- Now we can lift the type.
   bndr' <- liftIO (mapM (replacePiTy tcsM) bndr)
   ty' <- replaceTyconTyPure tcs . mkPiTys bndr'
@@ -145,11 +145,9 @@ mkExactNameDictSelId name clas sel_ty dflags
                        , ru_try   = dictSelRule val_index n_ty_args }
     strict_sig = mkClosedStrictSig [arg_dmd] topDiv
     arg_dmd | new_tycon = evalDmd
-            | otherwise = mkManyUsedDmd $
-                          mkProdDmd [ if name == sel_name
-                                        then evalDmd
-                                        else absDmd
-                                    | sel_name <- sel_names ]
+            | otherwise = C_1N :*
+                          Prod [ if name == sel_name then evalDmd else absDmd
+                               | sel_name <- sel_names ]
 
 -- | Create an unfolding rule for dictionary selector functions.
 -- Basically copied from ghc package, module 'MkId',
