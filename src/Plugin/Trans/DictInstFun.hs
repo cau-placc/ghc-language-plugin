@@ -13,6 +13,8 @@ module Plugin.Trans.DictInstFun (liftDictInstFun) where
 import Data.List
 import Data.Maybe
 import Control.Monad
+import Language.Haskell.Syntax.Extension
+import GHC.Parser.Annotation
 
 import GHC.Plugins
 import GHC.Hs.Binds
@@ -76,7 +78,7 @@ liftDictInstBinding tcs cls (AbsBinds _ tvs evs ex evb bs sig)
       -- Lift the actual expression.
       e' <- liftDictExpr cls wrap tcs e
 
-      let vb = listToBag [noLoc (VarBind noExtField m' e')]
+      let vb = listToBag [noLocA (VarBind noExtField m' e')]
       let ex' = [ABE noExtField p' m' w s]
       let b' = AbsBinds noExtField tvs allevsids ex' evb vb sig
       return (Just b')
@@ -89,8 +91,8 @@ liftDictExpr cls w tcs (L l ex) = L l <$> liftDictExpr' ex
   where
     -- Applications are translated by lifting both sides.
     liftDictExpr' (HsApp _ e1 e2) =
-      HsApp noExtField <$> liftDictExpr cls w tcs e1
-                       <*> liftDictExpr cls w tcs e2
+      HsApp EpAnnNotUsed <$> liftDictExpr cls w tcs e1
+                         <*> liftDictExpr cls w tcs e2
     -- The dictionary constructor is lifted by getting the lifted constructor
     -- and lifting its wrapper.
     liftDictExpr' (XExpr (WrapExpr
@@ -138,7 +140,7 @@ liftDictExpr cls w tcs (L l ex) = L l <$> liftDictExpr' ex
 
       -- Use the given wrapper expression.
       return (XExpr (WrapExpr
-        (HsWrap w (HsVar noExtField (noLoc dfLifted)))))
+        (HsWrap w (HsVar noExtField (noLocA dfLifted)))))
 
 -- | Split off all arguments of an invisible function type
 -- (e.g., all constraints).

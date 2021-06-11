@@ -24,6 +24,7 @@ import GHC.Hs.Expr
 import GHC.Tc.Types
 import GHC.Core.TyCo.Rep
 import GHC.Data.Bag
+import GHC.Parser.Annotation
 
 import Plugin.Trans.Type
 import Plugin.Trans.Util
@@ -134,7 +135,7 @@ liftDerivedEnumExpr tcs (L l1 (HsLam x1 (MG (MatchGroupTc [Scaled m arg] res)
                  [L l3 (Match x2 ctxt [L l4 (VarPat x3 (L l5 v'))]
                  (GRHSs x4 [L l6 (GRHS x5 g e'')] lcl))]) orig))
     let ty = mkVisFunTyMany arg' res'
-    mkApp mkNewReturnTh ty [noLoc (HsPar noExtField e''')]
+    mkApp mkNewReturnTh ty [noLoc (HsPar EpAnnNotUsed e''')]
 liftDerivedEnumExpr tcs (L l (HsPar x e)) =
   L l . HsPar x <$> liftDerivedEnumExpr tcs e
 liftDerivedEnumExpr tcs e = do
@@ -147,13 +148,13 @@ liftDerivedEnumExpr tcs e = do
 -- nf vn >>= \vo -> e
 mkNFVar :: Var -> Var -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
 mkNFVar vn vo e = do
-  let vne = noLoc (HsVar noExtField (noLoc vn))
+  let vne = noLoc (HsVar EpAnnNotUsed (noLoc vn))
   let vnty = varType vn
   let voty = varType vo
   let vom = varMult vo
   s <- mkApp (mkNewNfTh (bindingType vnty)) voty [vne]
   ety <- getTypeOrPanic e -- ok
-  let l = noLoc (HsPar noExtField (mkLam (noLoc vo) (Scaled vom voty) e ety))
+  let l = noLoc (HsPar EpAnnNotUsed (mkLam (noLoc vo) (Scaled vom voty) e ety))
   mtc <- getMonadTycon
   mkBind s (mkTyConApp mtc [voty]) l ety
 

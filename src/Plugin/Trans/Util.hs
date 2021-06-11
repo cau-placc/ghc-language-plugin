@@ -151,7 +151,8 @@ printBndrUnsafe str a = do
 
 -- |Apply a monadic action to all elements in a bag with source location
 -- annotations.
-liftBag :: Monad m => (a -> m b) -> Bag (Located a) -> m (Bag (Located b))
+liftBag :: Monad m => (a -> m b)
+        -> Bag (GenLocated l a) -> m (Bag (GenLocated l b))
 liftBag = mapBagM . liftL
 
 -- | Temporarily set the given global compiler flags for the excecution of the
