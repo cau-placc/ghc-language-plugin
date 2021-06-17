@@ -28,7 +28,7 @@ liftRule tcs r@(L l (HsRule x nm act tvs tmvs lhs rhs)) = do
       | isEmptyBag impl && isEmptyBag holes && allBag isWantedCt wanted
       -> return $ mapMaybe extractEvVar $ bagToList wanted
     _ -> panicAny "Lifting of rule lead to unexpected constraints" r
-  let dicts = map (noLoc . RuleBndr noExtField . noLoc) evs
+  let dicts = map (noLoc . RuleBndr EpAnnNotUsed . noLocA) evs
 
   lclEnv <- getLclEnv
 

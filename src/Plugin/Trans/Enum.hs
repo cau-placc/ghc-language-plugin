@@ -15,6 +15,7 @@ module Plugin.Trans.Enum
   ) where
 
 import Data.List
+import Language.Haskell.Syntax.Extension
 
 import GHC.Plugins
 import GHC.Hs.Binds
@@ -53,7 +54,7 @@ isDerivedEnum :: MatchGroup GhcTc (LHsExpr GhcTc) -> Bool
 isDerivedEnum (MG (MatchGroupTc [] _) (L _ [L _ (Match _ _ []            -- 1.
                  (GRHSs _ [L _ (GRHS _ [] e)] _))]) _) =                 -- 2.
   case unLoc (getBodyExpr e) of                                          -- 3.
-    HsLet _ (L _ (HsValBinds _ (XValBindsLR (NValBinds [(_, bs)] _)))) _
+    HsLet _ (HsValBinds _ (XValBindsLR (NValBinds [(_, bs)] _))) _
       | [L _ (FunBind _ _ (MG _ (L _ [L _ (Match _ _ [] (GRHSs _
           [L _ (GRHS _ [] (L _ (HsPar _ e1)))] _))]) _) _)] <- bagToList bs
                    -> isDerivedEnumExpr "$con2tag_" e1                 -- 4.a
@@ -135,7 +136,7 @@ liftDerivedEnumExpr tcs (L l1 (HsLam x1 (MG (MatchGroupTc [Scaled m arg] res)
                  [L l3 (Match x2 ctxt [L l4 (VarPat x3 (L l5 v'))]
                  (GRHSs x4 [L l6 (GRHS x5 g e'')] lcl))]) orig))
     let ty = mkVisFunTyMany arg' res'
-    mkApp mkNewReturnTh ty [noLoc (HsPar EpAnnNotUsed e''')]
+    mkApp mkNewReturnTh ty [noLocA (HsPar EpAnnNotUsed e''')]
 liftDerivedEnumExpr tcs (L l (HsPar x e)) =
   L l . HsPar x <$> liftDerivedEnumExpr tcs e
 liftDerivedEnumExpr tcs e = do
@@ -148,13 +149,13 @@ liftDerivedEnumExpr tcs e = do
 -- nf vn >>= \vo -> e
 mkNFVar :: Var -> Var -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
 mkNFVar vn vo e = do
-  let vne = noLoc (HsVar EpAnnNotUsed (noLoc vn))
+  let vne = noLocA (HsVar noExtField (noLocA vn))
   let vnty = varType vn
   let voty = varType vo
   let vom = varMult vo
   s <- mkApp (mkNewNfTh (bindingType vnty)) voty [vne]
   ety <- getTypeOrPanic e -- ok
-  let l = noLoc (HsPar EpAnnNotUsed (mkLam (noLoc vo) (Scaled vom voty) e ety))
+  let l = noLocA (HsPar EpAnnNotUsed (mkLam (noLocA vo) (Scaled vom voty) e ety))
   mtc <- getMonadTycon
   mkBind s (mkTyConApp mtc [voty]) l ety
 
