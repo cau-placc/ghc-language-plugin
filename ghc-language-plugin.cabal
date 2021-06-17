@@ -32,7 +32,7 @@ common deps
   hs-source-dirs: src
   build-depends:
     base             ^>= 4.16.0.0,
-    ghc              ^>= 9.1.0,
+    ghc              ^>= 9.2.0,
     ghc-prim         -any,
     template-haskell -any,
     bytestring       -any,
