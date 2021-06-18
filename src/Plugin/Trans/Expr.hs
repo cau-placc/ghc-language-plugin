@@ -1,5 +1,6 @@
 {-# LANGUAGE TupleSections     #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE MagicHash         #-}
 {-# LANGUAGE TemplateHaskell   #-}
 {-|
 Module      : Plugin.Trans.Expr
@@ -48,6 +49,11 @@ import GHC.Core.InstEnv
 import GHC.Core.Class
 import GHC.Data.Bag
 import GHC.Parser.Annotation
+import GHC.Builtin.PrimOps
+import GHC.Builtin.Types.Prim
+import GHC.Builtin.Names
+import GHC.Iface.Env
+import GHC.Int
 
 import Plugin.Trans.Constr
 import Plugin.Trans.Record
@@ -59,8 +65,8 @@ import Plugin.Trans.Class
 import Plugin.Trans.FunWiredIn
 import Plugin.Trans.CreateSyntax
 import Plugin.Trans.DictInstFun
-import Plugin.Trans.Enum
 import Plugin.Trans.ConstraintSolver
+import Plugin.Effect.Classes (liftE, nf)
 
 -- | Transform the given binding with a monadic lifting to incorporate
 -- our nondeterminism as an effect.
@@ -96,11 +102,9 @@ liftMonadicBinding lcl _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
 
   let (_, monotype) = splitInvisPiTysN (length tvs + length c)
                         (instantiateWith (map mkTyVarTy tvs) ty)
-  (eqs', con) <- captureConstraints $ if isDerivedEnum eqs
-    then liftDerivedEnumEquation tcs eqs
-    else liftMonadicEquation
-            (if lcl then Nothing else Just (setVarType name monotype))
-            given' tcs eqs
+  (eqs', con) <- captureConstraints $ liftMonadicEquation
+                    (if lcl then Nothing else Just (setVarType name monotype))
+                    given' tcs eqs
   lvl <- getTcLevel
   env <- getLclEnv
   u <- getUniqueM
@@ -151,12 +155,8 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
 
   -- lift any original evidence that is exported. This is only relevant
   -- for standalone AbsBinds that bind any class parent dictionary
-  -- Also keep any original evidence as-is, if this is a
-  -- derived binding for enum
-  e' <- if any isDerivedEnumBind bs
-    then return e
-    else mapM (liftEvidence given' tcs)
-              (filter isExportedEv (concatMap flattenEv e))
+  e' <- mapM (liftEvidence given' tcs)
+             (filter isExportedEv (concatMap flattenEv e))
   vs'' <- mapM (\(v1,v2) -> (,)
                     <$> (setVarType v1 <$> liftTypeTcM tcs (varType v1))
                     <*> (setVarType v2 <$> liftTypeTcM tcs (varType v2))) vs'
@@ -240,12 +240,13 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
     -- Do not lift any system stuff, except instance fun definitions ($c) and
     -- class default methods ($dm).
     noSystemNameOrRec v = case occNameString (occName v) of
-      n | "$con2tag_" `isPrefixOf` n -> False
-      '$':'c':_     -> True
-      '$':'d':'m':_ -> True
-      '$':xs        -> not (any isAlpha xs) -- if none of the symbols is alpha,
-                                            -- then no built in, but an operator
-      _             -> not (isRecordSelector v)
+      n | "$con2tag_" `isPrefixOf` n -> True
+        | "$maxtag"   `isPrefixOf` n -> True
+        | "$tag2con"  `isPrefixOf` n -> True
+      '$':'c':_                      -> True
+      '$':'d':'m':_                  -> True
+      '$':xs@(_:_) | any isAlpha xs  -> False
+      _                              -> not (isRecordSelector v)
 
     flattenEv (TcEvBinds _) = []
     flattenEv (EvBinds ebs) = bagToList ebs
@@ -389,10 +390,17 @@ liftMonadicGRhs mv s given tcs bdyty (L a (GRHS b c body)) = do
 
 liftMonadicExpr :: [Ct] -> TyConMap -> LHsExpr GhcTc
                 -> TcM (LHsExpr GhcTc)
-liftMonadicExpr given tcs (L _ (HsVar _ (L _ v))) =
-  liftVarWithWrapper given tcs WpHole v
-liftMonadicExpr given tcs (L _ (XExpr (WrapExpr (HsWrap w (HsVar _ (L _ v)))))) =
-  liftVarWithWrapper given tcs w v
+liftMonadicExpr given tcs (L _ (HsVar _ (L _ v))) = do
+  dtt <- tcLookupId =<< lookupOrig gHC_PRIM ( mkVarOcc "dataToTag#" )
+  liftVarWithWrapper given tcs WpHole v (varUnique dtt)
+liftMonadicExpr given tcs (L _ (XExpr (WrapExpr (HsWrap w (HsVar _ (L _ v)))))) = do
+  dtt <- tcLookupId =<< lookupOrig gHC_PRIM ( mkVarOcc "dataToTag#" )
+  liftVarWithWrapper given tcs w v (varUnique dtt)
+liftMonadicExpr _    _    e@(L _ (HsLit _ (HsIntPrim _ _))) = do
+  conE <- liftQ [| I# |]
+  let conty = mkVisFunTyMany intPrimTy intTy
+  lit <- mkApp (mkNewAny conE) conty [e]
+  mkApp mkNewReturnTh intTy [noLocA (HsPar EpAnnNotUsed lit)]
 liftMonadicExpr _    tcs e@(L _ HsLit{}) = do
   ty <- getTypeOrPanic e -- ok
   lifted <- mkApp mkNewReturnTh ty [e]
@@ -412,21 +420,35 @@ liftMonadicExpr given tcs (L l (HsLam _ mg)) =
   liftLambda given tcs l Nothing mg
 liftMonadicExpr given tcs (L l (HsLamCase _ mg)) =
   liftLambda given tcs l Nothing mg
-liftMonadicExpr _ tcs (L _ (HsConLikeOut _ (RealDataCon c))) = do
-  c' <- liftIO (getLiftedCon c tcs)
-  let tys = dataConOrigArgTys c'
-  let stricts = dataConImplBangs c'
-  e <- fst <$> mkConLam tcs Nothing c' (zip tys stricts) []
-  return $ noLocA $ HsPar EpAnnNotUsed e
-liftMonadicExpr _ tcs (L _ (XExpr (WrapExpr (HsWrap w (HsConLikeOut _ (RealDataCon c)))))) = do
-  c' <- liftIO (getLiftedCon c tcs)
-  w' <- liftWrapperTcM True tcs w
-  let (apps, absts) = collectTyApps w'
-      realApps = drop (length absts) apps
-  let tys = conLikeInstOrigArgTys (RealDataCon c') realApps
-  let stricts = dataConImplBangs c'
-  e <- fst <$> mkConLam tcs (Just w') c' (zip tys stricts) []
-  return $ noLocA $ HsPar EpAnnNotUsed e
+liftMonadicExpr _ tcs (L _ (HsConLikeOut _ (RealDataCon c)))
+  | c == intDataCon = do
+    idExp <- liftQ [| return id |]
+    mtycon <- getMonadTycon
+    let ty = mkTyConApp mtycon [mkTyConApp mtycon [intTy] `mkVisFunTyMany`
+                                mkTyConApp mtycon [intTy]]
+    mkApp (mkNewAny idExp) ty []
+  | otherwise = do
+    c' <- liftIO (getLiftedCon c tcs)
+    let tys = dataConOrigArgTys c'
+    let stricts = dataConImplBangs c'
+    e <- fst <$> mkConLam tcs Nothing c' (zip tys stricts) []
+    return $ noLocA $ HsPar EpAnnNotUsed e
+liftMonadicExpr _ tcs (L _ (XExpr (WrapExpr (HsWrap w (HsConLikeOut _ (RealDataCon c))))))
+  | c == intDataCon = do
+    idExp <- liftQ [| return id |]
+    mtycon <- getMonadTycon
+    let ty = mkTyConApp mtycon [mkTyConApp mtycon [intTy] `mkVisFunTyMany`
+                                mkTyConApp mtycon [intTy]]
+    mkApp (mkNewAny idExp) ty []
+  | otherwise = do
+    c' <- liftIO (getLiftedCon c tcs)
+    w' <- liftWrapperTcM True tcs w
+    let (apps, absts) = collectTyApps w'
+        realApps = drop (length absts) apps
+    let tys = conLikeInstOrigArgTys (RealDataCon c') realApps
+    let stricts = dataConImplBangs c'
+    e <- fst <$> mkConLam tcs (Just w') c' (zip tys stricts) []
+    return $ noLocA $ HsPar EpAnnNotUsed e
 liftMonadicExpr given tcs (L _ (OpApp _ e1 op e2)) = do
   -- e1 `op` e2
   -- -> op >>= \f -> f e1 >>= \f -> f e2
@@ -732,9 +754,35 @@ liftLambda given tcs l _ mg = do
 -- We need to pay special attention to a lot of different kinds of variables.
 -- Most of those kinds can be treated sinilarly (see below), but for
 -- record selectors, we need a different approach.
-liftVarWithWrapper :: [Ct] -> TyConMap -> HsWrapper -> Var
+liftVarWithWrapper :: [Ct] -> TyConMap -> HsWrapper -> Var -> Unique
                    -> TcM (LHsExpr GhcTc)
-liftVarWithWrapper given tcs w v
+liftVarWithWrapper given tcs w v dttKey
+  | varUnique v == tagToEnumKey = do
+    let appliedType = head $ fst $ collectTyApps w
+    liftedType <- liftTypeTcM tcs appliedType
+    -- tagToEnum :: Int# -> tyApp in w
+    -- return (\flint -> flint >>= \(I# i) -> liftE (tagToEnum @w i)))
+    lam <- liftQ [| \ttenum -> return (\ndint -> ndint >>=
+                    (\(I# i) -> liftE (return (ttenum i)))) |]
+    mtycon <- getMonadTycon
+    let ty = (intPrimTy `mkVisFunTyMany` appliedType) `mkVisFunTyMany`
+             mkTyConApp mtycon [mkTyConApp mtycon [intTy] `mkVisFunTyMany`
+                                liftedType]
+    let arg = noLocA (XExpr (WrapExpr (HsWrap w (HsVar noExtField (noLocA v)))))
+    noLocA . HsPar EpAnnNotUsed <$> mkApp (mkNewAny lam) ty [arg]
+  | varUnique v == dttKey = do
+    let appliedType = head $ fst $ collectTyApps w
+    liftedType <- liftTypeTcM tcs appliedType
+    -- dataToTagKey :: tyApp in w -> Int#
+    -- return (\x -> nf x >>= \x' -> return (I# (dataToTagKey @w x')))
+    lam <- liftQ [| \dtt -> return (\x -> nf x >>=
+                    (\x' ->  return (I# (dtt x')))) |]
+    mtycon <- getMonadTycon
+    let ty = (appliedType `mkVisFunTyMany` intPrimTy) `mkVisFunTyMany`
+             mkTyConApp mtycon [liftedType `mkVisFunTyMany`
+                                mkTyConApp mtycon [intTy]]
+    let arg = noLocA (XExpr (WrapExpr (HsWrap w (HsVar noExtField (noLocA v)))))
+    noLocA . HsPar EpAnnNotUsed <$> mkApp (mkNewAny lam) ty [arg]
   | isRecordSelector v = do
     -- lift type
     mty <- mkTyConTy <$> getMonadTycon

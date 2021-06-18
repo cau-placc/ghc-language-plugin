@@ -1,5 +1,6 @@
 {-# LANGUAGE TupleSections     #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell   #-}
 {-|
 Module      : Plugin.Trans.PatternMatching
 Description : Lift pattern expressions
@@ -14,11 +15,15 @@ module Plugin.Trans.Pat (liftPattern) where
 import GHC.Hs.Pat
 import GHC.Hs.Extension
 import GHC.Hs.Type
+import GHC.Hs.Lit
+import GHC.Hs.Expr
 import GHC.Plugins hiding (substTy, extendTvSubst, getSrcSpanM)
 import GHC.Tc.Types
 import GHC.Tc.Types.Evidence
 import GHC.Tc.Utils.Monad
+import GHC.Types.SourceText
 import GHC.Core.ConLike
+import GHC.Core.TyCo.Rep
 import GHC.Utils.Error
 import GHC.Data.Bag
 import GHC.Parser.Annotation
@@ -26,6 +31,7 @@ import GHC.Parser.Annotation
 import Plugin.Trans.Type
 import Plugin.Trans.Constr
 import Plugin.Trans.Util
+import Plugin.Trans.CreateSyntax
 
 -- | Lift the types of each pattern and
 -- rename variables for sharing and newtypes.
@@ -119,6 +125,20 @@ liftPat' _ p@(SplicePat _ _) = do
     "Spliced patterns are not supported by the plugin")
   failIfErrsM
   return (p, [])
+liftPat' _   (LitPat _ (HsIntPrim _ i)) = do
+  neg <- liftQ [| negate :: Int -> Int |]
+  negTy <- unLoc <$> mkApp (mkNewAny neg) (intTy `mkVisFunTyMany` intTy) []
+  let negSyn | i < 0    = Just (SyntaxExprTc negTy [WpHole] WpHole)
+             |otherwise = Nothing
+  eq <- liftQ [| (==) :: Int -> Int -> Bool |]
+  let eqTy = mkVisFunTys [Scaled Many intTy, Scaled Many intTy] boolTy
+  eqTyped <- unLoc <$> mkApp (mkNewAny eq) eqTy []
+  let eqSyn = SyntaxExprTc eqTyped [WpHole, WpHole] WpHole
+  witness <- liftQ [| fromInteger i :: Int |]
+  witnessTy <- unLoc <$> mkApp (mkNewAny witness) intTy []
+  let integralLit = HsIntegral (IL (SourceText (show (abs i))) False (abs i))
+  let overLit = OverLit (OverLitTc False intTy) integralLit witnessTy
+  return (NPat intTy (noLoc overLit) negSyn eqSyn, [])
 liftPat' _   p@(LitPat _ _)  = return (p, [])
 liftPat' _   p@NPat {}       = return (p, [])
 liftPat' _   p@(NPlusKPat _ _ _ _ _ _) = do

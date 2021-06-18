@@ -215,6 +215,8 @@ preprocessExpr tcs (L l (XExpr (WrapExpr (HsWrap w e)))) = do
     (XExpr (WrapExpr (HsWrap w' e''))) ->
          return (L l (XExpr (WrapExpr (HsWrap (w <.> w') e''))))
     _ -> return (L l (XExpr (WrapExpr (HsWrap w e'))))
+preprocessExpr tcs (L l (XExpr (ExpansionExpr (HsExpanded _ b)))) =
+  preprocessExpr tcs (L l b)
 preprocessExpr _ (L _ (HsUnboundVar _ _)) = undefined
 preprocessExpr _ (L _ (HsRecFld _ _)) = undefined
 preprocessExpr _ (L _ (HsOverLabel _ _)) = undefined
@@ -226,7 +228,6 @@ preprocessExpr _ e@(L _ (HsIPVar _ _)) = do
 preprocessExpr _ (L _ (HsRnBracketOut _ _ _)) = undefined
 preprocessExpr _ (L _ (HsGetField _ _ _)) = undefined -- TODO
 preprocessExpr _ (L _ (HsProjection _ _)) = undefined -- TODO
-preprocessExpr _ (L _ (XExpr (ExpansionExpr _))) = undefined
 
 preprocessArithExpr :: TyConMap -> ArithSeqInfo GhcTc
                     -> TcM (ArithSeqInfo GhcTc)

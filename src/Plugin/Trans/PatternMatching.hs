@@ -547,6 +547,9 @@ mkVarMatch n vs ty err eqs = do
     then mkSeq v e
     else return e
 
+-- HACK: since Int# is "invisible" to the lifting
+-- and any I# constructor for Int is removed,
+-- this function has to see through any I# constructor
 bindVarAlt :: Var -> (LPat GhcTc, LMatch GhcTc (LHsExpr GhcTc))
            -> TcM (LMatch GhcTc (LHsExpr GhcTc))
 bindVarAlt v (L _ (VarPat _ (L _ v') ), m) = return (substitute v v' m)
@@ -556,6 +559,11 @@ bindVarAlt v (L _ (LazyPat _ p       ), m) = bindVarAlt v (p, m)
 bindVarAlt v (L _ (ParPat _ p        ), m) = bindVarAlt v (p, m)
 bindVarAlt v (L _ (SigPat _ p _      ), m) = bindVarAlt v (p, m)
 bindVarAlt v (L _ (XPat (CoPat _ p _)), m) = bindVarAlt v (noLocA p, m)
+bindVarAlt v (L _ p@ConPat {} , m)
+  | L _ (RealDataCon c) <- pat_con p
+  , c == intDataCon
+  , [arg] <- hsConPatArgs (pat_args p) =
+      bindVarAlt v (arg, m)
 bindVarAlt _ (_,m) = return m
 
 mkSeq :: Var -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
@@ -925,7 +933,12 @@ isVarPat (L _ (BangPat _ p  ))      = isVarPat p
 isVarPat (L _ (ListPat _ _  ))      = False
 isVarPat (L _ TuplePat {}    )      = False
 isVarPat (L _ SumPat {}      )      = False
-isVarPat (L _ ConPat {}      )      = False
+isVarPat (L _ p@ConPat {}    )
+  | L _ (RealDataCon c) <- pat_con p
+  , c == intDataCon
+  , [arg] <- hsConPatArgs (pat_args p)
+                               = isVarPat arg
+  | otherwise                  = False
 isVarPat (L _ ViewPat {}     )      = False
 isVarPat (L _ (SplicePat _ _))      = False
 isVarPat (L _ (LitPat _ _   ))      = False
