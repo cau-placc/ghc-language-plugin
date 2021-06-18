@@ -18,6 +18,7 @@ import GHC.Tc.Types
 import GHC.Core.Class
 import GHC.Core.TyCo.Rep
 import GHC.Core.InstEnv
+import GHC.Core.Unify
 
 import Plugin.Trans.Type
 import Plugin.Trans.Class
@@ -30,14 +31,15 @@ liftInstance tcs (ClsInst _ _ origDfn tvs origCls origTys origDf ov orp) = do
 
   -- Update type constructors
   tys <- liftIO (mapM (replaceTyconTy tcs) origTys)
-  let tyn = map (fmap (tyConName . fst) . splitTyConApp_maybe) tys
+  let tyc = map (fmap fst . splitTyConApp_maybe) tys
+  let tyn = map mkRoughMatchTc tyc
 
   -- Include any shareable constraints that are required by the type variables
   -- bound in the instance head.
 
   -- Split the lifted type into invisible pi-types (forall, constraints) #
   -- and the rest.
-  (pis, inner) <- splitPiTysInvisible
+  (pis, inner) <- splitInvisPiTys
     <$> liftIO (replaceTyconTy tcs (varType origDf))
   -- Get named binders (e.g., foralls).
   let named = filter isNamedBinder pis
@@ -59,3 +61,7 @@ liftInstance tcs (ClsInst _ _ origDfn tvs origCls origTys origDf ov orp) = do
   let df = lazySetIdInfo dfLifted info'
 
   return (ClsInst (className cls) tyn origDfn tvs cls tys df ov orp)
+  where
+    mkRoughMatchTc (Just tc)
+      | isGenerativeTyCon tc Nominal = KnownTc (tyConName tc)
+    mkRoughMatchTc _                 = OtherTc

@@ -23,6 +23,7 @@ import GHC.Plugins
 import GHC.Hs
 import GHC.Types.TypeEnv
 import GHC.Types.SourceText
+import GHC.Types.Error
 import GHC.Tc.Types
 import GHC.Tc.Solver
 import GHC.Tc.Types.Evidence
@@ -36,7 +37,6 @@ import GHC.Tc.Utils.Zonk
 import GHC.Tc.Utils.TcMType
 import GHC.Unit.Module.Graph
 import GHC.HsToCore
-import GHC.Utils.Error
 import GHC.Core.InstEnv
 import GHC.Core.TyCo.Rep
 import GHC.Data.Bag
@@ -56,7 +56,6 @@ import Plugin.Trans.Preprocess
 import Plugin.Trans.Class
 import Plugin.Trans.Rule
 import Plugin.Trans.Constr
-import Plugin.Trans.Warn
 import Plugin.Effect.Annotation
 
 -- | This GHC plugin turns GHC into a "compiler" for
@@ -68,26 +67,30 @@ languagePlugin = defaultPlugin
   , typeCheckResultAction = const . liftMonadPlugin . parseDumpOpts
   , pluginRecompile       = const (return NoForceRecompile)
   , tcPlugin              = const (Just conPlugin)
-  , dynflagsPlugin        = const addNoImpPreludeOpt
+  , driverPlugin          = const addNoImpPreludeOpt
   }
   where
-    addNoImpPreludeOpt :: DynFlags -> IO DynFlags
-    addNoImpPreludeOpt dflags
+    addNoImpPreludeOpt :: HscEnv  -> IO HscEnv
+    addNoImpPreludeOpt hsc
       | ImplicitPrelude `xopt` dflags =
-        return (dflags `xopt_unset` ImplicitPrelude)
+        return (hsc { hsc_dflags = dflags `xopt_unset` ImplicitPrelude })
       | otherwise =
-        return (dflags { pluginModNameOpts = implicitOpt
-                                           : pluginModNameOpts dflags })
+        return (hsc { hsc_dflags = dflags
+                        { pluginModNameOpts = implicitOpt
+                                            : pluginModNameOpts dflags }
+                    })
+      where
+        dflags = hsc_dflags hsc
 
     implicitOpt = ( mkModuleName "Plugin.LanguagePlugin.PreludeImplicit"
                   , "NoImplicitPrelude")
 
     addPreludeImport :: HsParsedModule -> Hsc HsParsedModule
     addPreludeImport p@(HsParsedModule (L l
-                          m@HsModule { hsmodImports = im }) _ _) = do
+                          m@HsModule { hsmodImports = im }) _) = do
       flgs <- getDynFlags
       prel <- mkModuleName <$> lookupConfig preludeModConfigStr
-      let prelIm = noLoc (ImportDecl noExtField NoSourceText (noLoc prel)
+      let prelIm = noLocA (ImportDecl EpAnnNotUsed NoSourceText (noLoc prel)
                       Nothing NotBoot False NotQualified True Nothing Nothing)
       if implicitOpt `elem` (pluginModNameOpts flgs)
            || any (isCurryPrelImport prel) im
@@ -127,9 +130,8 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
   flags <- getDynFlags
   case mgLookupModule (hsc_mod_graph hsc) (tcg_mod env) of
     Just modSumm -> setDynFlags flags' $ do
-      ((w,e), _) <- liftIO $ deSugar hsc' (ms_location modSumm) env'
-      let msgs = (mapBag addNondetWarn w, e)
-      addMessages msgs
+      (ws, _) <- liftIO $ deSugar hsc' (ms_location modSumm) env'
+      addMessages ws
       where
         flags' = gopt_unset flags Opt_DoCoreLinting
         hsc' = hsc { hsc_dflags = flags' }
@@ -164,13 +166,13 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
     Left e | Just (ClassLiftingException cls reason) <- fromException e
             -> do
               let l = srcLocSpan (nameSrcLoc (getName cls))
-              reportError (mkErrMsg flags l neverQualify (text reason))
+              reportError (mkMsgEnvelope l neverQualify (text reason))
               failIfErrsM
               return ([], [])
            | Just (RecordLiftingException _ p reason) <- fromException e
             -> do
               let l = srcLocSpan (nameSrcLoc (getName p))
-              reportError (mkErrMsg flags l neverQualify (text reason))
+              reportError (mkMsgEnvelope l neverQualify (text reason))
               failIfErrsM
               return ([], [])
            | otherwise
@@ -199,7 +201,7 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
   let anns = tcg_anns env
   let aenv' = extendAnnEnvList aenv [a]
   let anns' = a : anns
-  let tenv = plusTypeEnv (tcg_type_env env) (typeEnvFromEntities [] tcg_tcs' [])
+  let tenv = plusTypeEnv (tcg_type_env env) (typeEnvFromEntities [] tcg_tcs' [] [])
   writeTcRef (tcg_type_env_var env) tenv
   setGblEnv (env { tcg_tcs        = tcg_tcs'
                  , tcg_type_env   = tenv
@@ -213,7 +215,7 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
     -- (enable some language extentions and disable all warnings)
     setDynFlags (flip (foldl wopt_unset) [toEnum 0 ..] $
                  flip (foldl xopt_set) requiredExtensions
-                 (flags { cachedPlugins = [], staticPlugins = [] })) $ do
+                 (flags { pluginModNames = [] })) $ do
 
       -- gather neccessary derivings
       derivs <- mkDerivings tycons
@@ -237,8 +239,7 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
         -- Check if deriving generated an error.
         errsVar <- getErrsVar
         msgs <- readTcRef errsVar
-        dflags <- getDynFlags
-        if errorsFound dflags msgs
+        if errorsFound msgs
           -- Add error message if deriving failed and
           -- suppress advanced infos, unless a debug option is set.
           then if DumpDerivingErrs `elem` d_phases dopts
@@ -247,7 +248,7 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
               failIfErrsM
               return env
             else do
-              writeTcRef errsVar (emptyBag, emptyBag)
+              writeTcRef errsVar emptyMessages
               failWithTc $ "The Curry-Plugin failed to lift the" <+>
                            "definitions in this module." $+$
                            "Did you use any unsupported language extension?" $+$
@@ -313,7 +314,7 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
   where
     liftBindings :: TyConMap -> [ClsInst] -> [LHsBindLR GhcTc GhcTc]
                  -> TcM [LHsBindLR GhcTc GhcTc]
-    liftBindings y z = fmap (map noLoc) .
+    liftBindings y z = fmap (map noLocA) .
       concatMapM (fmap fst . liftMonadicBinding False False [] y z . unLoc)
 
     collectBind (ValBinds _ b s)              = ([(Recursive, b)], s)
@@ -331,10 +332,10 @@ createRdrEnv = mkGlobalRdrEnv . concatMap createEntries
     createEntries tc = p : concatMap conEntries (tyConDataCons tc)
       where
         n = tyConName tc
-        p = GRE n NoParent True []
-        conEntries c = GRE (dataConName c) (ParentIs n) True [] :
+        p = GRE (NormalGreName n) NoParent True []
+        conEntries c = GRE (NormalGreName (dataConName c)) (ParentIs n) True [] :
                        map fieldEntry (dataConFieldLabels c)
-        fieldEntry f = GRE (flSelector f) (FldParent n (Just (flLabel f)))
+        fieldEntry f = GRE (FieldGreName f) (ParentIs n)
                          True []
 
 -- | Insert the given list of type constructors into the TyConMap.

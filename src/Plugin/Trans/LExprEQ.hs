@@ -43,7 +43,7 @@ viewLExprEq (e1Orig,_) (e2Orig,_) = lexp e1Orig e2Orig
     -- the instance for IPName derives using the id, so this works if the
     -- above does
     exp (HsIPVar _ i) (HsIPVar _ i') = i == i'
-    exp (HsOverLabel _ l x) (HsOverLabel _ l' x') = l == l' && x == x'
+    exp (HsOverLabel l x) (HsOverLabel l' x') = l == l' && x == x'
     exp (HsOverLit _ l) (HsOverLit _ l') =
         -- Overloaded lits are equal if they have the same type
         -- and the data is the same.
@@ -89,8 +89,8 @@ viewLExprEq (e1Orig,_) (e2Orig,_) = lexp e1Orig e2Orig
     syn_exp _              _              = False
 
     ---------
-    tup_arg (L _ (Present _ e1)) (L _ (Present _ e2)) = lexp e1 e2
-    tup_arg (L _ (Missing (Scaled _ t1)))   (L _ (Missing (Scaled _ t2)))   = eqType t1 t2
+    tup_arg (Present _ e1)          (Present _ e2)          = lexp e1 e2
+    tup_arg (Missing (Scaled _ t1)) (Missing (Scaled _ t2)) = eqType t1 t2
     tup_arg _ _ = False
 
     ---------

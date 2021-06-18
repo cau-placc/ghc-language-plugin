@@ -19,6 +19,7 @@ import GHC.Tc.Types
 import GHC.Tc.Utils.Env
 import GHC.Iface.Env
 import GHC.Builtin.Names
+import GHC.Builtin.Types.Prim
 
 import Plugin.Trans.Type
 import Plugin.Trans.Config
@@ -36,13 +37,21 @@ loadDefaultTyConMap = do
   -- Load any other names that are not in 'PrelNames'
   others <- loadAdditional
   -- Create initial TyConMap
+  -- The TyConMap w.r.t. Int# is complicated:
+  -- We want the direction Int# -> Int, but not Int -> Int#
+  -- Thus, we add it here manually
   let allLoaded  = others ++ loaded
   let allSwap    = map swap allLoaded
+  let allLoadedWithIntPrim = (intPrimTyCon, intTyCon) : allLoaded
+  let allSwapWithoutIntPrim = (intTyCon, intTyCon) : allSwap
   let (old, new) = unzip allLoaded
-  liftIO (newIORef (listToUFM allLoaded,
-                    listToUFM allSwap,
-                    mkUniqSet old,
-                    mkUniqSet new))
+  let oldWithIntPrim = intPrimTyCon : old
+  let newWithoutIntPrim = intTyCon : new
+
+  liftIO (newIORef (listToUFM allLoadedWithIntPrim,
+                    listToUFM allSwapWithoutIntPrim,
+                    mkUniqSet oldWithIntPrim,
+                    mkUniqSet newWithoutIntPrim))
 
 -- | Get the lifted and unlifted TyCons
 -- for the given original and replacement name.
@@ -89,7 +98,7 @@ loadAdditional = do
   newFR <- getTyCon builtInModule ":-->"
 
   return [ (altH, newH), (altR, newR), (altI, newI), (altA, newA)
-         , (altS, newS), (altF, newF), (altFR, newFR)]
+         , (altS, newS), (altF, newF), (altFR, newFR) ]
 
 -- | A list of GHC's built-in type constructor names and the names of
 -- their plugin replacement version.

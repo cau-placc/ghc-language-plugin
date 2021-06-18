@@ -10,6 +10,7 @@ This module contains various utility functions.
 module Plugin.Trans.Util where
 
 import Language.Haskell.TH            ( Exp, Q, runQ )
+import Language.Haskell.Syntax.Extension
 import Control.Monad.IO.Class
 import Data.Tuple.Extra
 import Data.List
@@ -31,6 +32,7 @@ import GHC.Unit.Finder
 import GHC.Rename.Expr
 import GHC.Data.Bag
 import GHC.Types.SourceText
+import GHC.Parser.Annotation
 
 -- | Lift a computation from the 'Q' monad to the type checker monad.
 liftQ :: Q a -> TcM a
@@ -72,7 +74,7 @@ mkNewAny ex ty = do
 
 mkNewPs :: RdrName -> Type -> TcM (LHsExpr GhcTc)
 mkNewPs nm ty = do
-  let ps_expr = noLoc (HsVar noExtField (noLoc nm))
+  let ps_expr = noLocA (HsVar noExtField (noLocA nm))
   fmap fst (rnLExpr ps_expr) >>= flip tcCheckMonoExpr ty
 
 -- | Get the type of the given expression or return Nothing
@@ -149,7 +151,8 @@ printBndrUnsafe str a = do
 
 -- |Apply a monadic action to all elements in a bag with source location
 -- annotations.
-liftBag :: Monad m => (a -> m b) -> Bag (Located a) -> m (Bag (Located b))
+liftBag :: Monad m => (a -> m b)
+        -> Bag (GenLocated l a) -> m (Bag (GenLocated l b))
 liftBag = mapBagM . liftL
 
 -- | Temporarily set the given global compiler flags for the excecution of the

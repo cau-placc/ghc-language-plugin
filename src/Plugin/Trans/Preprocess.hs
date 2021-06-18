@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeFamilies #-} -- TODO
 {-|
 Module      : Plugin.Trans.Preprocess
 Description : Simplify functions to prepare for lifting
@@ -23,6 +24,7 @@ import GHC.Tc.Types
 import GHC.Tc.Types.Evidence
 import GHC.Tc.Utils.Monad
 import GHC.Utils.Error
+import GHC.Parser.Annotation
 
 import Plugin.Trans.Util
 import Plugin.Trans.Type
@@ -88,7 +90,7 @@ preprocessExpr _ e@(L _ HsLit{}) =
   return e
 preprocessExpr tcs (L l (HsOverLit x lit)) =
   (\e -> L l (HsOverLit x (lit { ol_witness = unLoc e })))
-    <$> preprocessExpr tcs (noLoc (ol_witness lit))
+    <$> preprocessExpr tcs (noLocA (ol_witness lit))
 preprocessExpr tcs (L l (HsLam x mg)) = do
   mg' <- preprocessEquations tcs mg
   return (L l (HsLam x mg'))
@@ -130,9 +132,8 @@ preprocessExpr tcs (L l (SectionR x e1 e2)) = do
 preprocessExpr tcs (L l (ExplicitTuple x args b)) = do
   args' <- mapM (preprocessTupleArg tcs) args
   return (L l (ExplicitTuple x args' b))
-preprocessExpr _ e@(L l ExplicitSum {}) = do
-  flags <- getDynFlags
-  reportError (mkErrMsg flags l neverQualify
+preprocessExpr _ e@(L _ ExplicitSum {}) = do
+  reportError (mkMsgEnvelope (getLocA e) neverQualify
     "Unboxed sum types are not supported by the plugin")
   failIfErrsM
   return e
@@ -148,65 +149,55 @@ preprocessExpr tcs (L l (HsIf x e1 e2 e3)) = do
 preprocessExpr _ e@(L _ (HsMultiIf _ _)) =
   panicAny "Multi-way if should have been desugared before lifting" e
 preprocessExpr tcs (L l (HsLet x bs e)) = do
-  bs' <- preprocessLocalBinds tcs bs
+  bs' <- preprocessLocalBinds tcs (noLoc bs)
   e' <- preprocessExpr tcs e
-  return (L l (HsLet x bs' e'))
+  return (L l (HsLet x (unLoc bs') e'))
 preprocessExpr tcs (L l1 (HsDo x ctxt (L l2 stmts))) = do
   stmts' <- preprocessStmts tcs stmts
   return (L l1 (HsDo x ctxt (L l2 stmts')))
-preprocessExpr tcs (L l (ExplicitList x Nothing es)) = do
+preprocessExpr tcs (L l (ExplicitList ty es)) = do
   es' <- mapM (preprocessExpr tcs) es
-  return (L l (ExplicitList x Nothing es'))
-preprocessExpr _ e@(L l (ExplicitList _ (Just _) _)) = do
-  flags <- getDynFlags
-  reportError (mkErrMsg flags l neverQualify
-    "Overloaded lists are not supported by the plugin")
-  failIfErrsM
-  return e
+  return (L l (ExplicitList ty es'))
 preprocessExpr tcs (L l (RecordCon x cn (HsRecFields flds dd))) = do
   flds' <- mapM (preprocessField tcs) flds
   return (L l (RecordCon x cn (HsRecFields flds' dd)))
 preprocessExpr tcs (L l (RecordUpd x e flds)) = do
   e' <- preprocessExpr tcs e
-  flds' <- mapM (preprocessField tcs) flds
+  flds' <- either (fmap Left . mapM (preprocessField tcs))
+                  (fmap Right . mapM (preprocessField tcs)) flds
   return (L l (RecordUpd x e' flds'))
 preprocessExpr tcs (L l (ExprWithTySig x e ty)) = do
   e' <- preprocessExpr tcs e
   return (L l (ExprWithTySig x e' ty))
 preprocessExpr tcs (L l (ArithSeq x Nothing i)) = do
-  x' <- unLoc <$> preprocessExpr tcs (noLoc x)
+  x' <- unLoc <$> preprocessExpr tcs (noLocA x)
   i' <- preprocessArithExpr tcs i
   return (L l (ArithSeq x' Nothing i'))
-preprocessExpr _ e@(L l (ArithSeq _ (Just _) _)) = do
-  flags <- getDynFlags
-  reportError (mkErrMsg flags l neverQualify
+preprocessExpr _ e@(L _ (ArithSeq _ (Just _) _)) = do
+  reportError (mkMsgEnvelope (getLocA e) neverQualify
     "Overloaded lists are not supported by the plugin")
   failIfErrsM
   return e
 preprocessExpr tcs (L l (HsPragE x (HsPragSCC a b c) e)) = do
   e' <- preprocessExpr tcs e
   return (L l (HsPragE x (HsPragSCC a b c) e'))
-preprocessExpr _ e@(L l (HsBracket _ _)) = do
-  flags <- getDynFlags
-  reportError (mkErrMsg flags l neverQualify
+preprocessExpr _ e@(L _ (HsBracket _ _)) = do
+  reportError (mkMsgEnvelope (getLocA e) neverQualify
     "Template Haskell and Quotation are not supported by the plugin")
   failIfErrsM
   return e
-preprocessExpr _ e@(L l (HsSpliceE _ _)) =  do
-  flags <- getDynFlags
-  reportError (mkErrMsg flags l neverQualify
+preprocessExpr _ e@(L _ (HsSpliceE _ _)) =  do
+  reportError (mkMsgEnvelope (getLocA e) neverQualify
     "Template Haskell and Quotation are not supported by the plugin")
   failIfErrsM
   return e
-preprocessExpr _ e@(L l (HsTcBracketOut _ _ _ _)) = do
-  flags <- getDynFlags
-  reportError (mkErrMsg flags l neverQualify
+preprocessExpr _ e@(L _ (HsTcBracketOut _ _ _ _)) = do
+  reportError (mkMsgEnvelope (getLocA e) neverQualify
     "Template Haskell and Quotation are not supported by the plugin")
   failIfErrsM
   return e
-preprocessExpr _ e@(L l (HsProc _ _ _)) = do
-  flags <- getDynFlags
-  reportError (mkErrMsg flags l neverQualify
+preprocessExpr _ e@(L _ (HsProc _ _ _)) = do
+  reportError (mkMsgEnvelope (getLocA e) neverQualify
     "Arrow notation is not supported by the plugin")
   failIfErrsM
   return e
@@ -219,22 +210,24 @@ preprocessExpr tcs (L l (HsBinTick a b c e)) = do
   e' <- preprocessExpr tcs e
   return (L l (HsBinTick a b c e'))
 preprocessExpr tcs (L l (XExpr (WrapExpr (HsWrap w e)))) = do
-  e' <- unLoc <$> preprocessExpr tcs (noLoc e)
+  e' <- unLoc <$> preprocessExpr tcs (noLocA e)
   case e' of
     (XExpr (WrapExpr (HsWrap w' e''))) ->
          return (L l (XExpr (WrapExpr (HsWrap (w <.> w') e''))))
     _ -> return (L l (XExpr (WrapExpr (HsWrap w e'))))
+preprocessExpr tcs (L l (XExpr (ExpansionExpr (HsExpanded _ b)))) =
+  preprocessExpr tcs (L l b)
 preprocessExpr _ (L _ (HsUnboundVar _ _)) = undefined
 preprocessExpr _ (L _ (HsRecFld _ _)) = undefined
-preprocessExpr _ (L _ (HsOverLabel _ _ _)) = undefined
-preprocessExpr _ e@(L l (HsIPVar _ _)) = do
-  flags <- getDynFlags
-  reportError (mkErrMsg flags l neverQualify
+preprocessExpr _ (L _ (HsOverLabel _ _)) = undefined
+preprocessExpr _ e@(L _ (HsIPVar _ _)) = do
+  reportError (mkMsgEnvelope (getLocA e) neverQualify
     "Implicit parameters are not supported by the plugin")
   failIfErrsM
   return e
 preprocessExpr _ (L _ (HsRnBracketOut _ _ _)) = undefined
-preprocessExpr _ (L _ (XExpr (ExpansionExpr _))) = undefined
+preprocessExpr _ (L _ (HsGetField _ _ _)) = undefined -- TODO
+preprocessExpr _ (L _ (HsProjection _ _)) = undefined -- TODO
 
 preprocessArithExpr :: TyConMap -> ArithSeqInfo GhcTc
                     -> TcM (ArithSeqInfo GhcTc)
@@ -269,9 +262,8 @@ preprocessStmts tcs (s:ss) = do
       b' <- preprocessSynExpr tcs b
       f'  <- maybe (return Nothing) (fmap Just . preprocessSynExpr tcs) f
       return (L l (BindStmt (XBindStmtTc b' m ty f') p e'))
-    preprocessStmt (L l (ApplicativeStmt _ _ _)) = do
-      flags <- getDynFlags
-      reportError (mkErrMsg flags l neverQualify
+    preprocessStmt (L _ (ApplicativeStmt _ _ _)) = do
+      reportError (mkMsgEnvelope (getLocA s) neverQualify
         "Applicative do-notation is not supported by the plugin")
       failIfErrsM
       return s
@@ -281,52 +273,48 @@ preprocessStmts tcs (s:ss) = do
       g'  <- preprocessSynExpr tcs g
       return (L l (BodyStmt x e' sq' g'))
     preprocessStmt (L l (LetStmt x bs)) = do
-      bs' <- preprocessLocalBinds tcs bs
-      return (L l (LetStmt x bs'))
-    preprocessStmt (L l (ParStmt _ _ _ _)) =  do
-      flags <- getDynFlags
-      reportError (mkErrMsg flags l neverQualify
+      bs' <- preprocessLocalBinds tcs (noLoc bs)
+      return (L l (LetStmt x (unLoc bs')))
+    preprocessStmt (L _ (ParStmt _ _ _ _)) =  do
+      reportError (mkMsgEnvelope (getLocA s) neverQualify
         "Parallel list comprehensions are not supported by the plugin")
       failIfErrsM
       return s
-    preprocessStmt (L l (TransStmt _ _ _ _ _ _ _ _ _)) = do
-      flags <- getDynFlags
-      reportError (mkErrMsg flags l neverQualify
+    preprocessStmt (L _ (TransStmt _ _ _ _ _ _ _ _ _)) = do
+      reportError (mkMsgEnvelope (getLocA s) neverQualify
         "Transformative list comprehensions are not supported by the plugin")
       failIfErrsM
       return s
-    preprocessStmt (L l (RecStmt _ _ _ _ _ _ _)) =  do
-      flags <- getDynFlags
-      reportError (mkErrMsg flags l neverQualify
+    preprocessStmt (L _ (RecStmt _ _ _ _ _ _ _)) =  do
+      reportError (mkMsgEnvelope (getLocA s) neverQualify
         "Recursive do-notation is not supported by the plugin")
       failIfErrsM
       return s
 
 preprocessSynExpr :: TyConMap -> SyntaxExprTc -> TcM (SyntaxExpr GhcTc)
 preprocessSynExpr tcs (SyntaxExprTc e ws w) = do
-  e' <- unLoc <$> preprocessExpr tcs (noLoc e)
+  e' <- unLoc <$> preprocessExpr tcs (noLocA e)
   return (SyntaxExprTc e' ws w)
 preprocessSynExpr _ NoSyntaxExprTc = return NoSyntaxExprTc
 
-preprocessField :: TyConMap -> Located (HsRecField' a (LHsExpr GhcTc))
-                -> TcM (Located (HsRecField' a (LHsExpr GhcTc)))
-preprocessField tcs (L l (HsRecField v e p)) = do
+preprocessField :: TyConMap -> GenLocated l (HsRecField' a (LHsExpr GhcTc))
+                -> TcM (GenLocated l (HsRecField' a (LHsExpr GhcTc)))
+preprocessField tcs (L l (HsRecField x v e p)) = do
   e' <- preprocessExpr tcs e
-  return (L l (HsRecField v e' p))
+  return (L l (HsRecField x v e' p))
 
-preprocessTupleArg :: TyConMap -> LHsTupArg GhcTc -> TcM (LHsTupArg GhcTc)
-preprocessTupleArg tcs (L l (Present x e)) =
-  L l . Present x <$> preprocessExpr tcs e
+preprocessTupleArg :: TyConMap -> HsTupArg GhcTc -> TcM (HsTupArg GhcTc)
+preprocessTupleArg tcs (Present x e) =
+  Present x <$> preprocessExpr tcs e
 preprocessTupleArg _ x = return x
 
-preprocessLocalBinds :: TyConMap -> LHsLocalBinds GhcTc
-                     -> TcM (LHsLocalBinds GhcTc)
+preprocessLocalBinds :: TyConMap -> GenLocated l (HsLocalBinds GhcTc)
+                     -> TcM (GenLocated l (HsLocalBinds GhcTc))
 preprocessLocalBinds tcs (L l (HsValBinds x b)) = do
   b' <- preprocessValBinds tcs b
   return (L l (HsValBinds x b'))
-preprocessLocalBinds _ bs@(L l (HsIPBinds _ _)) =  do
-  flags <- getDynFlags
-  reportError (mkErrMsg flags l neverQualify
+preprocessLocalBinds _ bs@(L _ (HsIPBinds _ _)) =  do
+  reportError (mkMsgEnvelope noSrcSpan neverQualify
     "Implicit parameters are not supported by the plugin")
   failIfErrsM
   return bs

@@ -9,6 +9,7 @@
 {-# LANGUAGE QuantifiedConstraints  #-}
 {-# LANGUAGE UndecidableInstances   #-}
 {-# LANGUAGE ConstraintKinds        #-}
+{-# LANGUAGE MagicHash              #-}
 {-# OPTIONS_GHC -Wno-orphans        #-}
 {-# OPTIONS_GHC -Wno-unused-foralls #-}
 {-|
@@ -30,6 +31,8 @@ import           Prelude                     ( ($), Int, Integer, Char
                                              , Float, Double
                                              , Bool(..), Ordering(..) )
 import qualified GHC.Real               as P
+import qualified GHC.Prim               as P
+import qualified GHC.Int                as P
 import           Unsafe.Coerce
 import           GHC.Types (RuntimeRep)
 
@@ -197,6 +200,16 @@ coerce = P.return $ \a -> a P.>>= \a' -> P.return (unsafeCoerce a')
 -- | Lifted equality test for strings
 eqString :: Nondet (StringND --> StringND --> Bool)
 eqString = (==)
+
+(<#) :: Nondet (Int --> Int --> Int)
+(<#) = P.return $ \a -> P.return $ \b ->
+  a P.>>= \ (P.I# a') -> b P.>>= \ (P.I# b') ->
+   P.return (P.I# (a' P.<# b'))
+
+(==#) :: Nondet (Int --> Int --> Int)
+(==#) = P.return $ \a -> P.return $ \b ->
+  a P.>>= \ (P.I# a') -> b P.>>= \ (P.I# b') ->
+  P.return (P.I# (a' P.==# b'))
 
 -- |  Lifted composition operator for functions
 (.) :: (ShareableN a, ShareableN b, ShareableN c)

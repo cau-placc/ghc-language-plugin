@@ -12,6 +12,8 @@ module Plugin.Trans.Record (liftRecordSel) where
 
 import Data.Tuple
 import Data.Syb
+import Language.Haskell.Syntax.Extension
+import GHC.Parser.Annotation
 
 import GHC.Plugins
 import GHC.Hs.Binds
@@ -56,7 +58,7 @@ liftRecordSel tcs (AbsBinds _ tvs evs ex evb bs sig)
       mg' <- liftRecSelMG tcs m' mg
 
       -- Create the correct export entries and stuff.
-      let selB = listToBag [L l (FunBind wrap (noLoc m') mg' ticks)]
+      let selB = listToBag [L l (FunBind wrap (noLocA m') mg' ticks)]
       let ex' = ABE noExtField p' m' w s
       let b' = AbsBinds noExtField tvs evs [ex'] evb selB sig
 
@@ -78,7 +80,7 @@ liftRecSelMG tcs f (MG (MatchGroupTc args res) (L _ alts) orig)
     -- Lift the result type of this match group accordingly.
     res' <- liftTypeTcM tcs res
     alts' <- mapM (liftRecSelAlt tcs f) alts
-    return (MG (MatchGroupTc args' res') (noLoc alts') orig)
+    return (MG (MatchGroupTc args' res') (noLocA alts') orig)
 
 -- | Lift an alternative of a record selector.
 liftRecSelAlt :: TyConMap -> Var -> LMatch GhcTc (LHsExpr GhcTc)
@@ -86,12 +88,12 @@ liftRecSelAlt :: TyConMap -> Var -> LMatch GhcTc (LHsExpr GhcTc)
 liftRecSelAlt tcs f (L _ (Match _ ctxt [pat] rhs)) = do
   -- Lift any left-side pattern.
   (pat', vs) <- liftPattern tcs pat
-  let ctxt' = ctxt { mc_fun = noLoc (varName f) }
+  let ctxt' = ctxt { mc_fun = noLocA (varName f) }
   -- Replace any variables on the right side.
   -- Thankfully, a record selector is always just a single variable on the rhs.
   rhs' <- everywhere (mkT (replaceVarExpr (map swap vs)))
             <$> everywhereM (mkM (liftErrorWrapper tcs)) rhs
-  return (noLoc (Match noExtField ctxt' [pat'] rhs'))
+  return (noLocA (Match EpAnnNotUsed ctxt' [pat'] rhs'))
 liftRecSelAlt _ _ x = return x
 
 -- | Substitute variables in the given expression.

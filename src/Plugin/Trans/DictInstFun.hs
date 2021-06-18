@@ -13,6 +13,8 @@ module Plugin.Trans.DictInstFun (liftDictInstFun) where
 import Data.List
 import Data.Maybe
 import Control.Monad
+import Language.Haskell.Syntax.Extension
+import GHC.Parser.Annotation
 
 import GHC.Plugins
 import GHC.Hs.Binds
@@ -76,7 +78,7 @@ liftDictInstBinding tcs cls (AbsBinds _ tvs evs ex evb bs sig)
       -- Lift the actual expression.
       e' <- liftDictExpr cls wrap tcs e
 
-      let vb = listToBag [noLoc (VarBind noExtField m' e')]
+      let vb = listToBag [noLocA (VarBind noExtField m' e')]
       let ex' = [ABE noExtField p' m' w s]
       let b' = AbsBinds noExtField tvs allevsids ex' evb vb sig
       return (Just b')
@@ -89,8 +91,8 @@ liftDictExpr cls w tcs (L l ex) = L l <$> liftDictExpr' ex
   where
     -- Applications are translated by lifting both sides.
     liftDictExpr' (HsApp _ e1 e2) =
-      HsApp noExtField <$> liftDictExpr cls w tcs e1
-                       <*> liftDictExpr cls w tcs e2
+      HsApp EpAnnNotUsed <$> liftDictExpr cls w tcs e1
+                         <*> liftDictExpr cls w tcs e2
     -- The dictionary constructor is lifted by getting the lifted constructor
     -- and lifting its wrapper.
     liftDictExpr' (XExpr (WrapExpr
@@ -120,11 +122,11 @@ liftDictExpr cls w tcs (L l ex) = L l <$> liftDictExpr' ex
       -- then split off as many invisible function args as possible.
       -- But we only do all of this, if the type is not already lifted
       let ty = varType v
-      dfLifted <- case splitTyConApp_maybe (snd (splitPiTysInvisible ty)) of
+      dfLifted <- case splitTyConApp_maybe (snd (splitInvisPiTys ty)) of
         Just (tc, _) | tc == mtc
           -> setVarType v <$> liftIO (replaceTyconTy tcs ty)
         _ -> do
-          let (bs1, ty1) = splitPiTysInvisibleN (length (is_tvs cls)) ty
+          let (bs1, ty1) = splitInvisPiTysN (length (is_tvs cls)) ty
               (bs2, ty2) = splitInvisFunTys ty1
               named = filter isNamedBinder bs1
           uss <- replicateM (length named) getUniqueSupplyM
@@ -138,7 +140,7 @@ liftDictExpr cls w tcs (L l ex) = L l <$> liftDictExpr' ex
 
       -- Use the given wrapper expression.
       return (XExpr (WrapExpr
-        (HsWrap w (HsVar noExtField (noLoc dfLifted)))))
+        (HsWrap w (HsVar noExtField (noLocA dfLifted)))))
 
 -- | Split off all arguments of an invisible function type
 -- (e.g., all constraints).
