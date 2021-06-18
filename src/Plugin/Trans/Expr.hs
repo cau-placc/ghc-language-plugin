@@ -774,14 +774,16 @@ liftVarWithWrapper given tcs w v dttKey
     let appliedType = head $ fst $ collectTyApps w
     liftedType <- liftTypeTcM tcs appliedType
     -- dataToTagKey :: tyApp in w -> Int#
-    -- return (\x -> nf x >>= \x' -> return (I# (dataToTagKey @w x')))
-    lam <- liftQ [| \dtt -> return (\x -> nf x >>=
+    -- return (\x -> x >>= \x' -> return (I# (dataToTagKey @w x')))
+    lam <- liftQ [| \dtt -> return (\x -> x >>=
                     (\x' ->  return (I# (dtt x')))) |]
     mtycon <- getMonadTycon
-    let ty = (appliedType `mkVisFunTyMany` intPrimTy) `mkVisFunTyMany`
-             mkTyConApp mtycon [liftedType `mkVisFunTyMany`
-                                mkTyConApp mtycon [intTy]]
-    let arg = noLocA (XExpr (WrapExpr (HsWrap w (HsVar noExtField (noLocA v)))))
+    w' <- liftWrapperTcM True tcs w
+    let ty = (bindingType liftedType `mkVisFunTyMany` intPrimTy)
+               `mkVisFunTyMany`
+                  mkTyConApp mtycon [liftedType `mkVisFunTyMany`
+                                     mkTyConApp mtycon [intTy]]
+    let arg = noLocA (XExpr (WrapExpr (HsWrap w' (HsVar noExtField (noLocA v)))))
     noLocA . HsPar EpAnnNotUsed <$> mkApp (mkNewAny lam) ty [arg]
   | isRecordSelector v = do
     -- lift type
