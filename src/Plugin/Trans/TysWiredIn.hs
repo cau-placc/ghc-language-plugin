@@ -91,10 +91,10 @@ loadAdditional = do
   newI <- getTyCon builtInModule "IntegralND"
 
   -- And again for (->)
-  altF <- return unrestrictedFunTyCon
+  let altF = unrestrictedFunTyCon
   newF <- getTyCon builtInModule ":->"
 
-  altFR <- return funTyCon
+  let altFR = funTyCon
   newFR <- getTyCon builtInModule ":-->"
 
   return [ (altH, newH), (altR, newR), (altI, newI), (altA, newA)

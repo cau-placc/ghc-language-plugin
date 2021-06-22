@@ -46,6 +46,16 @@ monadNameConfigStr =
   ( "Plugin.LanguagePlugin.MonadName"
   , "Missing name configuration for effect monad" )
 
+funModConfigStr :: (String, String)
+funModConfigStr =
+  ( "Plugin.LanguagePlugin.FunMod"
+  , "Missing module configuration for lifted function type constructor" )
+
+funNameConfigStr :: (String, String)
+funNameConfigStr =
+  ( "Plugin.LanguagePlugin.FunName"
+  , "Missing name configuration for lifted function type constructor" )
+
 preludeModConfigStr :: (String, String)
 preludeModConfigStr =
   ( "Plugin.LanguagePlugin.PreludeMod"

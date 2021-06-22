@@ -49,13 +49,14 @@ instance Exception ClassLiftingException
 liftClass :: DynFlags             -- ^ Compiler flags
           -> TyCon                -- ^ 'Shareable' type constructor
           -> TyCon                -- ^ 'Nondet' type constructor
+          -> TyCon                -- ^ '-->' type constructor
           -> UniqFM TyCon TyCon   -- ^ Map of old TyCon's from this module to lifted ones
           -> TyConMap             -- ^ Map of imported old TyCon's to lifted ones
           -> TyCon                -- ^ Lifted class type constructor
           -> UniqSupply           -- ^ Supply of fresh unique keys
           -> Class                -- ^ Class to be lifted
           -> IO Class             -- ^ Lifted class
-liftClass dflags stycon mtycon tcs tcsM tycon us cls = mdo
+liftClass dflags stycon ftycon mtycon tcs tcsM tycon us cls = mdo
   -- Look up the new type constructors for all super classes
   superclss <- mapM (fmap (replaceTyconTyPure tcs) . replaceTyconTy tcsM)
     (classSCTheta cls)
@@ -64,7 +65,7 @@ liftClass dflags stycon mtycon tcs tcsM tycon us cls = mdo
   -- Lift the associated types of the class
   astypes   <- mapM (liftATItem mtycon tcs tcsM cls) (classATItems cls)
   -- Lift all class functions
-  classops  <- mapM (liftClassOpItem dflags stycon mtycon tcs tcsM us cls cls')
+  classops  <- mapM (liftClassOpItem dflags stycon ftycon mtycon tcs tcsM us cls cls')
     (classOpItems cls)
   -- Create the new class from its lifted components
   let cls' = mkClass
@@ -83,33 +84,34 @@ liftSuperSel dflags tcs tcsM cls v = do
   return (mkExactNameDictSelId (varName v) cls ty' dflags)
 
 -- | Lift a class function.
-liftClassOpItem :: DynFlags -> TyCon -> TyCon -> UniqFM TyCon TyCon -> TyConMap
-                -> UniqSupply -> Class -> Class -> ClassOpItem -> IO ClassOpItem
-liftClassOpItem dflags stycon mtycon tcs tcsM us clsOld clsNew (v, mbdef) = do
-  let (us1, us2) = splitUniqSupply us
-  -- The classOp has type forall clsVars . forall otherVars . (...).
-  -- If we were to lift the full type,
-  -- we would end up with Shareable constraints on clsVars.
-  -- But those are bound by the class definition,
-  -- including those constraints raises a type error.
-  -- So we first split off as many foralls, as there are variables.
-  let varCount = length (classTyVars clsOld)
-  let (bndr, liftingType) = splitInvisPiTysN varCount (varType v)
-  -- Now we can lift the type.
-  bndr' <- liftIO (mapM (replacePiTy tcsM) bndr)
-  ty' <- replaceTyconTyPure tcs . mkPiTys bndr'
-    <$> liftType stycon (mkTyConTy mtycon) us1 tcsM liftingType
-  -- Create the new selector id with the correct attributes.
-  let v' = mkExactNameDictSelId (varName v) clsNew ty' dflags
-  -- Lift any default implementations
-  mbdef' <- maybe (return Nothing) (liftDefaultMeth us2) mbdef
-  return (v', mbdef')
-  where
-    liftDefaultMeth _   (n, VanillaDM) = return (Just (n, VanillaDM))
-    liftDefaultMeth us2 (n, GenericDM ty) = do
-      ty' <- replaceTyconTyPure tcs
-        <$> liftType stycon (mkTyConTy mtycon) us2 tcsM ty
-      return (Just (n, GenericDM ty'))
+liftClassOpItem :: DynFlags -> TyCon -> TyCon -> TyCon -> UniqFM TyCon TyCon
+                -> TyConMap -> UniqSupply -> Class -> Class -> ClassOpItem
+                -> IO ClassOpItem
+liftClassOpItem dflags stycon ftycon mtycon tcs tcsM us clsOld clsNew (v, mbdef)
+  = do  let (us1, us2) = splitUniqSupply us
+        -- The classOp has type forall clsVars . forall otherVars . (...).
+        -- If we were to lift the full type,
+        -- we would end up with Shareable constraints on clsVars.
+        -- But those are bound by the class definition,
+        -- including those constraints raises a type error.
+        -- So we first split off as many foralls, as there are variables.
+        let varCount = length (classTyVars clsOld)
+        let (bndr, liftingType) = splitInvisPiTysN varCount (varType v)
+        -- Now we can lift the type.
+        bndr' <- liftIO (mapM (replacePiTy tcsM) bndr)
+        ty' <- replaceTyconTyPure tcs . mkPiTys bndr'
+          <$> liftType stycon ftycon (mkTyConTy mtycon) us1 tcsM liftingType
+        -- Create the new selector id with the correct attributes.
+        let v' = mkExactNameDictSelId (varName v) clsNew ty' dflags
+        -- Lift any default implementations
+        mbdef' <- maybe (return Nothing) (liftDefaultMeth us2) mbdef
+        return (v', mbdef')
+        where
+          liftDefaultMeth _   (n, VanillaDM) = return (Just (n, VanillaDM))
+          liftDefaultMeth us2 (n, GenericDM ty) = do
+            ty' <- replaceTyconTyPure tcs
+              <$> liftType stycon ftycon (mkTyConTy mtycon) us2 tcsM ty
+            return (Just (n, GenericDM ty'))
 
 -- | Create a selector identifier with the given name, class and type.
 -- Basically copied from ghc package, module 'MkId',
@@ -123,7 +125,7 @@ mkExactNameDictSelId name clas sel_ty dflags
     tycon     = classTyCon clas
     sel_names = map idName (classAllSelIds clas)
     new_tycon = isNewTyCon tycon
-    [dc]      = tyConDataCons tycon
+    dc        = head (tyConDataCons tycon)
     tyvars    = dataConUserTyVarBinders dc
     n_ty_args = length tyvars
     val_index = assoc "MkId.mkDictSelId" (sel_names `zip` [0..]) name

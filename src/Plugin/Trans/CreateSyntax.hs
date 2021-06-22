@@ -1,5 +1,6 @@
 {-# LANGUAGE TemplateHaskell   #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ViewPatterns      #-}
 {-|
 Module      : Plugin.Trans.CreateSyntax
 Description : Helper functions to create parts of GHC's AST
@@ -30,13 +31,13 @@ import GHC.Core.ConLike
 import GHC.Data.Bag
 import GHC.Parser.Annotation
 
-import Plugin.Effect.Classes
-import Plugin.Trans.Config
 import Plugin.Trans.Constr
 import Plugin.Trans.Type
 import Plugin.Trans.Util
 import Plugin.Trans.Var
 import Plugin.Trans.ConstraintSolver
+import Plugin.Trans.Config
+import Plugin.Effect.Classes
 
 -- | Create the lambda functions used to lift value constructors.
 -- Look at their lifting for details.
@@ -66,7 +67,8 @@ mkConLam tcs w c ((Scaled _ ty, strictness) : tys) vs = do
   v <- freshVar (Scaled Many ty)
   -- Create the inner part of the term with the remaining type arguments.
   (e, resty) <- mkConLam tcs w c tys (v:vs) -- (return \xs -> Cons x xs, SML (List a -> List a)
-  let lamty = mkVisFunTyMany ty resty      -- a -> SML (List a -> List a)
+  ftc <- getFunTycon
+  let lamty2 = mkTyConApp ftc [bindingType ty, bindingType resty] -- a --> (List a --> List a)
   -- Add a seq if C is strict in this arg
   (e', v') <- case strictness of
     HsLazy -> return (e, v)
@@ -87,18 +89,9 @@ mkConLam tcs w c ((Scaled _ ty, strictness) : tys) vs = do
   -- Make the lambda for this variable
   let e'' = mkLam (noLocA v') (Scaled Many ty) e' resty
   -- Wrap the whole term in a 'return'.
-  e''' <- mkApp mkNewReturnTh lamty [noLocA $ HsPar EpAnnNotUsed e'']
+  e''' <- mkApp (mkNewReturnFunTh ty) resty [noLocA $ HsPar EpAnnNotUsed e'']
   let mty = mkTyConTy mtc
-  return (e''', mkAppTy mty lamty)
-
--- | Create the lambda to be used after '(>>=)'.
-mkBindLam :: Scaled Type -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
-mkBindLam (Scaled m ty) e1' = do
-  let ty' = bindingType ty
-  v <- noLocA <$> freshVar (Scaled m ty')
-  let bdy = noLocA $ HsApp EpAnnNotUsed (noLocA (HsVar noExtField v)) e1'
-  let (_ , _, resty) = splitFunTy (varType (unLoc v))
-  return (mkLam v (Scaled m ty') bdy resty)
+  return (e''', mkAppTy mty lamty2)
 
 -- | Create a '(>>=)' for the given arguments and apply them.
 mkBind :: LHsExpr GhcTc -> Type -> LHsExpr GhcTc -> Type
@@ -107,6 +100,14 @@ mkBind scr ty1 arg ty2 = do
   let ty1' = bindingType ty1
   let ty2' = bindingType ty2
   mkApp (mkNewBindTh ty1') ty2' [scr, arg]
+
+-- | Create a 'app' for the given arguments and apply them.
+mkFuncApp :: [Ct] -> LHsExpr GhcTc -> Type -> LHsExpr GhcTc -> Type
+          -> TcM (LHsExpr GhcTc)
+mkFuncApp given op ty1 arg ty2 = do
+  let ty1' = bindingType ty1
+  let ty2' = bindingType ty2
+  mkAppWith (mkNewAppTh ty1') given ty2' [op, arg]
 
 -- | Apply the given list of arguments to a term created by the first function.
 mkApp :: (Type -> TcM (LHsExpr GhcTc))
@@ -133,6 +134,41 @@ mkNewReturnTh etype = do
                 mkAppTy mty etype  -- m 'e
   mkNewPs ps_expr expType
 
+-- | Create a 'return . Fun' for the given argument types.
+mkNewReturnFunTh :: Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewReturnFunTh arg res = do
+  ftc <- getFunTycon
+  mtycon <- getMonadTycon
+  let mty = mkTyConTy mtycon
+  if isMonoType arg
+    then do
+      let expType = mkVisFunTyMany (mkVisFunTyMany arg res) $ -- (arg -> res) ->
+                    mkAppTy mty (mkTyConApp ftc               -- m ((-->)
+                      [ bindingType arg                       --     unM arg
+                      , bindingType res ])                    --     unM res)
+      ps_expr <- queryBuiltinFunctionName "rtrnFunc"
+      mkNewPs ps_expr expType
+    else do
+      -- HACK:
+      -- Since a RankN (poly type) tecnically has no monad type constructor
+      -- at the outermost part of the type,
+      -- we can't actually use rtrnFunc for it since that expects a function
+      -- SML a -> SML b
+      -- (see rtrnFuncUnsafePoly definition)
+      -- Thus, we use an unsafe function.
+      -- This is safe enough as long as we know that the argument is actually
+      -- polymorphic when the argument is supplied at the application-site.
+      -- (see mkNewAppTh)
+      -- This is always the case when the function is only used in the same
+      -- module, something we have to ensure anyways until RankNTypes are
+      -- properly supported.
+      let expType = mkVisFunTyMany (mkVisFunTyMany arg res) $ -- (arg -> res) ->
+                    mkAppTy mty (mkTyConApp ftc               -- m ((-->)
+                      [ arg                                   --     arg
+                      , bindingType res ])                    --     unM res)
+      ps_expr <- queryBuiltinFunctionName "rtrnFuncUnsafePoly"
+      mkNewPs ps_expr expType
+
 -- | Create a '(>>=)' for the given argument types.
 mkNewBindTh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewBindTh etype btype = do
@@ -144,6 +180,39 @@ mkNewBindTh etype btype = do
                 mkVisFunTyMany (mkVisFunTyMany etype resty) -- (e' -> m b) ->
                   resty                                     -- m b
   mkNewPs ps_expr expType
+
+-- | Create a 'app' for the given argument types.
+mkNewAppTh :: Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewAppTh optype argtype = do
+  mtycon <- getMonadTycon
+  ftycon <- getFunTycon
+  let (_, restype) = splitMyFunTy mtycon ftycon optype
+  let mty = mkTyConTy mtycon
+  if isMonoType argtype
+    then do
+      let expType = mkVisFunTyMany (mkAppTy mty optype) $ -- m optype ->
+                    mkVisFunTyMany (mkAppTy mty argtype)  -- m argtype ->
+                    restype                               -- restype
+      ps_expr <- queryBuiltinFunctionName "app"
+      mkNewPs ps_expr expType
+    else do
+      -- HACK:
+      -- Since a RankN (poly type) tecnically has no monad type constructor
+      -- at the outermost part of the type,
+      -- we can't actually use app for it since that returns a function
+      -- SML a -> SML b
+      -- (see appUnsafePoly definition)
+      -- Thus, we use an unsafe function.
+      -- This is safe enough as long as we know that the function is actually
+      -- polymorphic (see mkNewReturnFunTh)
+      -- This is always the case when the function is only used in the same
+      -- module, something we have to ensure anyways until RankNTypes are
+      -- properly supported.
+      let expType = mkVisFunTyMany (mkAppTy mty optype) $ -- m optype ->
+                    mkVisFunTyMany argtype                -- argtype ->
+                    restype                               -- restype
+      ps_expr <- queryBuiltinFunctionName "appUnsafePoly"
+      mkNewPs ps_expr expType
 
 -- | Make a seq for ordinary values (The "Prelude.seq")
 mkNewSeqTh :: Type -> Type -> TcM (LHsExpr GhcTc)
@@ -169,7 +238,7 @@ mkNewFmapTh etype btype = do
   mtycon <- getMonadTycon
   ps_expr <- queryBuiltinFunctionName "fmp"
   let appMty = mkTyConApp mtycon . (:[])
-  let expType = mkVisFunTyMany (mkVisFunTyMany etype btype) $     -- ('e -> 'b) ->
+  let expType = mkVisFunTyMany (mkVisFunTyMany etype btype) $ -- ('e -> 'b) ->
                 mkVisFunTyMany (appMty etype) (appMty btype)  -- m 'e -> m 'b
   mkNewPs ps_expr expType
 
@@ -179,9 +248,10 @@ mkNewShareTh tcs ty
   | isForAllTy ty = do
     sp <- getSrcSpanM
     mtc <- getMonadTycon
+    ftc <- getFunTycon
     stc <- getShareClassTycon
     let docImportant = "Cannot share polymorphic values."
-    (ty', _) <- liftIO $ removeNondetShareable tcs mtc stc ty
+    (ty', _) <- liftIO $ removeNondetShareable tcs mtc ftc stc ty
     let docSuppl = "For a variable with type" <+> ppr ty'
     e <- mkLongErrAt sp docImportant docSuppl
     reportError e
@@ -226,49 +296,36 @@ mkNewNfTh ty1 ty2 = do
 
 -- | Create a 'apply1' for the given argument types.
 mkNewApply1 :: Type -> Type -> TcM (LHsExpr GhcTc)
-mkNewApply1 ty1 ty2 = do
-  mtycon <- getMonadTycon
-  ps_expr <- queryBuiltinFunctionName "apply1"
-  let expType =
-        mkVisFunTyMany (mkTyConApp mtycon                   -- Nondet
-                  [mkVisFunTyMany (mkTyConApp mtycon [ty1]) --  ( Nondet a ->
-                           (mkTyConApp mtycon [ty2])])      --    Nondet b ) ->
-          (mkVisFunTyMany (mkTyConApp mtycon [ty1])         -- Nondet a ->
-                   (mkTyConApp mtycon [ty2]))               -- Nondet b
-  mkNewPs ps_expr expType
+mkNewApply1 = mkNewAppTh
 
 -- | Create a 'apply2' for the given argument types.
 mkNewApply2 :: Type -> Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewApply2 ty1 ty2 ty3 = do
   mtycon <- getMonadTycon
+  ftycon <- getFunTycon
   ps_expr <- queryBuiltinFunctionName "apply2"
+  let mkMyFunTy arg res = mkTyConApp ftycon [arg, res]
   let expType =
-        mkTyConApp mtycon                                        -- Nondet
-                  [mkVisFunTyMany (mkTyConApp mtycon [ty1])      --  (Nondet a ->
-                    (mkTyConApp mtycon                           --   Nondet
-                       [mkVisFunTyMany (mkTyConApp mtycon [ty2]) --     (Nondet b ->
-                         (mkTyConApp mtycon [ty3])])]            --      Nondet c )
-        `mkVisFunTyMany`                                         --  ) ->
-        mkVisFunTyMany (mkTyConApp mtycon [ty1])                 -- Nondet a ->
-          (mkVisFunTyMany (mkTyConApp mtycon [ty2])              -- Nondet b ->
-                   (mkTyConApp mtycon [ty3]))                    -- Nondet c
+        mkVisFunTyMany (mkTyConApp mtycon              -- m (
+              [mkMyFunTy ty1 (mkMyFunTy ty2 ty3)]) $   --   a --> b --> c) ->
+          mkVisFunTyMany (mkTyConApp mtycon [ty1]) $   -- m a ->
+            mkVisFunTyMany (mkTyConApp mtycon [ty2]) $ -- m b ->
+              mkTyConApp mtycon [ty3]                  -- m c
   mkNewPs ps_expr expType
 
 -- | Create a 'apply2Unlifted' for the given argument types.
 mkNewApply2Unlifted :: Type -> Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewApply2Unlifted ty1 ty2 ty3 = do
   mtycon <- getMonadTycon
+  ftycon <- getFunTycon
   ps_expr <- queryBuiltinFunctionName "apply2Unlifted"
+  let mkMyFunTy arg res = mkTyConApp ftycon [arg, res]
   let expType =
-        mkTyConApp mtycon                                        -- Nondet
-                  [mkVisFunTyMany (mkTyConApp mtycon [ty1])      --  ( Nondet a ->
-                    (mkTyConApp mtycon                           --    Nondet
-                       [mkVisFunTyMany (mkTyConApp mtycon [ty2]) --      ( Nondet b ->
-                         (mkTyConApp mtycon [ty3])])]            --        Nondet c )
-        `mkVisFunTyMany`                                         --  ) ->
-        mkVisFunTyMany (mkTyConApp mtycon [ty1])                 -- Nondet a ->
-          (mkVisFunTyMany                     ty2                --        b ->
-                   (mkTyConApp mtycon [ty3]))                    -- Nondet c
+        mkVisFunTyMany (mkTyConApp mtycon            -- m (
+              [mkMyFunTy ty1 (mkMyFunTy ty2 ty3)]) $ --   a --> b --> c) ->
+          mkVisFunTyMany (mkTyConApp mtycon [ty1]) $ -- m a ->
+            mkVisFunTyMany ty2 $                     -- b ->
+              mkTyConApp mtycon [ty3]                -- m c
   mkNewPs ps_expr expType
 
 -- | Create a '(>>=)' specialized to lists for list comprehensions.
@@ -425,5 +482,12 @@ toLetExpr b e = noLocA (HsLet noExtField bs e)
 mkHsWrap :: HsWrapper -> HsExpr GhcTc -> HsExpr GhcTc
 mkHsWrap WpHole e = e
 mkHsWrap w      e = XExpr (WrapExpr (HsWrap w e))
+
+splitMyFunTy :: TyCon -> TyCon -> Type -> (Type, Type)
+splitMyFunTy mtc ftc (coreView -> Just ty)    = splitMyFunTy mtc ftc ty
+splitMyFunTy mtc ftc (TyConApp tc [ty1, ty2])
+  | tc == ftc = (mkTyConApp mtc [ty1], mkTyConApp mtc [ty2])
+  | otherwise = error $ showSDocUnsafe $ ppr (tc, ftc, ty1, ty2)
+splitMyFunTy _   _   ty = error $ showSDocUnsafe $ ppr ty
 
 {- HLINT ignore "Reduce duplication "-}

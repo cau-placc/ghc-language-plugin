@@ -180,14 +180,6 @@ instance (Monad m) => Normalform m Char Char where
   nf    = id
   liftE = id
 
-instance (Monad m, Normalform m a1 a2, Normalform m b1 b2)
-  => Normalform m (m a1 -> m b1) (a2 -> b2) where
-    nf    mf =
-      mf >> return (error "Plugin Error: Cannot capture function types")
-    liftE mf = do
-      f <- mf
-      return $ (liftE . fmap f . nf)
-
 -- * Instances for Shareable
 
 instance (Sharing m) => Shareable m () where

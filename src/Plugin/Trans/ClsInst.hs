@@ -16,12 +16,12 @@ import Data.Maybe
 import GHC.Plugins
 import GHC.Tc.Types
 import GHC.Core.Class
-import GHC.Core.TyCo.Rep
 import GHC.Core.InstEnv
 import GHC.Core.Unify
 
 import Plugin.Trans.Type
 import Plugin.Trans.Class
+import Plugin.Trans.Util
 
 -- | Lift a given class instance.
 liftInstance :: TyConMap -> ClsInst -> TcM ClsInst
@@ -42,14 +42,13 @@ liftInstance tcs (ClsInst _ _ origDfn tvs origCls origTys origDf ov orp) = do
   (pis, inner) <- splitInvisPiTys
     <$> liftIO (replaceTyconTy tcs (varType origDf))
   -- Get named binders (e.g., foralls).
-  let named = filter isNamedBinder pis
-  uss <- replicateM (length named) getUniqueSupplyM
+  -- Extract variables from named binders.
+  let bs = mapMaybe namedTyCoVarBinder_maybe pis
+  uss <- replicateM (length bs) getUniqueSupplyM
   stc <- getShareClassTycon
   mty <- mkTyConTy <$> getMonadTycon
-  let -- Extract variables from named binders.
-      bs = map (\(Named b') -> b') named
       -- Function to apply the shareable type constructor to its args.
-      mkShareType t' = mkTyConApp stc [mty, t']
+  let mkShareType t' = mkTyConApp stc [mty, t']
       -- Create Shareable constraints for all given variables.
       cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
   -- Incorporate the new constraints.

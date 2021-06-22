@@ -66,7 +66,7 @@ import Plugin.Trans.FunWiredIn
 import Plugin.Trans.CreateSyntax
 import Plugin.Trans.DictInstFun
 import Plugin.Trans.ConstraintSolver
-import Plugin.Effect.Classes (liftE, nf)
+import Plugin.Effect.Classes (liftE)
 
 -- | Transform the given binding with a monadic lifting to incorporate
 -- our nondeterminism as an effect.
@@ -83,6 +83,7 @@ liftMonadicBinding lcl _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
   let (tvs, c) = collectTyDictArgs wrap
   stc <- getShareClassTycon
   mtc <- getMonadTycon
+  ftc <- getFunTycon
   let mty = mkTyConTy mtc
   uss <- replicateM (length tvs) getUniqueSupplyM
   let mkShareTy ty = mkTyConApp stc [mty, ty]
@@ -95,7 +96,7 @@ liftMonadicBinding lcl _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
   allEvs <- (++evs) <$> liftIO (mapM replaceEv c)
   let cts = mkGivens ctloc allEvs
   let given' = given ++ cts
-  (unlifted, _) <- liftIO (removeNondetShareable tcs mtc stc (varType name))
+  (unlifted, _) <- liftIO (removeNondetShareable tcs mtc ftc stc (varType name))
   ty <- liftTypeTcM tcs unlifted
   let name' = setVarType name ty
   let wrapLike = createWrapperLike ty tvs allEvs
@@ -173,6 +174,7 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
 
       -- lift types
       mtycon <- getMonadTycon
+      ftycon <- getFunTycon
       stycon <- getShareClassTycon
       us2 <- getUniqueSupplyM
 
@@ -185,14 +187,13 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
       ty1 <- case splitTyConApp_maybe (snd (splitInvisPiTys v1ty)) of
         Just (tc, _) | tc == mtycon
           -> do
-          (unlifted, _) <- liftIO (removeNondetShareable tcs mtycon stycon v1ty)
+          (unlifted, _) <- liftIO (removeNondetShareable tcs mtycon ftycon stycon v1ty)
           liftTypeTcM tcs unlifted
         _ -> do
           let (bs1, t1) = splitInvisPiTysN (length b + length c) v1ty
-              named = filter isNamedBinder bs1
-          uss <- replicateM (length named) getUniqueSupplyM
-          let bs = map (\(Named b') -> b') named
-              mkShareType t' = mkTyConApp stycon [mkTyConTy mtycon, t']
+          let bs = mapMaybe namedTyCoVarBinder_maybe bs1
+          uss <- replicateM (length bs) getUniqueSupplyM
+          let mkShareType t' = mkTyConApp stycon [mkTyConTy mtycon, t']
               cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
           bs1' <- liftIO (mapM (replacePiTy tcs) bs1)
           mkPiTys bs1' . flip (foldr mkInvisFunTyMany) cons
@@ -228,7 +229,7 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
       let conapp = mkEvWrapSimilar rest ovs evs
 
       -- lift the mono type and create the new variables.
-      ty2 <- liftIO (liftTypeIfRequired stycon mtycon us2 tcs (varType v2))
+      ty2 <- liftIO (liftTypeIfRequired stycon ftycon mtycon us2 tcs (varType v2))
       let v2' = setVarType v2 ty2
       let v1' = setVarType v1 ty1
       -- also (possibly) change unique for sharing
@@ -270,36 +271,36 @@ liftMonadicBinding _ _ _ tcs _ (VarBind x1 name e1)
     let (wrap, e1') = case e1 of
                         L _ (XExpr (WrapExpr (HsWrap w e))) -> (w     , e)
                         L _ e                               -> (WpHole, e)
-    let HsApp x2 (L l3 (XExpr (WrapExpr (HsWrap (WpCompose w1 w2) e2)))) e3 = e1'
+    case e1' of
+      HsApp x2 (L l3 (XExpr (WrapExpr (HsWrap (WpCompose w1 w2) e2)))) e3 -> do
+        mtycon <- getMonadTycon
+        stycon <- getShareClassTycon
+        -- Look at the number of abstractions in wrap.
+        -- Those abstractions correspond to the vars bound in the instance head.
+        -- Only for those we want Shareable.
+        -- But only if the type is not lifted already.
+        let numBinders = length (fst (collectHsWrapBinders wrap))
+        let ty = varType name
+        (ty', bndrs) <- case splitTyConApp_maybe (snd (splitInvisPiTys ty)) of
+          Just (tc, _) | tc == mtycon
+            -> (,[]) <$> liftIO (replaceTyconTy tcs ty)
+          _ -> do
+            let (bs1, ty1) = splitInvisPiTysN numBinders ty
+                bs = mapMaybe namedTyCoVarBinder_maybe bs1
+            uss <- replicateM (length bs) getUniqueSupplyM
+            let mkShareType t' = mkTyConApp stycon [mkTyConTy mtycon, t']
+                cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
+            bs1' <- liftIO (mapM (replacePiTy tcs) bs1)
+            (,cons) . mkPiTys bs1' . flip (foldr mkInvisFunTyMany) cons
+              <$> liftTypeTcM tcs ty1
 
-    mtycon <- getMonadTycon
-    stycon <- getShareClassTycon
-    -- Look at the number of abstractions in wrap.
-    -- Those abstractions correspond to the vars bound in the instance head.
-    -- Only for those we want Shareable.
-    -- But only if the type is not lifted already.
-    let numBinders = length (fst (collectHsWrapBinders wrap))
-    let ty = varType name
-    (ty', bndrs) <- case splitTyConApp_maybe (snd (splitInvisPiTys ty)) of
-      Just (tc, _) | tc == mtycon
-        -> (,[]) <$> liftIO (replaceTyconTy tcs ty)
-      _ -> do
-        let (bs1, ty1) = splitInvisPiTysN numBinders ty
-            named = filter isNamedBinder bs1
-        uss <- replicateM (length named) getUniqueSupplyM
-        let bs = map (\(Named b') -> b') named
-            mkShareType t' = mkTyConApp stycon [mkTyConTy mtycon, t']
-            cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
-        bs1' <- liftIO (mapM (replacePiTy tcs) bs1)
-        (,cons) . mkPiTys bs1' . flip (foldr mkInvisFunTyMany) cons
-          <$> liftTypeTcM tcs ty1
-
-    let name' = setVarType name ty'
-    wrap' <- createAbstractionWrapperWith wrap bndrs
-    w1' <- liftErrorWrapper tcs w1
-    w2' <- liftErrorWrapper tcs w2
-    let e1'' = HsApp x2 (L l3 (mkHsWrap (WpCompose w1' w2') e2)) e3
-    return ([VarBind x1 name' (noLocA (mkHsWrap wrap' e1''))], [])
+        let name' = setVarType name ty'
+        wrap' <- createAbstractionWrapperWith wrap bndrs
+        w1' <- liftErrorWrapper tcs w1
+        w2' <- liftErrorWrapper tcs w2
+        let e1'' = HsApp x2 (L l3 (mkHsWrap (WpCompose w1' w2') e2)) e3
+        return ([VarBind x1 name' (noLocA (mkHsWrap wrap' e1''))], [])
+      _ -> panicAny "Unexpected layout of unimplemented method error expr" e1'
 liftMonadicBinding _ _ _ _ _ a = return ([a], [])
 
 -- The variables introduced here are guaranteed to be unused.
@@ -361,8 +362,7 @@ liftMonadicEquation mv given tcs (MG a (L b alts) c) = do
 liftMGTc :: TyConMap -> MatchGroupTc -> TcM MatchGroupTc
 liftMGTc tcs (MatchGroupTc args res) = do
   res' <- liftTypeTcM tcs res
-  args' <- mapM (\(Scaled m ty) -> Scaled m <$> liftTypeTcM tcs ty)
-            args
+  args' <- mapM (\(Scaled m ty) -> Scaled m <$> liftTypeTcM tcs ty) args
   return (MatchGroupTc args' res')
 
 liftMonadicAlt :: Maybe Var -> [Ct] -> TyConMap -> Type
@@ -451,27 +451,29 @@ liftMonadicExpr _ tcs (L _ (XExpr (WrapExpr (HsWrap w (HsConLikeOut _ (RealDataC
     return $ noLocA $ HsPar EpAnnNotUsed e
 liftMonadicExpr given tcs (L _ (OpApp _ e1 op e2)) = do
   -- e1 `op` e2
-  -- -> op >>= \f -> f e1 >>= \f -> f e2
+  -- -> (op `appFL` e1) `appFL` e2
   opty1 <- getTypeOrPanic op >>= liftTypeTcM tcs -- ok
   e1' <- liftMonadicExpr given tcs e1
   op' <- liftMonadicExpr given tcs op
   e2' <- liftMonadicExpr given tcs e2
-  let (_, _, opty2) = splitFunTy $ bindingType opty1
-  let (_, _, opty3) = splitFunTy $ bindingType opty2
-  e1'' <- mkBindLam (Scaled Many opty1) e1'
-  op'' <- mkBind op' opty1 e1'' opty2
-  e2'' <- mkBindLam (Scaled Many opty2) e2'
-  res <- mkBind op'' opty2 e2'' opty3
-  return $ noLocA $ HsPar EpAnnNotUsed res
+  ftc <- getFunTycon
+  mtc <- getMonadTycon
+  let (argty1, opty2) = splitMyFunTy mtc ftc $ bindingType opty1
+  let (argty2, _    ) = splitMyFunTy mtc ftc $ bindingType opty2
+  e1'' <- mkFuncApp given op' opty1 e1' argty1
+  let bracketed = noLocA (HsPar EpAnnNotUsed e1'')
+  e2'' <- mkFuncApp given bracketed opty2 e2' argty2
+  return $ noLocA $ HsPar EpAnnNotUsed e2''
 liftMonadicExpr given tcs (L _ (HsApp _ fn ex)) = do
   -- e1 e2
-  -- -> e1 >>= \f -> f e2
+  -- -> e1 `appFL` e2
   fn' <- liftMonadicExpr given tcs fn
-  funty <- getTypeOrPanic fn >>= liftTypeTcM tcs
-  let (_, _, exty) = splitFunTy $ bindingType funty
   ex' <- liftMonadicExpr given tcs ex
-  ex'' <- mkBindLam (Scaled Many funty) ex'
-  res <- mkBind fn' funty ex'' exty
+  funty <- getTypeOrPanic fn >>= liftTypeTcM tcs
+  ftc <- getFunTycon
+  mtc <- getMonadTycon
+  let (argty, _) = splitMyFunTy mtc ftc $ bindingType funty
+  res <- mkFuncApp given fn' funty ex' argty
   return $ noLocA $ HsPar EpAnnNotUsed res
 liftMonadicExpr given tcs (L _ (HsAppType _ e _)) =
   liftMonadicExpr given tcs e
@@ -484,30 +486,34 @@ liftMonadicExpr given tcs (L l (HsPar x e)) =
 liftMonadicExpr given tcs (L _ (SectionL _ e1 e2)) = do
 -- (x op) -> (\x -> \y -> x `op` y)) x
   ty <- getTypeOrPanic e2 -- ok
-  let (m1, arg1, ty') = splitFunTy ty
-  let scaled1 = Scaled m1 arg1
-  let (m2, arg2, res) = splitFunTy ty'
-  let scaled2 = Scaled m2 arg2
+  mtc <- getMonadTycon
+  ftc <- getFunTycon
+  let (arg1, ty') = splitMyFunTy mtc ftc ty
+  let scaled1 = Scaled Many arg1
+  let (arg2, res) = splitMyFunTy mtc ftc ty'
+  let scaled2 = Scaled Many arg2
   v1 <- freshVar scaled1
   v2 <- freshVar scaled2
   let v1e = noLocA (HsVar noExtField (noLocA v1))
   let v2e = noLocA (HsVar noExtField (noLocA v2))
   let lam1 = mkLam (noLocA v2) scaled2 (mkHsApp (mkHsApp e2 v1e) v2e) res
-  let lam2 = mkLam (noLocA v1) scaled1 lam1 (mkVisFunTy m2 arg2 res)
+  let lam2 = mkLam (noLocA v1) scaled1 lam1 (mkVisFunTyMany arg2 res)
   liftMonadicExpr given tcs (mkHsApp (noLocA (HsPar EpAnnNotUsed lam2)) e1)
 liftMonadicExpr given tcs (L _ (SectionR _ e1 e2)) = do
 -- (op y) -> (\y -> \x -> x `op` y)) y
   ty <- getTypeOrPanic e1 -- ok
-  let (m1, arg1, ty') = splitFunTy ty
-  let scaled1 = Scaled m1 arg1
-  let (m2, arg2, res) = splitFunTy ty'
-  let scaled2 = Scaled m2 arg2
+  mtc <- getMonadTycon
+  ftc <- getFunTycon
+  let (arg1, ty') = splitMyFunTy mtc ftc ty
+  let scaled1 = Scaled Many arg1
+  let (arg2, res) = splitMyFunTy mtc ftc ty'
+  let scaled2 = Scaled Many arg2
   v1 <- freshVar scaled1
   v2 <- freshVar scaled2
   let v1e = noLocA (HsVar noExtField (noLocA v1))
   let v2e = noLocA (HsVar noExtField (noLocA v2))
   let lam1 = mkLam (noLocA v1) scaled1 (mkHsApp (mkHsApp e1 v1e) v2e) res
-  let lam2 = mkLam (noLocA v2) scaled2 lam1 (mkVisFunTy m1 arg1 res)
+  let lam2 = mkLam (noLocA v2) scaled2 lam1 (mkVisFunTyMany arg1 res)
   liftMonadicExpr given tcs (mkHsApp (noLocA (HsPar EpAnnNotUsed lam2)) e2)
 liftMonadicExpr given tcs (L _ (ExplicitTuple _ args b)) =
   liftExplicitTuple given tcs args b
@@ -713,7 +719,9 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
     trans1 (SyntaxExprTc e ws w) = do
       e1 <- liftMonadicExpr given tcs (noLocA (mkHsWrap w e))
       e1ty <- getTypeOrPanic (noLocA e) >>= liftTypeTcM tcs -- ok
-      let (_, ty1, ty2) = splitFunTy (bindingType e1ty)
+      mtc <- getMonadTycon
+      ftc <- getFunTycon
+      let (ty1, ty2) = splitMyFunTy mtc ftc (bindingType e1ty)
       e2 <- mkApp (mkNewApply1 (bindingType ty1)) (bindingType ty2) [e1]
       ws' <- mapM (liftWrapperTcM True tcs) ws
       return (SyntaxExprTc (unLoc e2) ws' WpHole)
@@ -722,8 +730,12 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
     transBind (SyntaxExprTc e ws w) = do
       e1 <- liftMonadicExpr given tcs (noLocA (mkHsWrap w e))
       e1ty <- getTypeOrPanic (noLocA e) >>= liftTypeTcM tcs -- ok
-      let (_, ty1, restty) = splitFunTy (bindingType e1ty)
-      let (_, ty2, ty3) = splitFunTy (bindingType restty)
+      mtc <- getMonadTycon
+      ftc <- getFunTycon
+      printAny "e1ty" e1ty
+      printAny "e" e
+      let (ty1, restty) = splitMyFunTy mtc ftc (bindingType e1ty)
+      let (ty2, ty3) = splitMyFunTy mtc ftc (bindingType restty)
       e2 <- mkApp (mkNewApply2Unlifted (bindingType ty1) (bindingType ty2))
                   (bindingType ty3) [e1]
       ws' <- mapM (liftWrapperTcM True tcs) ws
@@ -733,8 +745,10 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
     trans2 (SyntaxExprTc e ws w) = do
       e1 <- liftMonadicExpr given tcs (noLocA (mkHsWrap w e))
       e1ty <- getTypeOrPanic (noLocA e) >>= liftTypeTcM tcs -- ok
-      let (_, ty1, restty) = splitFunTy (bindingType e1ty)
-      let (_, ty2, ty3) = splitFunTy (bindingType restty)
+      mtc <- getMonadTycon
+      ftc <- getFunTycon
+      let (ty1, restty) = splitMyFunTy mtc ftc (bindingType e1ty)
+      let (ty2, ty3) = splitMyFunTy mtc ftc (bindingType restty)
       e2 <- mkApp (mkNewApply2 (bindingType ty1) (bindingType ty2))
                   (bindingType ty3) [e1]
       ws' <- mapM (liftWrapperTcM True tcs) ws
@@ -745,11 +759,10 @@ liftLambda :: [Ct] -> TyConMap -> SrcSpanAnnA
            -> Maybe Type -> MatchGroup GhcTc (LHsExpr GhcTc)
            -> TcM (LHsExpr GhcTc)
 liftLambda given tcs l _ mg = do
-  mg'@(MG (MatchGroupTc [Scaled m arg] res) _ _)
+  mg'@(MG (MatchGroupTc [Scaled _ arg] res) _ _)
     <- liftMonadicEquation Nothing given tcs mg
   let e = L l (HsLam noExtField mg')
-  let ty = mkVisFunTy m arg res
-  mkApp mkNewReturnTh ty [noLocA (HsPar EpAnnNotUsed e)]
+  mkApp (mkNewReturnFunTh arg) res [noLocA (HsPar EpAnnNotUsed e)]
 
 -- We need to pay special attention to a lot of different kinds of variables.
 -- Most of those kinds can be treated sinilarly (see below), but for
@@ -787,17 +800,19 @@ liftVarWithWrapper given tcs w v dttKey
     noLocA . HsPar EpAnnNotUsed <$> mkApp (mkNewAny lam) ty [arg]
   | isRecordSelector v = do
     -- lift type
-    mty <- mkTyConTy <$> getMonadTycon
+    mtc <- getMonadTycon
+    let mty = mkTyConTy mtc
     stc <- getShareClassTycon
+    ftc <- getFunTycon
     w' <- liftWrapperTcM True tcs w
     us <- getUniqueSupplyM
 
     let (apps, abstrs) = collectTyApps w'
     let realApps = drop (length abstrs) apps
-    let (_, arg, res) = splitFunTy (instantiateWith realApps (varType v))
+    let (arg, res) = splitMyFunTy mtc ftc (instantiateWith realApps (varType v))
 
     let p = sel_tycon (idDetails v)
-    v' <- liftIO (getLiftedRecSel stc mty us tcs p v)
+    v' <- liftIO (getLiftedRecSel stc ftc mty us tcs p v)
 
     let vExpr = noLocA (mkHsWrap w' (HsVar noExtField (noLocA v')))
     e <- case p of
@@ -818,7 +833,8 @@ liftVarWithWrapper given tcs w v dttKey
   w' <- liftWrapperTcM True tcs w
   stc <- getShareClassTycon
   mtc <- getMonadTycon
-  (unlifted, _) <- liftIO (removeNondetShareable tcs mtc stc (varType v))
+  ftc <- getFunTycon
+  (unlifted, _) <- liftIO (removeNondetShareable tcs mtc ftc stc (varType v))
   ty' <- liftTypeTcM tcs unlifted
 
   let (apps, absts) = collectTyApps w'
@@ -841,19 +857,18 @@ liftVarWithWrapper given tcs w v dttKey
             -- lookup the corresponding new name for the selector
             let sels = map idName (classAllSelIds cls)
                 sels' = map idName (classAllSelIds cls')
-                Just (_, idx) = find ((== varName v) . fst) (zip sels [0..])
-                -- if the class happens to be OrdND, we have to add 1 to idx
-                name = sels' !! idx
-            return (mkDictSelId name cls')
+            case find ((== varName v) . fst) (zip sels [0..]) of
+              Just (_, idx) -> return (mkDictSelId (sels' !! idx) cls')
+              Nothing -> panicAny "Class mismatch for built-in class" cls'
           | '$':'d':'m':_ <- occNameString (occName v) = do
             -- Split the type to get the class that this is the default method
             -- for, and look up the new version of that class.
             let tc = tyConAppTyCon (funArgTy (snd (splitForAllTyCoVars (varType v))))
             tc' <- liftIO (lookupTyConMap GetNew tcs tc)
             if tc == tc' -- if they are equal, this is NOT a built-in class.
-              then
-                let Just cls = tyConClass_maybe tc
-                in setVarType v <$> liftDefaultType tcs cls unlifted
+              then case tyConClass_maybe tc of
+                Nothing  -> panicAny "Expected a class, but recieved" tc
+                Just cls -> setVarType v <$> liftDefaultType tcs cls unlifted
               -- Otherwise, look up the replacement of the default method.
               else
                 lookupDefaultReplacement tc tc' (varName v)
@@ -883,8 +898,10 @@ liftVarWithWrapper given tcs w v dttKey
     else do
       -- construct wanted constraints
       wanted <- newWanteds (OccurrenceOf (varName v')) preds
-      let evvars = map (\a -> let EvVarDest d = ctev_dest a in d) wanted
-      let cts = map CNonCanonical wanted
+      let evvars = mapMaybe (getDest . ctev_dest) wanted
+          getDest (EvVarDest d) = Just d
+          getDest _             = Nothing
+          cts = map CNonCanonical wanted
 
       lvl <- getTcLevel
       env <- getLclEnv
@@ -930,7 +947,9 @@ liftExplicitTuple given tcs args b = do
       v <- noLocA <$> freshVar (Scaled m ty')
       let arg = noLocA (HsVar noExtField v)
       let w' = WpTyApp (bindingType ty') <.> w
-      let (_, _, resty') = splitFunTy resty
+      ftc <- getFunTycon
+      mtc <- getMonadTycon
+      let (_, resty') = splitMyFunTy mtc ftc resty
       inner <- liftExplicitTuple' (bindingType resty') (arg:col) w' xs
       let lam = mkLam v (Scaled m ty') inner resty'
       mkApp mkNewReturnTh resty [lam]
@@ -998,14 +1017,16 @@ liftMonadicRecField given tcs (L l1 (HsRecField x (L l2 occ) e pun)) = do
 liftFieldOcc :: TyConMap -> FieldOcc GhcTc -> TcM (FieldOcc GhcTc)
 liftFieldOcc tcs (FieldOcc v _) = do
   tenv <- tcg_type_env <$> getGblEnv
-  let Just (AnId realV) = lookupTypeEnv tenv (varName v)
-  case idDetails realV of
-    RecSelId parent _ -> do
-      mty <- mkTyConTy <$> getMonadTycon
-      stc <- getShareClassTycon
-      us <- getUniqueSupplyM
-      v' <- liftIO (getLiftedRecSel stc mty us tcs parent v)
-      return (FieldOcc v' (noLocA (nameRdrName (varName v'))))
+  case lookupTypeEnv tenv (varName v) of
+    Just (AnId realV)
+      | RecSelId parent _ <- idDetails realV
+      -> do
+        mty <- mkTyConTy <$> getMonadTycon
+        stc <- getShareClassTycon
+        ftc <- getFunTycon
+        us <- getUniqueSupplyM
+        v' <- liftIO (getLiftedRecSel stc ftc mty us tcs parent v)
+        return (FieldOcc v' (noLocA (nameRdrName (varName v'))))
     _ -> panicBndr "Expected RecSel in FieldOcc of Record operation" v
 
 liftAmbiguousFieldOcc :: TyConMap -> AmbiguousFieldOcc GhcTc

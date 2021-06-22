@@ -251,9 +251,10 @@ compileLetBind (L l (AbsBinds x tvs evs ex ev bs sig)) = do
 
 compileLetBind pb@(L _ (PatBind ty p grhss _)) = do
   mtc <- getMonadTycon
+  ftc <- getFunTycon
   -- we do not use ConstraintSolver.removeNondet,
   -- as TyConMap is not available and not required
-  let ty' = everywhere (mkT (rmNondet mtc)) ty
+  let ty' = everywhere (mkT (rmNondet mtc ftc)) ty
   (b', fname) <- createOrdinaryFun ty'
   (p', vs) <- prepareSelPat p
   let pe = noLocA (HsVar noExtField (noLocA fname))
@@ -281,9 +282,10 @@ compileLetBind pb@(L _ (PatBind ty p grhss _)) = do
     -- old = (\p' -> new) pe
     mkSelFun ty' p' pe (old, new) = do
       mtc <- getMonadTycon
+      ftc <- getFunTycon
       let altLam = mkSimpleAlt LambdaExpr
             (noLocA (HsVar noExtField (noLocA new)))
-              [everywhere (mkT (rmNondet mtc)) (removeOtherPatterns new p')]
+              [everywhere (mkT (rmNondet mtc ftc)) (removeOtherPatterns new p')]
           mgtcLam = MatchGroupTc [Scaled Many ty'] (varType new)
           mgLam = MG mgtcLam (noLocA [noLocA altLam]) Generated
       lam <- matchExpr (HsLam noExtField mgLam)
@@ -399,10 +401,12 @@ compileLetBind b = return ([b], [])
 contains :: (Eq a, Data r, Typeable a) => r -> a -> Bool
 contains r a = not (null (listify (==a) r))
 
-rmNondet :: TyCon -> Type -> Type
-rmNondet mtc (TyConApp tc [inner])
-  | mtc == tc    = inner
-rmNondet _ other = other
+rmNondet :: TyCon -> TyCon -> Type -> Type
+rmNondet mtc _ (TyConApp tc [inner])
+  | mtc == tc      = inner
+rmNondet _ ftc (TyConApp tc [arg, res])
+  | ftc == tc      = mkVisFunTyMany arg res
+rmNondet _ _ other = other
 
 -- | Compile a group of (case) alternatives into a more simple case without
 -- any nested pattern matching.
@@ -570,9 +574,10 @@ mkSeq :: Var -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
 mkSeq v e = do
   ty <- getTypeOrPanic e -- ok
   mtc <- getMonadTycon
+  ftc <- getFunTycon
   -- we do not use ConstraintSolver.removeNondet,
   -- as TyConMap is not available and not required
-  let vty = everywhere (mkT (rmNondet mtc)) (varType v)
+  let vty = everywhere (mkT (rmNondet mtc ftc)) (varType v)
   return (noLocA (HsApp EpAnnNotUsed (noLocA (HsApp EpAnnNotUsed
     (noLocA (mkHsWrap (WpTyApp ty <.>
                        WpTyApp vty <.>
@@ -680,10 +685,7 @@ mkAlts v vs ty1 ty2 err eqs@((p, alt) : _)
         bdy <- compileMatching vs ty2 [alt] err
         -- construct new pattern binding and translate that
         let vE = noLocA (HsVar noExtField (noLocA v))
-        printAny "bdy" bdy
         letExpr <- matchExpr (mkSimplePatLet ty1 vE p bdy)
-        printAny "let" (mkSimplePatLet ty1 vE p bdy)
-        printAny "matched" letExpr
         -- return just this expression to be either placed
         -- in a new wildcard branch, or to completely replace the case,
         -- iff it is the first alternative.
@@ -854,16 +856,17 @@ flattenConPatDetails (RecCon (HsRecFields flds d)) _ tys = do
   return (RecCon (HsRecFields flds' d), concat vs, concat args)
 flattenConPatDetails (InfixCon a1 a2) tys _ = do
   [v1, v2] <- mapM (\(Scaled _ ty) -> mkVar ty) tys
-  let [p1,p2] = map mkVarPat [v1,v2]
+  let p1 = mkVarPat v1
+      p2 = mkVarPat v2
   return (InfixCon p1 p2, [v1,v2], [a1,a2])
 
 flattenRecField :: [Type] -> LHsRecField GhcTc (LPat GhcTc)
                 -> TcM (LHsRecField GhcTc (LPat GhcTc), [Var], [LPat GhcTc])
-flattenRecField tys (L l (HsRecField ann idt p pn)) = do
+flattenRecField tys (L l (HsRecField x idt p pn)) = do
   let ty = funResultTy (instantiateWith tys (varType (extFieldOcc (unLoc idt))))
   v <- mkVar ty
   let p' = noLocA (VarPat noExtField (noLocA v))
-  return (L l (HsRecField ann idt p' pn), [v], [p])
+  return (L l (HsRecField x idt p' pn), [v], [p])
 
 mkVar :: Type -> TcM Var
 mkVar ty = do

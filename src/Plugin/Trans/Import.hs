@@ -26,6 +26,7 @@ import GHC.Builtin.Names
 import GHC.Plugins
 
 import Plugin.Effect.Annotation
+import Plugin.Trans.Util
 
 -- | A plugin that checks if all imported modules
 -- have been compiled with the plugin or marked as compatible.
@@ -69,14 +70,14 @@ isDataKind (Module u n, _) =
 -- and the source span of the import declaration, if available.
 getAnnFor :: Unit -> HomePackageTable -> AnnEnv -> Module -> [ImportedBy]
           -> (Module, [NondetTag], Maybe SrcSpan)
-getAnnFor unit modinfo annsExt mdl imps = (mdl, ann, imp)
-  where
-    Just info = lookupHpt modinfo (moduleName mdl)
-    annsHome = mkAnnEnv (md_anns (hm_details info))
-    anns | unit == moduleUnit mdl = annsHome
-         | otherwise              = annsExt
-    ann = findAnns deserializeWithData anns (ModuleTarget mdl)
-    imp = msum (map importSpanMaybe imps)
+getAnnFor unit modinfo annsExt mdl imps
+  | unit == moduleUnit mdl = case lookupHpt modinfo (moduleName mdl) of
+      Nothing   -> panicAnyUnsafe "Cannot find info for module" mdl
+      Just info -> (mdl, findAnns' (mkAnnEnv (md_anns (hm_details info))), imp)
+  | otherwise = (mdl, findAnns' annsExt, imp)
+    where
+      imp = msum (map importSpanMaybe imps)
+      findAnns' anns = findAnns deserializeWithData anns (ModuleTarget mdl)
 
 -- | Get all imported modules.
 allImportedMdls :: TcGblEnv -> [(Module, [ImportedBy])]
