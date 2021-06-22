@@ -732,8 +732,6 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
       e1ty <- getTypeOrPanic (noLocA e) >>= liftTypeTcM tcs -- ok
       mtc <- getMonadTycon
       ftc <- getFunTycon
-      printAny "e1ty" e1ty
-      printAny "e" e
       let (ty1, restty) = splitMyFunTy mtc ftc (bindingType e1ty)
       let (ty2, ty3) = splitMyFunTy mtc ftc (bindingType restty)
       e2 <- mkApp (mkNewApply2Unlifted (bindingType ty1) (bindingType ty2))
