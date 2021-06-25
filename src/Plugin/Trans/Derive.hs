@@ -1,3 +1,4 @@
+{-# LANGUAGE TupleSections #-}
 {-|
 Module      : Plugin.Trans.Derive
 Description : Create internal derive declarations for data types
@@ -46,7 +47,8 @@ mkDerivingGen (old, new) | isVanillaAlgTyCon new = do
   -- Get the lifted type constructor type.
   let newtyconty = toTy (tyConName new)
   -- Get all type variables of the lifted type constructor.
-  let newvars = map varName $ tyConTyVars new
+  let newvars = map (varName . fst) $ visTyConTyVarsRoles new
+
   -- Apply the class to the fully saturated lifted type constructor.
   let newbdy = mkHsAppTy clsty (foldr appVars newtyconty (reverse newvars))
   let newty = newbdy
@@ -58,7 +60,7 @@ mkDerivingGen (old, new) | isVanillaAlgTyCon new = do
 
   -- Do the same for the old type constructor.
   let oldtyconty = toTy (tyConName old)
-  let oldvars = map varName $ tyConTyVars old
+  let oldvars = map (varName . fst) $ visTyConTyVarsRoles old
   let oldbdy = mkHsAppTy clsty (foldr appVars oldtyconty oldvars)
   let oldty = oldbdy
   let oldtysig = HsSig noExtField (HsOuterImplicit oldvars) oldty
@@ -82,7 +84,7 @@ mkDerivingShare (_, tycon) | isVanillaAlgTyCon tycon = do
   -- Get the lifted type constructor type.
   let tyconty = toTy (tyConName tycon)
   -- Get all type variables of the lifted type constructor.
-  let vars = tyConTyVars tycon
+  let vars = map fst $ visTyConTyVarsRoles tycon
   let varsname = map varName vars
   let varsty = map mkTyVarTy vars
   -- Get types of every constructor argument.
@@ -115,8 +117,9 @@ mkDerivingNF (old, new) | isVanillaAlgTyCon new = do
   let mty = toTy mname
   let newtyconty = toTy (tyConName new)
   let oldtyconty = toTy (tyConName old)
-  newvars <- mapM alterVar $ tyConTyVars new
-  let oldvars = tyConTyVars old
+  newvarsRoles <- mapM (\(v,r) -> (,r) <$> alterVar v) $ visTyConTyVarsRoles new
+  let newvars = map fst newvarsRoles
+  let oldvars = map fst $ visTyConTyVarsRoles old
   let newvarsty = map mkTyVarTy newvars
   let oldvarsty = map mkTyVarTy oldvars
   let newvarsname = map varName newvars
@@ -129,11 +132,11 @@ mkDerivingNF (old, new) | isVanillaAlgTyCon new = do
   -- In addition to requiring a Normalform instance for every value parameter,
   -- we also need a Normalform instance for each phanton type variable.
   -- Otherwise we run into problems with the functional dependencies of NF.
-  let phanVarsNew = filter ((==Phantom) . fst) $ zip (tyConRoles new) newvars
-  let phanVarsOld = filter ((==Phantom) . fst) $ zip (tyConRoles old) oldvars
-  let newreq = map (nlHsTyVar . varName . snd) phanVarsNew ++
+  let phanVarsNew = filter ((==Phantom) . snd) $ newvarsRoles
+  let phanVarsOld = filter ((==Phantom) . snd) $ visTyConTyVarsRoles old
+  let newreq = map (nlHsTyVar . varName . fst) phanVarsNew ++
                mapMaybe (getRequired mname) newtys
-  let oldreq = map (nlHsTyVar . varName . snd) phanVarsOld ++
+  let oldreq = map (nlHsTyVar . varName . fst) phanVarsOld ++
                mapMaybe (getRequired mname) oldtys
 
   let ctxt = zipWith (mkHsAppTy . mkHsAppTy (mkHsAppTy nfcty mty)) newreq oldreq
@@ -207,3 +210,12 @@ typeToLHsType = go
     go_tv2 :: TyVar -> LHsTyVarBndr Specificity GhcRn
     go_tv2 tv = noLocA $ KindedTyVar EpAnnNotUsed SpecifiedSpec
                                      (noLocA (varName tv)) (go (tyVarKind tv))
+
+visTyConTyVarsRoles :: TyCon -> [(TyVar, Role)]
+visTyConTyVarsRoles tc =
+  mapMaybe varIfVisible (zip (tyConBinders tc) (tyConRoles tc))
+  where
+    varIfVisible (Bndr v (AnonTCB VisArg)                    , r) = Just (v, r)
+    varIfVisible (Bndr v (NamedTCB Required)                 , r) = Just (v, r)
+    varIfVisible (Bndr v (NamedTCB (Invisible SpecifiedSpec)), r) = Just (v, r)
+    varIfVisible _                                                = Nothing

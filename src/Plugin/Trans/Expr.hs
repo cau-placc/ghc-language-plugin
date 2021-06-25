@@ -483,38 +483,10 @@ liftMonadicExpr given tcs (L l (NegApp _ e (SyntaxExprTc n ws w))) =
 liftMonadicExpr _ _ (L _ (NegApp _ _ NoSyntaxExprTc)) = undefined
 liftMonadicExpr given tcs (L l (HsPar x e)) =
   L l . HsPar x <$> liftMonadicExpr given tcs e
-liftMonadicExpr given tcs (L _ (SectionL _ e1 e2)) = do
--- (x op) -> (\x -> \y -> x `op` y)) x
-  ty <- getTypeOrPanic e2 -- ok
-  mtc <- getMonadTycon
-  ftc <- getFunTycon
-  let (arg1, ty') = splitMyFunTy mtc ftc ty
-  let scaled1 = Scaled Many arg1
-  let (arg2, res) = splitMyFunTy mtc ftc ty'
-  let scaled2 = Scaled Many arg2
-  v1 <- freshVar scaled1
-  v2 <- freshVar scaled2
-  let v1e = noLocA (HsVar noExtField (noLocA v1))
-  let v2e = noLocA (HsVar noExtField (noLocA v2))
-  let lam1 = mkLam (noLocA v2) scaled2 (mkHsApp (mkHsApp e2 v1e) v2e) res
-  let lam2 = mkLam (noLocA v1) scaled1 lam1 (mkVisFunTyMany arg2 res)
-  liftMonadicExpr given tcs (mkHsApp (noLocA (HsPar EpAnnNotUsed lam2)) e1)
-liftMonadicExpr given tcs (L _ (SectionR _ e1 e2)) = do
--- (op y) -> (\y -> \x -> x `op` y)) y
-  ty <- getTypeOrPanic e1 -- ok
-  mtc <- getMonadTycon
-  ftc <- getFunTycon
-  let (arg1, ty') = splitMyFunTy mtc ftc ty
-  let scaled1 = Scaled Many arg1
-  let (arg2, res) = splitMyFunTy mtc ftc ty'
-  let scaled2 = Scaled Many arg2
-  v1 <- freshVar scaled1
-  v2 <- freshVar scaled2
-  let v1e = noLocA (HsVar noExtField (noLocA v1))
-  let v2e = noLocA (HsVar noExtField (noLocA v2))
-  let lam1 = mkLam (noLocA v1) scaled1 (mkHsApp (mkHsApp e1 v1e) v2e) res
-  let lam2 = mkLam (noLocA v2) scaled2 lam1 (mkVisFunTyMany arg1 res)
-  liftMonadicExpr given tcs (mkHsApp (noLocA (HsPar EpAnnNotUsed lam2)) e2)
+liftMonadicExpr _ _ e@(L _ (SectionL _ _ _)) = do
+  panicAny "Sections should have been desugared by GHC already" e
+liftMonadicExpr _ _ e@(L _ (SectionR _ _ _)) =
+  panicAny "Sections should have been desugared by GHC already" e
 liftMonadicExpr given tcs (L _ (ExplicitTuple _ args b)) =
   liftExplicitTuple given tcs args b
 liftMonadicExpr _    _   e@(L _ ExplicitSum {}) = do
@@ -952,7 +924,7 @@ liftExplicitTuple given tcs args b = do
       let (_, resty') = splitMyFunTy mtc ftc resty
       inner <- liftExplicitTuple' (bindingType resty') (arg:col) w' xs
       let lam = mkLam v (Scaled m ty') inner resty'
-      mkApp mkNewReturnTh resty [lam]
+      mkApp (mkNewReturnFunTh ty') resty' [lam]
     liftExplicitTuple' resty col w [] = do
       let exprArgs = reverse col
       dc <- liftIO (getLiftedCon (tupleDataCon b (length exprArgs)) tcs)

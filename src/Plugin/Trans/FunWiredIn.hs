@@ -123,4 +123,6 @@ wiredIn =
   , mkOrig gHC_PRIM    (mkVarOcc "seq")
   , mkOrig gHC_PRIM    (mkVarOcc "<#")
   , mkOrig gHC_PRIM    (mkVarOcc "==#")
+  , mkOrig gHC_PRIM    (mkVarOcc "leftSection")
+  , mkOrig gHC_PRIM    (mkVarOcc "rightSection")
   ]
