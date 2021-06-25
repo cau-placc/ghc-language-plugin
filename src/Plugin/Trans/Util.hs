@@ -28,11 +28,16 @@ import GHC.Tc.Types
 import GHC.Tc.Gen.Expr
 import GHC.Tc.Types.Evidence
 import GHC.Tc.Utils.Monad
+import GHC.Core.TyCo.Rep
 import GHC.Unit.Finder
 import GHC.Rename.Expr
 import GHC.Data.Bag
 import GHC.Types.SourceText
 import GHC.Parser.Annotation
+
+namedTyCoVarBinder_maybe :: TyCoBinder -> Maybe TyCoVarBinder
+namedTyCoVarBinder_maybe (Named v) = Just v
+namedTyCoVarBinder_maybe _         = Nothing
 
 -- | Lift a computation from the 'Q' monad to the type checker monad.
 liftQ :: Q a -> TcM a

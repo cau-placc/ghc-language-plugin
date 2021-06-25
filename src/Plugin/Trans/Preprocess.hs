@@ -82,8 +82,9 @@ preprocessGRhs tcs (L a (GRHS b c body)) = do
 preprocessExpr :: TyConMap -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
 preprocessExpr tcs (L l1 (HsVar x (L l2 v))) = do
   mtc <- getMonadTycon
+  ftc <- getFunTycon
   stc <- getShareClassTycon
-  v' <- setVarType v . fst <$> liftIO (removeNondet tcs mtc stc (varType v))
+  v' <- setVarType v . fst <$> liftIO (removeNondet tcs mtc ftc stc (varType v))
   let e = (L l1 (HsVar x (L l2 v')))
   return e
 preprocessExpr _ e@(L _ HsLit{}) =

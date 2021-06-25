@@ -122,6 +122,8 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
   dumpWith DumpOriginalTypeEnv dopts (tcg_type_env env)
 
   mtycon <- getMonadTycon
+  ftycon <- getFunTycon
+  stycon <- getShareClassTycon
 
   -- remove any dummy evidence introduced by the constraint solver plugin
   let tcg_ev_binds' = filterBag (not . isDummyEv) (tcg_ev_binds env)
@@ -142,6 +144,8 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
         rmNondetVar e = e
         rmNondet (TyConApp tc [inner])
           | mtycon == tc = inner
+        rmNondet (TyConApp tc [arg, res])
+          | ftycon == tc = mkVisFunTyMany arg res
         rmNondet other   = other
     Nothing -> return ()
 
@@ -150,11 +154,10 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
 
   -- lift datatypes, we need the result for the lifting of datatypes itself
   s <- getUniqueSupplyM
-  stycon <- getShareClassTycon
   instEnvs <- tcGetFamInstEnvs
   res <- liftIO ((mdo
     liftedTycns <- snd <$>
-      mapAccumM (\s' t -> liftTycon flags instEnvs stycon mtycon s' tnsM tyconsMap t)
+      mapAccumM (\s' t -> liftTycon flags instEnvs stycon ftycon mtycon s' tnsM tyconsMap t)
         s (tcg_tcs env)
     let tycns = mapMaybe (\(a,b) -> fmap (a,) b) liftedTycns
     let tnsM = listToUFM tycns
@@ -195,18 +198,17 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
   -- generate module annotation
   let a = Annotation (ModuleTarget (tcg_semantic_mod env))
             (toSerialized serializeWithData Nondeterministic)
-
-  -- update environment and remove tc plugins temporarily
+  -- update environment and temporarily remove tc plugins
   let aenv = tcg_ann_env env
-  let anns = tcg_anns env
+  let annotations = tcg_anns env
   let aenv' = extendAnnEnvList aenv [a]
-  let anns' = a : anns
+  let annotations' = a : annotations
   let tenv = plusTypeEnv (tcg_type_env env) (typeEnvFromEntities [] tcg_tcs' [] [])
   writeTcRef (tcg_type_env_var env) tenv
   setGblEnv (env { tcg_tcs        = tcg_tcs'
                  , tcg_type_env   = tenv
                  , tcg_ann_env    = aenv'
-                 , tcg_anns       = anns'
+                 , tcg_anns       = annotations'
                  , tcg_rdr_env    = rdr
                  , tcg_ev_binds   = tcg_ev_binds'
                  , tcg_tc_plugins = [] }) $ do

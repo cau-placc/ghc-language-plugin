@@ -117,16 +117,17 @@ transformWanted m _ w@(CIrredCan (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
     | tc == eqPrimTyCon
     = unsafeTcPluginTcM $ do
       mtc <- getMonadTycon
+      ftc <- getFunTycon
       stc <- getShareClassTycon
       -- Un-lift both sides of the equality.
-      (ty1', b1) <- liftIO (removeNondetShareable m mtc stc ty1)
-      (ty2', b2) <- liftIO (removeNondetShareable m mtc stc ty2)
+      (ty1', b1) <- liftIO (removeNondetShareable m mtc ftc stc ty1)
+      (ty2', b2) <- liftIO (removeNondetShareable m mtc ftc stc ty2)
       -- As long as one of the sides changed,
       -- return the constraint as solved and create a new one
       if b1 || b2
         then do
               -- Un-lift any information about the origin of the constraint.
-              origin' <- liftIO (transformOrigin m mtc stc (ctl_origin loc))
+              origin' <- liftIO (transformOrigin m mtc ftc stc (ctl_origin loc))
               -- Create the new IORef that will be filled with the evidence
               -- for the new equality later.
               newhref <- liftIO (newIORef Nothing)
@@ -213,22 +214,25 @@ liftClassConstraint m pty xi cls f = unsafeTcPluginTcM $ do
 
 -- | Transform the origin of a constraint
 -- to remove any mention of a Nondet type constructor.
-transformOrigin :: TyConMap -> TyCon -> TyCon -> CtOrigin -> IO CtOrigin
-transformOrigin tcs mtc stc (TypeEqOrigin act ex th vis) = do
-  act' <- fst <$> removeNondetShareable tcs mtc stc act
-  ex' <- fst <$> removeNondetShareable tcs mtc stc ex
+transformOrigin :: TyConMap -> TyCon -> TyCon -> TyCon -> CtOrigin
+                -> IO CtOrigin
+transformOrigin tcs mtc ftc stc (TypeEqOrigin act ex th vis) = do
+  act' <- fst <$> removeNondetShareable tcs mtc ftc stc act
+  ex' <- fst <$> removeNondetShareable tcs mtc ftc stc ex
   return (TypeEqOrigin act' ex' th vis)
-transformOrigin _ _ _ o = return o
+transformOrigin _ _ _ _ o = return o
 
-removeNondet :: TyConMap -> TyCon -> TyCon -> Type -> IO (Type, Bool)
+removeNondet :: TyConMap -> TyCon -> TyCon -> TyCon -> Type -> IO (Type, Bool)
 removeNondet = removeGeneral False
 
-removeNondetShareable :: TyConMap -> TyCon -> TyCon -> Type -> IO (Type, Bool)
+removeNondetShareable :: TyConMap -> TyCon -> TyCon -> TyCon -> Type
+                      -> IO (Type, Bool)
 removeNondetShareable = removeGeneral True
 
 -- | Un-lift a given type. Returns the new type and True iff the type changed.
-removeGeneral :: Bool -> TyConMap -> TyCon -> TyCon -> Type -> IO (Type, Bool)
-removeGeneral remS tcs mtc stc = removeGeneral' . expandTypeSynonyms
+removeGeneral :: Bool -> TyConMap -> TyCon -> TyCon -> TyCon -> Type
+              -> IO (Type, Bool)
+removeGeneral remS tcs mtc ftc stc = removeGeneral' . expandTypeSynonyms
   where
     removeGeneral' (ForAllTy b ty) =
       first (ForAllTy b) <$> removeGeneral' ty
@@ -252,6 +256,11 @@ removeGeneral remS tcs mtc stc = removeGeneral' . expandTypeSynonyms
     removeGeneral' (TyConApp tc [ty])
       | tc == mtc =
         second (const True) <$> removeGeneral' ty
+    removeGeneral' (TyConApp tc [ty1, ty2])
+      | tc == ftc = do
+          ty1' <- fst <$> removeGeneral' ty1
+          ty2' <- fst <$> removeGeneral' ty2
+          return (FunTy VisArg Many ty1' ty2', True)
     removeGeneral' (TyConApp tc args) = do
       (args', bs) <- unzip <$> mapM removeGeneral' args
       tc' <- lookupTyConMap GetOld tcs tc

@@ -63,7 +63,8 @@ evalN n = do
 
 -- | Deconstruct a lifted type to collect its arguments.
 collectArgs :: Type -> Q [Type]
-collectArgs (AppT (AppT ArrowT ty1) ty2) = (ty1 :) <$> collectArgs ty2
+collectArgs (AppT (AppT (ConT nm) ty1) ty2)
+  | funcName == nm                = (ty1 :) <$> collectArgs ty2
 collectArgs (ForallT      _ _ ty) = collectArgs ty
 collectArgs (ForallVisT     _ ty) = collectArgs ty
 collectArgs (AppT  (ConT nm) ty2)
@@ -81,19 +82,25 @@ genEval sma fname [] = do
   rEff  <- [| \mode m -> modeOp mode (allValuesNF m) |]
   return (AppE (AppE rEff sma) (VarE fname))
 genEval sma fname args = do
-  rEff  <- [| \mode inn f -> modeOp mode (allValuesNF (f >>= inn)) |]
+  rEff  <- [| \mode inn f -> modeOp mode $
+                  allValuesNF (f >>= \(Func f') -> inn f') |]
   inner <- genHelp args
   return (foldl AppE rEff [sma, inner, VarE fname])
   where
     genHelp :: [(Name, Type)] -> Q Exp
-    genHelp []            = [| return |]
+    genHelp []           = error "cannot happen"
+    genHelp [(v,_)]      = do
+      ex <- [| \vv vx -> vx (liftE (return vv)) |]
+      return (AppE ex (VarE v))
     genHelp ((v,_):rest) = do
-      x <- newName "f"
-      ex <- [| \inn vx vv -> vx (liftE (return vv)) >>= inn |]
+      ex <- [| \inn vv vx -> vx (liftE (return vv)) >>= \(Func f) -> inn f |]
       inner <- genHelp rest
-      let lam = foldl AppE ex [inner, VarE x, VarE v]
-      return (LamE [VarP x] lam)
+      return (foldl AppE ex [inner, VarE v])
 
 -- | Name of the monad 'Nondet' used in the lifting.
 ndName :: Name
 ndName = ''Nondet
+
+-- | Name of the function type '-->' used in the lifting.
+funcName :: Name
+funcName = ''(-->)

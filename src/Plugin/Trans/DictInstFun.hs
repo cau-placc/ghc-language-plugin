@@ -40,9 +40,9 @@ liftDictInstFun bind tcs clsInsts = do
   -- Find the correct binding we have to lift from the potential AbsBinds.
   let exported = if isAbsBinds bind then map abe_poly (abs_exports bind) else []
   -- Find the corresponding lifted instance information.
-  let Just new = find ((`elem` exported) . is_dfun) clsInsts
-  -- Perform the actual lifting.
-  liftDictInstBinding tcs new bind
+  case find ((`elem` exported) . is_dfun) clsInsts of
+    Nothing  -> panicAny "Could not find lifted instance info" exported
+    Just new -> liftDictInstBinding tcs new bind -- Perform the actual lifting.
 
 -- | Lift the dictionary binding of a type class
 -- by using its lifted instance info.
@@ -128,10 +128,9 @@ liftDictExpr cls w tcs (L l ex) = L l <$> liftDictExpr' ex
         _ -> do
           let (bs1, ty1) = splitInvisPiTysN (length (is_tvs cls)) ty
               (bs2, ty2) = splitInvisFunTys ty1
-              named = filter isNamedBinder bs1
-          uss <- replicateM (length named) getUniqueSupplyM
-          let bs = map (\(Named b') -> b') named
-              mkShareType t' = mkTyConApp stc [mkTyConTy mtc, t']
+              bs = mapMaybe namedTyCoVarBinder_maybe bs1
+          uss <- replicateM (length bs) getUniqueSupplyM
+          let mkShareType t' = mkTyConApp stc [mkTyConTy mtc, t']
               cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
           bs' <- liftIO (mapM (replacePiTy tcs) (bs1 ++ bs2))
           ty' <- mkPiTys bs' . flip (foldr mkInvisFunTyMany) cons

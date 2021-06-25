@@ -39,6 +39,7 @@ liftRecordSel tcs (AbsBinds _ tvs evs ex evb bs sig)
     [ABE _ p m w s] <- ex = do
       u <- getUniqueM
       stc <- getShareClassTycon
+      ftc <- getFunTycon
       us1 <- getUniqueSupplyM
       us2 <- getUniqueSupplyM
 
@@ -49,11 +50,11 @@ liftRecordSel tcs (AbsBinds _ tvs evs ex evb bs sig)
 
       -- Look up how the lifted record selector should look.
       mty <- mkTyConTy <$> getMonadTycon
-      p' <- liftIO (getLiftedRecSel stc mty us1 tcs parent p)
+      p' <- liftIO (getLiftedRecSel stc ftc mty us1 tcs parent p)
       -- Lift its type.
       m' <- setVarType (setVarUnique (
             setVarName m (setNameUnique (varName m) u)) u)
-              <$> liftIO (liftResultTy stc mty us2 tcs (varType m))
+              <$> liftIO (liftResultTy stc ftc mty us2 tcs (varType m))
       -- Lift its implementation.
       mg' <- liftRecSelMG tcs m' mg
 
@@ -85,15 +86,15 @@ liftRecSelMG tcs f (MG (MatchGroupTc args res) (L _ alts) orig)
 -- | Lift an alternative of a record selector.
 liftRecSelAlt :: TyConMap -> Var -> LMatch GhcTc (LHsExpr GhcTc)
               -> TcM (LMatch GhcTc (LHsExpr GhcTc))
-liftRecSelAlt tcs f (L _ (Match _ ctxt [pat] rhs)) = do
+liftRecSelAlt tcs f (L _ (Match _ (FunRhs _ fixity strict) [pat] rhs)) = do
   -- Lift any left-side pattern.
   (pat', vs) <- liftPattern tcs pat
-  let ctxt' = ctxt { mc_fun = noLocA (varName f) }
+  let ctxt = FunRhs (noLocA (varName f)) fixity strict :: HsMatchContext GhcRn
   -- Replace any variables on the right side.
   -- Thankfully, a record selector is always just a single variable on the rhs.
   rhs' <- everywhere (mkT (replaceVarExpr (map swap vs)))
             <$> everywhereM (mkM (liftErrorWrapper tcs)) rhs
-  return (noLocA (Match EpAnnNotUsed ctxt' [pat'] rhs'))
+  return (noLocA (Match EpAnnNotUsed ctxt [pat'] rhs'))
 liftRecSelAlt _ _ x = return x
 
 -- | Substitute variables in the given expression.

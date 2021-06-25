@@ -36,20 +36,23 @@ lookupDefaultReplacement :: TyCon -> TyCon -> Name -> TcM Var
 lookupDefaultReplacement tc tc' oldnm = do
     builtInModule <- lookupConfig builtInModConfigStr
     -- detect the old and new class first.
-    let Just oldCls = tyConClass_maybe tc
-        Just newCls = tyConClass_maybe tc'
-        Just (_, Just (newnm, _)) =
-           find (defLike oldnm) (classOpItems newCls)
-    -- Categorize the class and function and check if it has a replacement.
-    case lookup (categorize (className oldCls) oldnm) defaultReplacements of
-      Nothing -> tcLookupId newnm
-      -- Create the required replacement variable and get its type.
-      Just nm -> do
-        mdl <- findImportedOrPanic builtInModule
-        tcLookupId =<< lookupOrig mdl nm
+    case tyConClass_maybe tc of
+      Nothing     -> panicAny "Expected a class, but recieved" tc
+      Just oldCls ->
+        case tyConClass_maybe tc' >>= find defLike . classOpItems of
+          Nothing           -> panicAny "Expected a class, but recieved" tc'
+          Just (_, Nothing) -> panicAny "Could not find default method for" tc'
+          Just (_, Just (newnm, _)) ->
+            case lookup (categorize (className oldCls) oldnm)
+                    defaultReplacements of
+              Nothing -> tcLookupId newnm
+              -- Create the required replacement variable and get its type.
+              Just nm -> do
+                mdl <- findImportedOrPanic builtInModule
+                tcLookupId =<< lookupOrig mdl nm
   where
-    defLike n (_ , Just (n', _)) = occName n == occName n'
-    defLike _ _                  = False
+    defLike (_ , Just (n', _)) = occName oldnm == occName n'
+    defLike _                  = False
 
 -- | look up the replacement for a wired-in function or return the original
 -- if no replacement is known or required.
@@ -98,9 +101,9 @@ defaultReplacements =
 -- | Look up the Name for a given RdrName
 -- where the original name is already known.
 lookupRdrBase :: RdrName -> TcM Name
-lookupRdrBase n =
-  let Just (m, o) = isOrig_maybe n
-  in lookupOrig m o
+lookupRdrBase n = case isOrig_maybe n of
+  Nothing     -> panicAnyUnsafe "Wired-In name was not original" n
+  Just (m, o) -> lookupOrig m o
 
 -- A list of all wired-in functions. Their replacement always has the same name
 -- and is defined in 'Plugin.CurryPlugin.BuiltIn'.
@@ -120,4 +123,6 @@ wiredIn =
   , mkOrig gHC_PRIM    (mkVarOcc "seq")
   , mkOrig gHC_PRIM    (mkVarOcc "<#")
   , mkOrig gHC_PRIM    (mkVarOcc "==#")
+  , mkOrig gHC_PRIM    (mkVarOcc "leftSection")
+  , mkOrig gHC_PRIM    (mkVarOcc "rightSection")
   ]

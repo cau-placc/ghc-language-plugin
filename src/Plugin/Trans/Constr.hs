@@ -57,6 +57,7 @@ liftConstr :: Bool                -- ^ True iff the type constructor should not 
            -> DynFlags            -- ^ Compiler flags
            -> FamInstEnvs         -- ^ Family Instance Environments, both home and external
            -> TyCon               -- ^ 'Shareable' type constructor
+           -> TyCon               -- ^ '-->' type constructor
            -> TyCon               -- ^ 'Nondet' type constructor
            -> UniqFM TyCon TyCon  -- ^ Map of old TyCon's from this module to lifted ones
            -> TyConMap            -- ^ Map of imported old TyCon's to lifted ones
@@ -64,7 +65,7 @@ liftConstr :: Bool                -- ^ True iff the type constructor should not 
            -> UniqSupply          -- ^ Supply of fresh unique keys
            -> DataCon             -- ^ Constructor to be lifted
            -> IO DataCon          -- ^ Lifted constructor
-liftConstr noRename dflags instEnvs stycon mtycon tcs tcsM tycon s cn = do
+liftConstr noRename dflags instEnvs stycon ftycon mtycon tcs tcsM tycon s cn = do
 
   -- Create all required unique keys.
   let (s1, tmp1) = splitUniqSupply s
@@ -115,7 +116,7 @@ liftConstr noRename dflags instEnvs stycon mtycon tcs tcsM tycon s cn = do
     mty = mkTyConTy mtycon
     liftAndReplaceType us (Scaled m ty) = Scaled <$>
           (replaceTyconTyPure tcs <$> replaceTyconTy tcsM m) <*>
-          (replaceTyconTyPure tcs <$> liftType    stycon mty us tcsM ty)
+          (replaceTyconTyPure tcs <$> liftType    stycon ftycon mty us tcsM ty)
     replaceCon = fmap (replaceTyconTyPure tcs) . replaceTyconTy tcsM
 
 -- | Lift a record field by renaming its labels.
@@ -139,13 +140,14 @@ getLiftedCon c tcs = do
 
 -- | Get a lifted recrd selector from the given one and the TyCon map.
 getLiftedRecSel :: TyCon        -- ^ 'Shareable' type constructor
+                -> TyCon        -- ^ '-->' type constructor
                 -> Type         -- ^ 'Nondet' type
                 -> UniqSupply   -- ^ Fresh supply of unique keys
                 -> TyConMap     -- ^ Map of imported old TyCon's to lifted ones
                 -> RecSelParent -- ^ Origin of the record selector
                 -> Var          -- ^ Record selector to be lifted
                 -> IO Var       -- ^ Lifted record selector
-getLiftedRecSel stc mty us tcs (RecSelData origTc) v = do
+getLiftedRecSel stc ftc mty us tcs (RecSelData origTc) v = do
   -- look up the lifted type constructor.
   tc' <- lookupTyConMap GetNew tcs origTc
   -- Get the index of the record selector in its original definition.
@@ -157,7 +159,7 @@ getLiftedRecSel stc mty us tcs (RecSelData origTc) v = do
       -- of the selector. It should still be a unary function.
       ty <- if normalNewty
         then replaceTyconTy tcs (varType v)
-        else liftResultTy stc mty us tcs (varType v)
+        else liftResultTy stc ftc mty us tcs (varType v)
       -- Use the index to find its new name in the new definition
       let nm = flSelector (tyConFieldLabels tc' !! y)
       return (setIdDetails (setVarName (setVarType (setVarUnique v
@@ -165,7 +167,7 @@ getLiftedRecSel stc mty us tcs (RecSelData origTc) v = do
     Nothing -> return v
   where
     midx = findIndex ((==varName v) . flSelector) (tyConFieldLabels origTc)
-getLiftedRecSel _ _ _ _ p@(RecSelPatSyn _) v =
+getLiftedRecSel _ _ _ _ _ p@(RecSelPatSyn _) v =
   throw (RecordLiftingException v p reason)
     where
       reason = "Pattern synonyms are not supported by the plugin yet"

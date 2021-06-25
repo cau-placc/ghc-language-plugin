@@ -10,5 +10,7 @@ plugin = setConfigFlagsFor flags languagePlugin
   where
     flags = [ (fst monadModConfigStr, "Plugin.CurryPlugin.Monad")
             , (fst monadNameConfigStr, "Nondet")
+            , (fst funModConfigStr, "Plugin.CurryPlugin.Monad")
+            , (fst funNameConfigStr, "-->")
             , (fst preludeModConfigStr, "Plugin.CurryPlugin.Prelude")
             , (fst builtInModConfigStr, "Plugin.CurryPlugin.BuiltIn") ]
