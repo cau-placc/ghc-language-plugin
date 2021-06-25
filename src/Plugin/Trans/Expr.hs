@@ -772,30 +772,32 @@ liftVarWithWrapper given tcs w v dttKey
     let appliedType = head $ fst $ collectTyApps w
     liftedType <- liftTypeTcM tcs appliedType
     -- tagToEnum :: Int# -> tyApp in w
-    -- return (\flint -> flint >>= \(I# i) -> liftE (tagToEnum @w i)))
-    lam <- liftQ [| \ttenum -> return (\ndint -> ndint >>=
-                    (\(I# i) -> liftE (return (ttenum i)))) |]
+    -- returnFunc (\flint ndint -> ndint >>= \(I# i) -> liftE (tagToEnum @w i)))
+    lam <- liftQ [| \ttenum ndint -> ndint >>=
+                    (\(I# i) -> liftE (return (ttenum i))) |]
     mtycon <- getMonadTycon
-    let ty = (intPrimTy `mkVisFunTyMany` appliedType) `mkVisFunTyMany`
-             mkTyConApp mtycon [mkTyConApp mtycon [intTy] `mkVisFunTyMany`
-                                liftedType]
-    let arg = noLocA (XExpr (WrapExpr (HsWrap w (HsVar noExtField (noLocA v)))))
-    noLocA . HsPar EpAnnNotUsed <$> mkApp (mkNewAny lam) ty [arg]
+    let argty = mkTyConApp mtycon [intTy]
+    let resty = liftedType
+    let ety = (intPrimTy `mkVisFunTyMany` appliedType)
+                `mkVisFunTyMany` argty `mkVisFunTyMany` resty
+    let tte = noLocA (mkHsWrap w (HsVar noExtField (noLocA v)))
+    e <- noLocA . HsPar EpAnnNotUsed <$> mkApp (mkNewAny lam) ety [tte]
+    mkApp (mkNewReturnFunTh argty) resty [e]
   | varUnique v == dttKey = do
     let appliedType = head $ fst $ collectTyApps w
     liftedType <- liftTypeTcM tcs appliedType
     -- dataToTagKey :: tyApp in w -> Int#
-    -- return (\x -> x >>= \x' -> return (I# (dataToTagKey @w x')))
-    lam <- liftQ [| \dtt -> return (\x -> x >>=
-                    (\x' ->  return (I# (dtt x')))) |]
+    -- returnFunc (\x -> x >>= \x' -> return (I# (dataToTagKey @w x')))
+    lam <- liftQ [| \dtt x -> x >>= (\x' -> return (I# (dtt x'))) |]
     mtycon <- getMonadTycon
     w' <- liftWrapperTcM True tcs w
-    let ty = (bindingType liftedType `mkVisFunTyMany` intPrimTy)
-               `mkVisFunTyMany`
-                  mkTyConApp mtycon [liftedType `mkVisFunTyMany`
-                                     mkTyConApp mtycon [intTy]]
-    let arg = noLocA (XExpr (WrapExpr (HsWrap w' (HsVar noExtField (noLocA v)))))
-    noLocA . HsPar EpAnnNotUsed <$> mkApp (mkNewAny lam) ty [arg]
+    let argty = liftedType
+    let resty = mkTyConApp mtycon [intTy]
+    let ety = (bindingType liftedType `mkVisFunTyMany` intPrimTy)
+               `mkVisFunTyMany` argty `mkVisFunTyMany` resty
+    let dtt = noLocA (mkHsWrap w' (HsVar noExtField (noLocA v)))
+    e <- noLocA . HsPar EpAnnNotUsed <$> mkApp (mkNewAny lam) ety [dtt]
+    mkApp (mkNewReturnFunTh argty) resty [e]
   | isRecordSelector v = do
     -- lift type
     mtc <- getMonadTycon
