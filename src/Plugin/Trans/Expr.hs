@@ -76,7 +76,7 @@ import Plugin.Effect.Classes (liftE)
 -- Second Bool: This is a nested AbsBinds, do not insert into type env
 liftMonadicBinding :: Bool -> Bool -> [Ct] -> TyConMap -> [ClsInst]
                    -> HsBindLR GhcTc GhcTc
-                   -> TcM ([HsBindLR GhcTc GhcTc], [(Var,Var)])
+                   -> TcM ([HsBindLR GhcTc GhcTc], [(Var, LocatedN Var)])
 liftMonadicBinding lcl _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
   setSrcSpanA b $ addLandmarkErrCtxt ("In the definition of" <+> ppr name) $ do
   -- create the dictionary variables
@@ -152,22 +152,32 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
   let bs = map unLoc (bagToList f)
   f' <- listToBag . map noLocA . concat
           <$> mapM (fmap fst . liftMonadicBinding lcl True given' tcs [])
-              (foldr (\(n, o) -> substitute n o) bs vs')
+              (foldr (\(n, o, _) -> substitute n o) bs vs')
 
   -- lift any original evidence that is exported. This is only relevant
   -- for standalone AbsBinds that bind any class parent dictionary
   e' <- mapM (liftEvidence given' tcs)
              (filter isExportedEv (concatMap flattenEv e))
-  vs'' <- mapM (\(v1,v2) -> (,)
+  vs'' <- mapM (\(v1,v2,v3) -> (,,v3)
                     <$> (setVarType v1 <$> liftTypeTcM tcs (varType v1))
                     <*> (setVarType v2 <$> liftTypeTcM tcs (varType v2))) vs'
-  return ([AbsBinds a b allEvs d' e' f' g], vs'')
+  return ([AbsBinds a b allEvs d' e' f' g], map (getLocFrom bs) vs'')
   where
+    bindingVarMaybe :: HsBindLR GhcTc GhcTc -> Maybe (LocatedN Var)
+    bindingVarMaybe (FunBind _ name _ _) = Just name
+    bindingVarMaybe _                    = Nothing
+
+    getLocFrom [] _ = error "Variable does not exist"
+    getLocFrom (x:xs) (v1, v2, v3)
+      | Just (L l name) <- bindingVarMaybe x,
+        name == v3 = (v1, L l v2)
+      | otherwise  = getLocFrom xs (v1, v2, v3)
+
     replaceEv ev = setVarType ev <$> replaceTyconTy tcs (varType ev)
 
     -- Basically do the same as in liftTopTypes, but this time for
     -- both the poly and mono type and for local bindings as well
-    liftEx :: ABExport GhcTc -> TcM (ABExport GhcTc, Maybe (Var,Var))
+    liftEx :: ABExport GhcTc -> TcM (ABExport GhcTc, Maybe (Var,Var,Var))
     liftEx (ABE x v1 v2 w p) = do
       -- change unique only for local decls, as only those are shared
       u <- if lcl then getUniqueM else return (varUnique v1)
@@ -236,7 +246,7 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
       let v1u = setVarUnique v1' u
 
       return ( ABE x v1u v2' (conwrap <.> (conapp <.> rest)) p
-             , Just (setVarUnique v1 u, v1) )
+             , Just (setVarUnique v1 u, v1, v2) )
 
     -- Do not lift any system stuff, except instance fun definitions ($c) and
     -- class default methods ($dm).
@@ -324,7 +334,7 @@ liftEvidence given tcs (EvBind v _ _) = do
   EvBinds <$> simplifyTop (WC (listToBag (cts ++ given)) emptyBag emptyBag)
 
 liftLocalBinds :: [Ct] -> TyConMap -> HsLocalBinds GhcTc
-               -> TcM (HsLocalBinds GhcTc, [(Var,Var)])
+               -> TcM (HsLocalBinds GhcTc, [(Var, LocatedN Var)])
 liftLocalBinds given tcs (HsValBinds x b) = do
   (b', vs) <- liftValBinds given tcs b
   return (HsValBinds x b', vs)
@@ -336,7 +346,7 @@ liftLocalBinds _ _ b@(HsIPBinds _ _) = do
 liftLocalBinds _ _ b = return (b, [])
 
 liftValBinds :: [Ct] -> TyConMap -> HsValBindsLR GhcTc GhcTc
-             -> TcM (HsValBindsLR GhcTc GhcTc, [(Var,Var)])
+             -> TcM (HsValBindsLR GhcTc GhcTc, [(Var, LocatedN Var)])
 liftValBinds _ _ bs@ValBinds {} =
   panicAny "Untyped bindings are not expected after TC" bs
 liftValBinds given tcs (XValBindsLR (NValBinds bs _)) = do
@@ -344,7 +354,7 @@ liftValBinds given tcs (XValBindsLR (NValBinds bs _)) = do
   return (XValBindsLR (NValBinds bs' []), concat vss)
   where
     liftNV :: (RecFlag, LHsBinds GhcTc)
-           -> TcM ((RecFlag, LHsBinds GhcTc), [(Var,Var)])
+           -> TcM ((RecFlag, LHsBinds GhcTc), [(Var, LocatedN Var)])
     liftNV (rf, b) = do
       let bs1 = map unLoc (bagToList b)
       (bs2, vss) <- first (map noLocA . concat) . unzip <$>
@@ -373,14 +383,14 @@ liftMonadicAlt mv given tcs resty (L a (Match b c d rhs)) = do
   rhs' <- liftMonadicRhs mv (concat s) given tcs resty rhs
   return (L a (Match b c d' rhs'))
 
-liftMonadicRhs :: Maybe Var -> [(Var, Var)] -> [Ct] -> TyConMap
+liftMonadicRhs :: Maybe Var -> [(Var, LocatedN Var)] -> [Ct] -> TyConMap
                -> Type -> GRHSs GhcTc (LHsExpr GhcTc)
                -> TcM (GRHSs GhcTc (LHsExpr GhcTc))
 liftMonadicRhs mv s given tcs resty (GRHSs a grhs b) = do
   grhs' <- mapM (liftMonadicGRhs mv s given tcs resty) grhs
   return (GRHSs a grhs' b)
 
-liftMonadicGRhs :: Maybe Var -> [(Var, Var)] -> [Ct] -> TyConMap
+liftMonadicGRhs :: Maybe Var -> [(Var, LocatedN Var)] -> [Ct] -> TyConMap
                 -> Type -> LGRHS GhcTc (LHsExpr GhcTc)
                 -> TcM (LGRHS GhcTc (LHsExpr GhcTc))
 liftMonadicGRhs mv s given tcs bdyty (L a (GRHS b c body)) = do
@@ -526,6 +536,7 @@ liftMonadicExpr given tcs (L l (HsLet x bs e)) = do
   return (L l (HsLet x bs' e''))
 liftMonadicExpr given tcs (L l1 (HsDo x ctxt (L l2 stmts))) = do
   x' <- liftTypeTcM tcs x
+  printAny "x'" x'
   -- Because ListComp are not overloadable,
   -- we have to change them to MonadComp.
   let ctxtSwitch | ListComp <- ctxt = True
@@ -637,7 +648,8 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
       e <- shareVars tcs vs given (noLocA (HsDo ty ctxt (noLocA ss'))) ty
       return [s', noLocA (LastStmt noExtField e Nothing NoSyntaxExprTc)]
   where
-    liftMonadicStmt :: ExprLStmt GhcTc -> TcM (ExprLStmt GhcTc, [(Var, Var)])
+    liftMonadicStmt :: ExprLStmt GhcTc
+                    -> TcM (ExprLStmt GhcTc, [(Var, LocatedN Var)])
     liftMonadicStmt (L l (LastStmt x e a r)) = do
       e' <- liftMonadicExpr given tcs e
       r' <- if synExprExists r
@@ -666,7 +678,8 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
       return (L l (BodyStmt x' e' se' g'), [])
     liftMonadicStmt (L l (LetStmt x bs)) = do
       (bs', vs) <- liftLocalBinds given tcs bs
-      let typeCorrected = map (both (setVarType <*> (bindingType . varType))) vs
+      let f = setVarType <*> (bindingType . varType)
+      let typeCorrected = map (\(a, L l' b) -> (f a, L l' (f b))) vs
       return (L l (LetStmt x bs'), typeCorrected)
     liftMonadicStmt (L _ (ParStmt _ _ _ _)) = do
       reportError (mkMsgEnvelope (getLocA s) neverQualify
@@ -1016,12 +1029,14 @@ liftTick tcs (Breakpoint x i ids) = Breakpoint x i <$> mapM transId ids
     transId v = setVarType v <$> liftTypeTcM tcs (varType v)
 liftTick _ t = return t
 
-shareVars :: TyConMap -> [(Var, Var)] -> [Ct] -> LHsExpr GhcTc -> Type
+shareVars :: TyConMap -> [(Var, LocatedN Var)] -> [Ct] -> LHsExpr GhcTc -> Type
           -> TcM (LHsExpr GhcTc)
 shareVars tcs vs evs e' ety = do
-  foldM (shareVar ety) e' vs
+  foldM (shareVar ety) e' $ reverse $ map (second unLoc)
+                                    $ sortBy ((. snd) . cmpLocated . snd) vs
   where
     -- share v1 >>= \v2 -> e
+    -- differs from the normal lifting, because we optimize for call-by-need
     shareVar ty e (v1,v2)
       | countVarOcc v2 e <= 1 = return (substitute v1 v2 e)
       | Many <- varMult v2     = do

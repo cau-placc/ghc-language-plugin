@@ -36,18 +36,18 @@ import Plugin.Trans.CreateSyntax
 -- | Lift the types of each pattern and
 -- rename variables for sharing and newtypes.
 liftPattern :: TyConMap -> LPat GhcTc
-            -> TcM (LPat GhcTc, [(Var, Var)])
+            -> TcM (LPat GhcTc, [(Var, LocatedN Var)])
 liftPattern = liftPat
 
 liftPat :: TyConMap -> LPat GhcTc
-        -> TcM (LPat GhcTc, [(Var, Var)])
+        -> TcM (LPat GhcTc, [(Var, LocatedN Var)])
 liftPat tcs (L l p) = do
   (r, vs1) <- setSrcSpanA l $ liftPat' tcs p
   return (L l r, vs1)
 
 liftPat' :: TyConMap -> Pat GhcTc
-         -> TcM (Pat GhcTc, [(Var, Var)])
-liftPat' tcs (WildPat ty) =
+         -> TcM (Pat GhcTc, [(Var, LocatedN Var)])
+liftPat' tcs (WildPat ty) = do
   -- This can only occur as a top-level pattern.
   -- This means that we should not wrap the type in Nondet.
   (, []) . WildPat <$> liftInnerTyTcM tcs ty
@@ -59,7 +59,7 @@ liftPat' tcs (VarPat x (L l v)) = do
   ty <- liftTypeTcM tcs (varType v)
   let vnew = setVarUnique (setVarType v ty) u
   let vold = setVarType v ty
-  return (VarPat x (L l vnew), [(vnew, vold)])
+  return (VarPat x (L l vnew), [(vnew, L l vold)])
 liftPat' tcs (LazyPat x p) = do
   (p', vars1) <- liftPat tcs p
   return (LazyPat x p', vars1)
@@ -151,7 +151,7 @@ liftPat' tcs (SigPat _ p _) = liftPat' tcs (unLoc p)
 liftPat' tcs (XPat (CoPat _ p _)) = liftPat' tcs p
 
 liftConDetail :: TyConMap -> RecSelParent -> HsConPatDetails GhcTc
-              -> TcM (HsConPatDetails GhcTc, [(Var, Var)])
+              -> TcM (HsConPatDetails GhcTc, [(Var, LocatedN Var)])
 liftConDetail tcs _ (PrefixCon _ args) = do
   (args', vs) <- unzip <$> mapM (liftPat tcs) args
   return (PrefixCon [] args', concat vs)
@@ -164,7 +164,7 @@ liftConDetail tcs _ (InfixCon arg1 arg2) = do
   return (InfixCon arg1' arg2', vs1 ++ vs2)
 
 liftRecFld :: TyConMap -> RecSelParent -> LHsRecField GhcTc (LPat GhcTc)
-           -> TcM (LHsRecField GhcTc (LPat GhcTc), [(Var, Var)])
+           -> TcM (LHsRecField GhcTc (LPat GhcTc), [(Var, LocatedN Var)])
 liftRecFld tcs p (L l1 (HsRecField x (L l2 idt) pat pn)) = do
   idt' <- liftFieldOcc tcs p idt
   (p', vs) <- liftPat tcs pat

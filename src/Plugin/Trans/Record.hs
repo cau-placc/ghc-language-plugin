@@ -88,7 +88,8 @@ liftRecSelAlt :: TyConMap -> Var -> LMatch GhcTc (LHsExpr GhcTc)
               -> TcM (LMatch GhcTc (LHsExpr GhcTc))
 liftRecSelAlt tcs f (L _ (Match _ (FunRhs _ fixity strict) [pat] rhs)) = do
   -- Lift any left-side pattern.
-  (pat', vs) <- liftPattern tcs pat
+  (pat', vs') <- liftPattern tcs pat
+  let vs = map (\(a, L _ b) -> (a, b)) vs'
   let ctxt = FunRhs (noLocA (varName f)) fixity strict :: HsMatchContext GhcRn
   -- Replace any variables on the right side.
   -- Thankfully, a record selector is always just a single variable on the rhs.

@@ -94,11 +94,14 @@ deriving instance Functor (TopSharingAndLazyT n m)
 
 instance Applicative (LazyT n m) where
   pure x = LazyT (\c -> c x)
-  (<*>)  = ap
+  mf <*> ma = LazyT $ \c -> fromLazyT mf
+                    $ \f -> fromLazyT ma
+                    $ \a -> c (f a)
 
 instance Applicative m => Applicative (StrictT n m) where
   pure = StrictT . pure
   mf <*> ma = StrictT $ fromStrictT mf <*> fromStrictT ma
+  ma *> mb  = StrictT $ fromStrictT ma  *> fromStrictT mb
 
 instance Applicative m => Applicative (NameT n m) where
   pure = NameT . pure
@@ -106,28 +109,37 @@ instance Applicative m => Applicative (NameT n m) where
 
 instance Applicative (TopSharingT n m) where
   pure x = TopSharingT (\c -> c x)
-  (<*>)  = ap
+  mf <*> ma = TopSharingT $ \c -> fromTopSharingT mf
+                          $ \f -> fromTopSharingT ma
+                          $ \a -> c (f a)
 
 instance Applicative (TopSharingAndLazyT n m) where
   pure x = TopSharingAndLazyT (\c -> c x)
-  (<*>)  = ap
+  mf <*> ma = TopSharingAndLazyT $ \c -> fromTopSharingAndLazyT mf
+                                 $ \f -> fromTopSharingAndLazyT ma
+                                 $ \a -> c (f a)
 
 instance Monad (LazyT n m) where
   a >>= k = LazyT (\c s -> fromLazyT a (\x -> fromLazyT (k x) c) s)
+  (>>) = (*>)
 
 instance Monad m => Monad (StrictT n m) where
   ma >>= f = StrictT $ fromStrictT ma >>= fromStrictT . f
+  (>>) = (*>)
 
 instance Monad m => Monad (NameT n m) where
   ma >>= f = NameT $ fromNameT ma >>= fromNameT . f
+  (>>) = (*>)
 
 instance Monad (TopSharingT n m) where
   a >>= k = TopSharingT $ \c s ->
     fromTopSharingT a (\x -> fromTopSharingT (k x) c) s
+  (>>) = (*>)
 
 instance Monad (TopSharingAndLazyT n m) where
   a >>= k = TopSharingAndLazyT $ \c s t ->
     fromTopSharingAndLazyT a (\x -> fromTopSharingAndLazyT (k x) c) s t
+  (>>) = (*>)
 
 instance Alternative m => Alternative (LazyT n m) where
   empty = LazyT (\_ _ -> empty)
