@@ -291,7 +291,7 @@ compileLetBind pb@(L _ (PatBind ty p grhss _)) = do
       lam <- matchExpr (HsLam noExtField mgLam)
       let bdy = HsApp EpAnnNotUsed (noLocA (HsPar EpAnnNotUsed (noLocA lam))) pe
           grhs = GRHS EpAnnNotUsed [] (noLocA bdy)
-          grhssSel = GRHSs noExtField [noLoc grhs]
+          grhssSel = GRHSs emptyComments [noLoc grhs]
             (EmptyLocalBinds noExtField)
           ctxt = FunRhs (noLocA (varName old)) Prefix NoSrcStrict
           alt = Match EpAnnNotUsed ctxt [] grhssSel
@@ -628,7 +628,7 @@ mkAlts v vs ty1 ty2 err eqs@((vp@(L _ (ViewPat _ e p)), _) : _) = do
       mkMG others = MG mgtc (noLocA (as ++ others)) Generated
       mkCse others = HsCase noExtField (noLocA viewExpr) (mkMG others)
       mkGrhs = GRHS EpAnnNotUsed []
-      mkGrhss ex = GRHSs noExtField [noLoc (mkGrhs ex)]
+      mkGrhss ex = GRHSs emptyComments [noLoc (mkGrhs ex)]
                     (EmptyLocalBinds noExtField)
       mkWild :: LHsExpr GhcTc -> Match GhcTc (LHsExpr GhcTc)
       mkWild ex = Match EpAnnNotUsed CaseAlt [noLocA (WildPat pty)] (mkGrhss ex)
@@ -652,7 +652,7 @@ mkAlts v vs ty1 ty2 err eqs@((p, alt) : _)
       fresh <- freshVar patTy
       -- create: let x = (\a -> case a of p' -> v') v in rhs
       let grhs = GRHS EpAnnNotUsed [] (noLocA (HsVar noExtField (noLocA v')))
-          rhs = GRHSs noExtField [noLoc grhs] (EmptyLocalBinds noExtField)
+          rhs = GRHSs emptyComments [noLoc grhs] (EmptyLocalBinds noExtField)
           match = Match EpAnnNotUsed CaseAlt [p'] rhs
           mgtc = MatchGroupTc [patTy] (varType v')
           mg = MG mgtc (noLocA [noLocA match]) Generated
@@ -693,7 +693,7 @@ mkAlts v vs ty1 ty2 err eqs@((p, alt) : _)
         return (Right (noLocA letExpr))
 mkAlts _ _  ty1 _ err   [] =
   let grhs = GRHS EpAnnNotUsed [] err
-      grhss = GRHSs noExtField [noLoc grhs] (EmptyLocalBinds noExtField)
+      grhss = GRHSs emptyComments [noLoc grhs] (EmptyLocalBinds noExtField)
       alt = Match EpAnnNotUsed CaseAlt [noLocA (WildPat ty1)] grhss
   in return (Left [noLocA alt])
 
@@ -707,7 +707,7 @@ viewAlts vs ty2 err ((curr@((L _ (ViewPat _ _ p)), L l _))
   curr' <- flattenEq curr
   bdy <- compileMatching (vs' ++ vs) ty2 [curr'] err
   let grhs = GRHS EpAnnNotUsed [] bdy
-  let grhss = GRHSs noExtField [noLoc grhs] (EmptyLocalBinds noExtField)
+  let grhss = GRHSs emptyComments [noLoc grhs] (EmptyLocalBinds noExtField)
   let a = L l (Match EpAnnNotUsed CaseAlt [p'] grhss)
   restAlts <- viewAlts vs ty2 err rest
   return (a : restAlts)
@@ -1056,8 +1056,8 @@ errorExpr CaseAlt ty =
   mkErrorWith ty "Non-exhaustive patterns in case expression"
 errorExpr IfAlt ty =
   mkErrorWith ty "Non-exhaustive guard alternatives in multi-way if"
-errorExpr ProcExpr ty =
-  mkErrorWith ty "Non-exhaustive patterns in a proc expression"
+errorExpr (ArrowMatchCtxt _) ty =
+  mkErrorWith ty "Non-exhaustive patterns in an arrow expression"
 errorExpr PatBindRhs ty =
   mkErrorWith ty "Non-exhaustive patterns in a pattern binding"
 errorExpr PatBindGuards ty =

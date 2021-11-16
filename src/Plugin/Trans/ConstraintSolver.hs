@@ -105,7 +105,7 @@ transformWanted m c (CNonCanonical (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
       res <- transformWanted m c (CIrredCan
                (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
                  (HoleDest (CoercionHole var href)) si loc)
-               OtherCIS)
+               AbstractTyConReason)
       case res of
         Just ((EvExpr (Coercion co), (CIrredCan w' _)), Just new) ->
           return (Just ((EvExpr (Coercion co), (CNonCanonical w')), Just new))

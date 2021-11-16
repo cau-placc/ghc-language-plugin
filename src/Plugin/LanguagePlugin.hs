@@ -90,7 +90,7 @@ languagePlugin = defaultPlugin
                           m@HsModule { hsmodImports = im }) _) = do
       flgs <- getDynFlags
       prel <- mkModuleName <$> lookupConfig preludeModConfigStr
-      let prelIm = noLocA (ImportDecl EpAnnNotUsed NoSourceText (noLoc prel)
+      let prelIm = noLocA (ImportDecl EpAnnNotUsed NoSourceText (noLocA prel)
                       Nothing NotBoot False NotQualified True Nothing Nothing)
       if implicitOpt `elem` (pluginModNameOpts flgs)
            || any (isCurryPrelImport prel) im
