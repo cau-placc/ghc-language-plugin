@@ -678,9 +678,7 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
       return (L l (BodyStmt x' e' se' g'), [])
     liftMonadicStmt (L l (LetStmt x bs)) = do
       (bs', vs) <- liftLocalBinds given tcs bs
-      let f = setVarType <*> (bindingType . varType)
-      let typeCorrected = map (\(a, L l' b) -> (f a, L l' (f b))) vs
-      return (L l (LetStmt x bs'), typeCorrected)
+      return (L l (LetStmt x bs'), vs)
     liftMonadicStmt (L _ (ParStmt _ _ _ _)) = do
       reportError (mkMsgEnvelope (getLocA s) neverQualify
         "Parallel list comprehensions are not supported by the plugin")
