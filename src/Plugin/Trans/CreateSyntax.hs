@@ -101,6 +101,14 @@ mkBind scr ty1 arg ty2 = do
   let ty2' = bindingType ty2
   mkApp (mkNewBindTh ty1') ty2' [scr, arg]
 
+-- | Create a '(>>)' for the given arguments and apply them.
+mkSequence :: LHsExpr GhcTc -> Type -> LHsExpr GhcTc -> Type
+       -> TcM (LHsExpr GhcTc)
+mkSequence scr ty1 arg ty2 = do
+  let ty1' = bindingType ty1
+  let ty2' = bindingType ty2
+  mkApp (mkNewSequenceTh ty1') ty2' [scr, arg]
+
 -- | Create a 'app' for the given arguments and apply them.
 mkFuncApp :: [Ct] -> LHsExpr GhcTc -> Type -> LHsExpr GhcTc -> Type
           -> TcM (LHsExpr GhcTc)
@@ -179,6 +187,17 @@ mkNewBindTh etype btype = do
   let expType = mkVisFunTyMany (mkAppTy mty etype) $        -- m 'e ->
                 mkVisFunTyMany (mkVisFunTyMany etype resty) -- (e' -> m b) ->
                   resty                                     -- m b
+  mkNewPs ps_expr expType
+
+-- | Create a '(>>)' for the given argument types.
+mkNewSequenceTh :: Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewSequenceTh etype btype = do
+  mtycon <- getMonadTycon
+  ps_expr <- queryBuiltinFunctionName "sequence"
+  let mty = mkTyConTy mtycon
+  let resty = mkAppTy mty btype
+  let expType = mkVisFunTyMany (mkAppTy mty etype) $        -- m 'e ->
+                mkVisFunTyMany resty resty                  -- m b -> m b
   mkNewPs ps_expr expType
 
 -- | Create a 'app' for the given argument types.

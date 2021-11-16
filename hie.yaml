@@ -11,4 +11,4 @@ cradle:
         cradle:
           stack:
             - path: ./src
-              component: "ghc-language-plugin:lib"
+              component: "ml-ghc-language-plugin:lib"
