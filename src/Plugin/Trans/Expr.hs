@@ -56,6 +56,7 @@ import GHC.Iface.Env
 import GHC.Int
 
 import Plugin.Trans.Constr
+import Plugin.Trans.Coerce
 import Plugin.Trans.Record
 import Plugin.Trans.Type
 import Plugin.Trans.Util
@@ -678,9 +679,7 @@ liftMonadicStmts ctxt ctxtSwitch ty given tcs (s:ss) = do
       return (L l (BodyStmt x' e' se' g'), [])
     liftMonadicStmt (L l (LetStmt x bs)) = do
       (bs', vs) <- liftLocalBinds given tcs bs
-      let f = setVarType <*> (bindingType . varType)
-      let typeCorrected = map (\(a, L l' b) -> (f a, L l' (f b))) vs
-      return (L l (LetStmt x bs'), typeCorrected)
+      return (L l (LetStmt x bs'), vs)
     liftMonadicStmt (L _ (ParStmt _ _ _ _)) = do
       reportError (mkMsgEnvelope (getLocA s) neverQualify
         "Parallel list comprehensions are not supported by the plugin")
@@ -753,6 +752,8 @@ liftLambda given tcs l _ mg = do
 liftVarWithWrapper :: [Ct] -> TyConMap -> HsWrapper -> Var -> Unique
                    -> TcM (LHsExpr GhcTc)
 liftVarWithWrapper given tcs w v dttKey
+  | varUnique v == coerceKey,
+    ([_,ty1,ty2], _) <- collectTyApps w = transCoerce tcs given ty1 ty2
   | varUnique v == tagToEnumKey = do
     let appliedType = head $ fst $ collectTyApps w
     liftedType <- liftTypeTcM tcs appliedType

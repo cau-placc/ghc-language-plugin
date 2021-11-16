@@ -245,9 +245,10 @@ compileLetBind :: LHsBindLR GhcTc GhcTc
 compileLetBind (L l (AbsBinds x tvs evs ex ev bs sig)) = do
   (bss, vss, strictVss) <- unzip3 <$> mapM compileLetBind (bagToList bs)
   let bs' = listToBag $ concat bss
-  strictVs <- fst . unzip <$> mapM (getRealVar ex) (concat strictVss)
   (realVs, mbex) <- unzip <$> mapM (getRealVar ex) (concat vss)
-  let binding = L l (AbsBinds x tvs evs (ex ++ catMaybes mbex) ev bs' sig)
+  let newExports = ex ++ catMaybes mbex
+  strictVs <- fst . unzip <$> mapM (getRealVar newExports) (concat strictVss)
+  let binding = L l (AbsBinds x tvs evs newExports ev bs' sig)
   return ([binding], realVs, strictVs)
   where
     getRealVar :: [ABExport GhcTc] -> GenLocated l Var
