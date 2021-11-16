@@ -421,7 +421,7 @@ mkLam :: LIdP GhcTc -> Scaled Type -> LHsExpr GhcTc -> Type -> LHsExpr GhcTc
 mkLam v ty' bdy resty =
   let pat = VarPat noExtField v
       grhs = GRHS EpAnnNotUsed ([] :: [GuardLStmt GhcTc]) bdy
-      rhs = GRHSs noExtField [noLoc grhs] (EmptyLocalBinds noExtField)
+      rhs = GRHSs emptyComments [noLoc grhs] (EmptyLocalBinds noExtField)
       match = Match EpAnnNotUsed LambdaExpr [noLocA pat] rhs
       mgtc = MatchGroupTc [ty'] resty
       mg = MG mgtc (noLocA [noLocA match]) Generated
@@ -433,7 +433,7 @@ mkSimpleLet :: RecFlag -> LHsExpr GhcTc -> LHsExpr GhcTc -> Var -> Type
             -> HsExpr GhcTc
 mkSimpleLet f scr e v a =
   let grhs = GRHS EpAnnNotUsed [] scr
-      grhss = GRHSs noExtField [noLoc grhs] (EmptyLocalBinds noExtField)
+      grhss = GRHSs emptyComments [noLoc grhs] (EmptyLocalBinds noExtField)
       ctxt = FunRhs (noLocA (varName v)) Prefix NoSrcStrict
       alt = Match EpAnnNotUsed ctxt [] grhss
       mgtc = MatchGroupTc [] a
@@ -449,7 +449,7 @@ mkSimplePatLet :: Type -> LHsExpr GhcTc -> LPat GhcTc -> LHsExpr GhcTc
                -> HsExpr GhcTc
 mkSimplePatLet ty scr p e =
   let grhs = GRHS EpAnnNotUsed [] scr
-      grhss = GRHSs noExtField [noLoc grhs] (EmptyLocalBinds noExtField)
+      grhss = GRHSs emptyComments [noLoc grhs] (EmptyLocalBinds noExtField)
       b = PatBind ty p grhss ([], [[]])
       nbs = NValBinds [(Recursive, listToBag [noLocA b])] []
       bs = HsValBinds EpAnnNotUsed (XValBindsLR nbs)
@@ -460,7 +460,7 @@ mkSimpleAlt :: HsMatchContext GhcRn -> LHsExpr GhcTc -> [LPat GhcTc]
             -> Match GhcTc (LHsExpr GhcTc)
 mkSimpleAlt ctxt e ps =
   let grhs = GRHS EpAnnNotUsed [] e
-      grhss = GRHSs noExtField [noLoc grhs] (EmptyLocalBinds noExtField)
+      grhss = GRHSs emptyComments [noLoc grhs] (EmptyLocalBinds noExtField)
   in Match EpAnnNotUsed ctxt ps grhss
 
 -- | Create a variable pattern with the given parameter.
