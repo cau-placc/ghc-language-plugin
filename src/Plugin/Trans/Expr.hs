@@ -56,6 +56,7 @@ import GHC.Iface.Env
 import GHC.Int
 
 import Plugin.Trans.Constr
+import Plugin.Trans.Coerce
 import Plugin.Trans.Record
 import Plugin.Trans.Type
 import Plugin.Trans.Util
@@ -751,6 +752,8 @@ liftLambda given tcs l _ mg = do
 liftVarWithWrapper :: [Ct] -> TyConMap -> HsWrapper -> Var -> Unique
                    -> TcM (LHsExpr GhcTc)
 liftVarWithWrapper given tcs w v dttKey
+  | varUnique v == coerceKey,
+    ([_,ty1,ty2], _) <- collectTyApps w = transCoerce tcs given ty1 ty2
   | varUnique v == tagToEnumKey = do
     let appliedType = head $ fst $ collectTyApps w
     liftedType <- liftTypeTcM tcs appliedType
