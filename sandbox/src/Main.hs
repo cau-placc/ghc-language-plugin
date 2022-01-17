@@ -1,7 +1,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 module Main where
 
-import Example2
+import Example
 import Plugin.CurryPlugin.Encapsulation
 
 main :: IO ()

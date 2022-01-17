@@ -53,19 +53,20 @@ instance Exception RecordLiftingException
 -- Note that this is part of a fixed-point computation, where the
 -- 'UniqFM' in the fifth parameter and the
 -- 'TyCon' in the seventh parameter depend on the output of the computation.
-liftConstr :: Bool                -- ^ True iff the type constructor should not be renamed
+liftConstr :: Bool                -- ^ True iff the type constructor defines a type class and should not be renamed
            -> DynFlags            -- ^ Compiler flags
            -> FamInstEnvs         -- ^ Family Instance Environments, both home and external
            -> TyCon               -- ^ 'Shareable' type constructor
            -> TyCon               -- ^ '-->' type constructor
-           -> TyCon               -- ^ 'Nondet' type constructor
+           -> Var                 -- ^ 'Monad' type variable
+           -> TyCon               -- ^ 'Monad' type constructor
            -> UniqFM TyCon TyCon  -- ^ Map of old TyCon's from this module to lifted ones
            -> TyConMap            -- ^ Map of imported old TyCon's to lifted ones
            -> TyCon               -- ^ Lifted declaration type constructor
            -> UniqSupply          -- ^ Supply of fresh unique keys
            -> DataCon             -- ^ Constructor to be lifted
            -> IO DataCon          -- ^ Lifted constructor
-liftConstr noRename dflags instEnvs stycon ftycon mtycon tcs tcsM tycon s cn = do
+liftConstr isClass dflags instEnvs stycon ftycon mvar mtycon tcs tcsM tycon s cn = do
 
   -- Create all required unique keys.
   let (s1, tmp1) = splitUniqSupply s
@@ -81,7 +82,7 @@ liftConstr noRename dflags instEnvs stycon ftycon mtycon tcs tcsM tycon s cn = d
   let w        = dataConWorkId cn
       origName1 = dataConName cn
       origName2 = varName w
-      (name1, name2) = if noRename
+      (name1, name2) = if isClass
         then (origName1, origName2)
         else (liftName origName1 (uniqFromSupply s1),
               liftName origName2 (uniqFromSupply s2))
@@ -91,21 +92,23 @@ liftConstr noRename dflags instEnvs stycon ftycon mtycon tcs tcsM tycon s cn = d
   let fs = zipWith liftField (dataConFieldLabels cn) us
 
   -- Update the type constructor of the constructor result.
-  resty <- liftIO (replaceCon (dataConOrigResTy cn))
+  let origResTy = dataConOrigResTy cn
+  let (tcTy, args) = splitAppTys origResTy
+  resty <- liftIO (replaceCon (mkAppTys tcTy (if isClass then args else mty:args)))
 
   let rep = case dataConWrapId_maybe cn of
               Nothing   -> NoDataConRep
               Just wrap -> initUs_ s5 $ do
                 uWrap <- getUniqueM
-                let wrap' = if noRename then varName wrap else
+                let wrap' = if isClass then varName wrap else
                               liftName (varName wrap) uWrap
                 let bangs = dataConImplBangs cn
                 mkDataConRep dflags instEnvs wrap' (Just bangs) dc
       -- Create the new constructor.
       dc = mkDataCon
         name1 (dataConIsInfix cn) (tyConName $ promoteDataCon cn)
-        (dataConSrcBangs cn) fs (dataConUnivTyVars cn)
-        (dataConExTyCoVars cn) (dataConUserTyVarBinders cn) (dataConEqSpec cn)
+        (dataConSrcBangs cn) fs (if isClass then dataConUnivTyVars cn else mvar : dataConUnivTyVars cn)
+        (dataConExTyCoVars cn) (if isClass then dataConUserTyVarBinders cn else Bndr mvar InferredSpec : dataConUserTyVarBinders cn) (dataConEqSpec cn)
         (dataConTheta cn) argtys resty NoRRI tycon
         (dataConTag cn) (dataConStupidTheta cn) worker rep
       -- let the worker be created by GHC,
@@ -113,10 +116,10 @@ liftConstr noRename dflags instEnvs stycon ftycon mtycon tcs tcsM tycon s cn = d
       worker = mkDataConWorkId name2 dc
   return dc
   where
-    mty = mkTyConTy mtycon
+    mty = if isClass then mkTyConTy mtycon else mkTyVarTy mvar
     liftAndReplaceType us (Scaled m ty) = Scaled <$>
           (replaceTyconTyPure tcs <$> replaceTyconTy tcsM m) <*>
-          (replaceTyconTyPure tcs <$> liftType    stycon ftycon mty us tcsM ty)
+          (replaceTyconTyPure tcs <$> liftType stycon ftycon mty us tcsM ty)
     replaceCon = fmap (replaceTyconTyPure tcs) . replaceTyconTy tcsM
 
 -- | Lift a record field by renaming its labels.

@@ -34,7 +34,7 @@ freshMonadTVar :: TcM TyVar
 freshMonadTVar = do
   u <- getUniqueM
   let k = liftedTypeKind
-  return $ mkTyVar (mkSystemName u (mkTyVarOcc "a"))
+  return $ mkTyVar (mkSystemName u (mkTyVarOcc "m"))
     (mkFunTy VisArg Many k k)
 
 -- | Create a fresh variable of the given type.

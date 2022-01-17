@@ -45,14 +45,16 @@ mkConLam :: TyConMap -> Maybe HsWrapper -> DataCon
          -> [(Scaled Type, HsImplBang)] -> [Id] -> TcM (LHsExpr GhcTc, Type)
 -- list of types is empty -> apply the collected variables.
 mkConLam _ mw c [] vs = do
+    mtycon <- getMonadTycon
     -- Use the given wrapper for the constructor.
     let wrap = case mw of
-          Just w  -> XExpr . WrapExpr . HsWrap w
-          Nothing -> id
+          Just w  -> XExpr . WrapExpr . (HsWrap (WpTyApp (mkTyConTy mtycon) <.> w))
+          Nothing -> XExpr . WrapExpr . HsWrap (WpTyApp (mkTyConTy mtycon))
     -- Apply all variables in reverse to the constructor.
     let e = foldl ((noLocA .) . HsApp EpAnnNotUsed)
             (noLocA (wrap (HsConLikeOut noExtField (RealDataCon c))))
             (map (noLocA . HsVar noExtField . noLocA) $ reverse vs)
+    printAny "e" e
     -- Get the result type of the constructor.
     ty <- snd . splitFunTys <$> getTypeOrPanic e -- ok
     -- Wrap the whole term in a 'return'.
@@ -139,7 +141,9 @@ mkNewReturnTh etype = do
   ps_expr <- queryBuiltinFunctionName "rtrn"
   let mty = mkTyConTy mtycon
   let expType = mkVisFunTyMany etype $ -- 'e ->
-                mkAppTy mty etype  -- m 'e
+                mkAppTy mty etype      -- m 'e
+  printAny "expType" expType
+  printAny "ps_expr" ps_expr
   mkNewPs ps_expr expType
 
 -- | Create a 'return . Fun' for the given argument types.
@@ -152,7 +156,8 @@ mkNewReturnFunTh arg res = do
     then do
       let expType = mkVisFunTyMany (mkVisFunTyMany arg res) $ -- (arg -> res) ->
                     mkAppTy mty (mkTyConApp ftc               -- m ((-->)
-                      [ bindingType arg                       --     unM arg
+                      [ mkTyConApp mtycon []                  --     m
+                      , bindingType arg                       --     unM arg
                       , bindingType res ])                    --     unM res)
       ps_expr <- queryBuiltinFunctionName "rtrnFunc"
       mkNewPs ps_expr expType
@@ -206,6 +211,7 @@ mkNewAppTh optype argtype = do
   mtycon <- getMonadTycon
   ftycon <- getFunTycon
   let (_, restype) = splitMyFunTy mtycon ftycon optype
+  printAny "optype" optype
   let mty = mkTyConTy mtycon
   if isMonoType argtype
     then do
@@ -504,9 +510,10 @@ mkHsWrap w      e = XExpr (WrapExpr (HsWrap w e))
 
 splitMyFunTy :: TyCon -> TyCon -> Type -> (Type, Type)
 splitMyFunTy mtc ftc (coreView -> Just ty)    = splitMyFunTy mtc ftc ty
-splitMyFunTy mtc ftc (TyConApp tc [ty1, ty2])
+splitMyFunTy mtc ftc (TyConApp tc [mty, ty1, ty2])
   | tc == ftc = (mkTyConApp mtc [ty1], mkTyConApp mtc [ty2])
-  | otherwise = error $ showSDocUnsafe $ ppr (tc, ftc, ty1, ty2)
+  | otherwise = error $ showSDocUnsafe $ ppr (tc, ftc, mty, ty1, ty2)
+splitMyFunTy _   _   ty@((TyConApp _ xs)) = error $ showSDocUnsafe $ ppr (ty, length xs)
 splitMyFunTy _   _   ty = error $ showSDocUnsafe $ ppr ty
 
 {- HLINT ignore "Reduce duplication "-}

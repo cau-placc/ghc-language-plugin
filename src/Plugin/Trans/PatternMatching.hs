@@ -417,9 +417,9 @@ contains :: (Eq a, Data r, Typeable a) => r -> a -> Bool
 contains r a = not (null (listify (==a) r))
 
 rmNondet :: TyCon -> TyCon -> Type -> Type
-rmNondet mtc _ (TyConApp tc [inner])
-  | mtc == tc      = inner
-rmNondet _ ftc (TyConApp tc [arg, res])
+rmNondet mtc _ (TyConApp tc tys)
+  | mtc == tc      = last tys
+rmNondet _ ftc (TyConApp tc [_, arg, res])
   | ftc == tc      = mkVisFunTyMany arg res
 rmNondet _ _ other = other
 

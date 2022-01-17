@@ -104,7 +104,8 @@ liftPat' tcs p@ConPat { pat_con_ext = x@ConPatTc { cpt_arg_tys = tys }
   -- so we have to use liftInnerTy.
   tys' <- mapM (liftInnerTyTcM tcs) tys
   con' <- L l . RealDataCon <$> liftIO (getLiftedCon con tcs)
-  let x' = x { cpt_arg_tys = tys' }
+  mty <- mkTyConTy <$> getMonadTycon
+  let x' = x { cpt_arg_tys = mty:tys' }
   let p' = p { pat_args = args', pat_con_ext = x', pat_con = con' }
   return (p', varsS)
 liftPat' _ p@ConPat {} = do

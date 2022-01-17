@@ -92,13 +92,14 @@ loadAdditional = do
 
   -- And again for (->)
   let altF = unrestrictedFunTyCon
-  newF <- getTyCon builtInModule ":->"
+  newF <- getTyCon builtInModule ":--->#"
 
   let altFR = funTyCon
-  newFR <- getTyCon builtInModule ":-->"
+  newFR <- getTyCon builtInModule ":--->"
 
   return [ (altH, newH), (altR, newR), (altI, newI), (altA, newA)
-         , (altS, newS), (altF, newF), (altFR, newFR) ]
+         , (altS, newS), (altF, newF), (altFR, newFR)
+         , (intPrimTyCon, intTyCon)]
 
 -- | A list of GHC's built-in type constructor names and the names of
 -- their plugin replacement version.
@@ -106,21 +107,27 @@ originalNamesToLoad :: [(Name, String)]
 originalNamesToLoad = names
   where
     names =
-      [ (eqClassName          , "EqND")
-      , (ordClassName         , "OrdND")
-      , (showClassName        , "ShowND")
-      , (numClassName         , "NumND")
-      , (fractionalClassName  , "FractionalND")
-      , (enumClassName        , "EnumND")
-      , (boundedClassName     , "BoundedND")
-      , (functorClassName     , "FunctorND")
-      , (applicativeClassName , "ApplicativeND")
-      , (monadClassName       , "MonadND")
-      , (monadFailClassName   , "MonadFailND")
-      , (isStringClassName    , "IsStringND")
-      , (listTyConName        , "ListND")
-      , (rationalTyConName    , "RationalND")
-      , (ratioTyConName       , "RatioND")
+      [ (eqClassName          , "EqFL")
+      , (ordClassName         , "OrdFL")
+      , (showClassName        , "ShowFL")
+      , (enumClassName        , "EnumFL")
+      , (numClassName         , "NumFL")
+      , (integralClassName    , "IntegralFL")
+      , (boundedClassName     , "BoundedFL")
+      , (functorClassName     , "FunctorFL")
+      , (applicativeClassName , "ApplicativeFL")
+      , (monadClassName       , "MonadFL")
+      , (monadFailClassName   , "MonadFailFL")
+      , (isStringClassName    , "IsStringFL")
+      , (listTyConName        , "ListFL")
+      , (rationalTyConName    , "RationalFL")
+      , (ratioTyConName       , "RatioFL")
+      , (charTyConName        , "CharFL")
+      , (intTyConName         , "IntFL")
+      , (boolTyConName        , "BoolFL")
+      , (orderingTyConName    , "OrderingFL")
+      , (tyConName unitTyCon  , "UnitFL")
+      , (integerTyConName     , "IntegerFL")
       ] ++
       map tupleWithArity [2 .. maxTupleArity]
 

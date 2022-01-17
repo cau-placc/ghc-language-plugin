@@ -18,23 +18,26 @@ import GHC.Hs.Extension
 import GHC.Hs.Type
 import GHC.Hs.Decls
 import GHC.Hs.Utils
-import GHC.Types.Name.Occurrence hiding (varName)
 import GHC.Plugins hiding (substTy, extendTvSubst)
 import GHC.Tc.Types
 import GHC.Tc.Utils.TcType
 import GHC.Core.TyCo.Rep
 import GHC.Parser.Annotation
+import GHC.Builtin.Names
+import GHC.Types.Fixity
 
 import Plugin.Trans.Type
+import Plugin.Trans.Var
 
 -- | Create standalone deriving declarations for
 -- Generic, Shareable and Normalform.
-mkDerivings :: [(TyCon, TyCon)] -> TcM [LDerivDecl GhcRn]
+mkDerivings :: [(TyCon, TyCon)] -> TcM ([LDerivDecl GhcRn], [LInstDecl GhcRn])
 mkDerivings tc = do
   gen <- mapM mkDerivingGen tc
   sha <- mapM mkDerivingShare tc
   nor <- mapM mkDerivingNF tc
-  return (concat gen ++ catMaybes (sha ++ nor))
+  lif <- mapM mkInstLifted tc
+  return (concat gen ++ catMaybes (sha ++ nor), concat lif)
 
 -- | Create standalone deriving declaration for Generic.
 mkDerivingGen :: (TyCon, TyCon) -> TcM [LDerivDecl GhcRn]
@@ -47,12 +50,15 @@ mkDerivingGen (old, new) | isVanillaAlgTyCon new = do
   -- Get the lifted type constructor type.
   let newtyconty = toTy (tyConName new)
   -- Get all type variables of the lifted type constructor.
-  let newvars = map (varName . fst) $ visTyConTyVarsRoles new
+  let newvars = map fst $ visTyConTyVarsRoles new
+
+  mVar <- freshMonadTVar
+  let newvarsname = varName mVar : drop 1 (map varName newvars)
 
   -- Apply the class to the fully saturated lifted type constructor.
-  let newbdy = mkHsAppTy clsty (foldr appVars newtyconty (reverse newvars))
+  let newbdy = mkHsAppTy clsty (foldr appVars newtyconty (reverse newvarsname))
   let newty = newbdy
-  let newtysig = HsSig noExtField (HsOuterImplicit newvars) newty
+  let newtysig = HsSig noExtField (HsOuterImplicit newvarsname) newty
   -- Add the type variables to the set of bound variables.
   let newinstty = mkEmptyWildCardBndrs $ noLocA newtysig
   -- Create the deriving declaration for the lifted type constructor.
@@ -77,7 +83,6 @@ mkDerivingShare (_, tycon) | isVanillaAlgTyCon tycon = do
   sname <- tyConName <$> getShareClassTycon
   let scty = toTy sname
   mname <- tyConName <$> getMonadTycon
-  let mty = toTy mname
 
   -- Basically the same as above.
 
@@ -85,24 +90,31 @@ mkDerivingShare (_, tycon) | isVanillaAlgTyCon tycon = do
   let tyconty = toTy (tyConName tycon)
   -- Get all type variables of the lifted type constructor.
   let vars = map fst $ visTyConTyVarsRoles tycon
-  let varsname = map varName vars
+  -- split off the monad type variable
+  mVar <- freshMonadTVar
+  let mty = toTy (varName mVar)
+  let varsname = varName mVar : drop 1 (map varName vars)
   let varsty = map mkTyVarTy vars
   -- Get types of every constructor argument.
   let tys = concatMap (map (\(Scaled _ ty) -> ty) .
                            (`dataConInstArgTys` varsty)) (tyConDataCons tycon)
   -- Filter the ones that have no type variable.
   let requireds = mapMaybe (getRequired mname) tys
+  -- Create a Monad m context
+  sharingClassName <- tyConName <$> getSharingTycon
+  let mctxt = mkHsAppTy (toTy sharingClassName) mty
   -- Create a Shareable context for each remaining type.
-  let ctxt = map (mkHsAppTy (mkHsAppTy scty mty)) requireds
+  let ctxt = mctxt : map (mkHsAppTy (mkHsAppTy scty mty)) requireds
   let clsty = mkHsAppTy scty mty
   -- Apply the class to the fully saturated lifted type constructor.
   let bdy = mkHsAppTy clsty (foldr appVars tyconty (reverse varsname))
   let ty = noLocA (HsQualTy noExtField (Just (noLocA ctxt)) bdy)
-  let tysig = HsSig noExtField (HsOuterImplicit (map varName vars)) ty
+  let tysig = HsSig noExtField (HsOuterImplicit varsname) ty
   -- Include all Shareable contexts in the type and
   -- add the type variables to the set of bound variables.
   let instty = mkEmptyWildCardBndrs $ noLocA tysig
   -- Create the deriving declaration for the lifted type constructor.
+
   return (Just (noLocA (DerivDecl EpAnnNotUsed instty Nothing Nothing)))
 mkDerivingShare _ = return Nothing
 
@@ -113,52 +125,52 @@ mkDerivingNF (old, new) | isVanillaAlgTyCon new = do
 
   nfname <- tyConName <$> getNFClassTycon
   let nfcty = toTy nfname
+  mVar <- freshMonadTVar
   mname <- tyConName <$> getMonadTycon
-  let mty = toTy mname
-  let newtyconty = toTy (tyConName new)
+  let mty = typeToLHsType (mkTyVarTy mVar)
   let oldtyconty = toTy (tyConName old)
-  newvarsRoles <- mapM (\(v,r) -> (,r) <$> alterVar v) $ visTyConTyVarsRoles new
-  let newvars = map fst newvarsRoles
   let oldvars = map fst $ visTyConTyVarsRoles old
-  let newvarsty = map mkTyVarTy newvars
   let oldvarsty = map mkTyVarTy oldvars
-  let newvarsname = map varName newvars
   let oldvarsname = map varName oldvars
-  let newtys = concatMap (map (\(Scaled _ ty) -> ty) .
-                          (`dataConInstArgTys` newvarsty)) (tyConDataCons new)
   let oldtys = concatMap (map (\(Scaled _ ty) -> ty) .
                           (`dataConInstArgTys` oldvarsty)) (tyConDataCons old)
-
-  -- In addition to requiring a Normalform instance for every value parameter,
-  -- we also need a Normalform instance for each phanton type variable.
-  -- Otherwise we run into problems with the functional dependencies of NF.
-  let phanVarsNew = filter ((==Phantom) . snd) $ newvarsRoles
-  let phanVarsOld = filter ((==Phantom) . snd) $ visTyConTyVarsRoles old
-  let newreq = map (nlHsTyVar . varName . fst) phanVarsNew ++
-               mapMaybe (getRequired mname) newtys
-  let oldreq = map (nlHsTyVar . varName . fst) phanVarsOld ++
-               mapMaybe (getRequired mname) oldtys
-
-  let ctxt = zipWith (mkHsAppTy . mkHsAppTy (mkHsAppTy nfcty mty)) newreq oldreq
+  let oldreq = mapMaybe (getRequired mname) oldtys
+  -- Create a Monad m context
+  let mctxt = mkHsAppTy (toTy monadClassName) mty
+  -- Create a (Generic (Lifted m TYCON)) context
+  liftedFamTycon <- getLiftedTycon
+  let appliedOldType = foldr appVars oldtyconty (reverse oldvarsname)
+  let gctxt = mkHsAppTy (toTy (head genericClassNames)) (mkHsAppTy (mkHsAppTy (toTy (tyConName liftedFamTycon)) mty) appliedOldType)
+  let ctxt = mctxt : gctxt : map (mkHsAppTy (mkHsAppTy nfcty mty)) oldreq
   let clsty = mkHsAppTy nfcty mty
-  let bdy = mkHsAppTy (mkHsAppTy clsty
-                (foldr appVars newtyconty (reverse newvarsname)))
-                (foldr appVars oldtyconty (reverse oldvarsname))
+  let bdy = mkHsAppTy clsty (foldr appVars oldtyconty (reverse oldvarsname))
   let ty = noLocA (HsQualTy noExtField (Just (noLocA ctxt)) bdy)
-  let tysig = HsSig noExtField (HsOuterImplicit (newvarsname ++ oldvarsname)) ty
+  let tysig = HsSig noExtField (HsOuterImplicit (varName mVar : oldvarsname)) ty
   let instty = mkEmptyWildCardBndrs $ noLocA tysig
+
   return (Just (noLocA (DerivDecl EpAnnNotUsed instty Nothing Nothing)))
-  where
-    alterVar v = do
-      u <- getUniqueM
-      let name = alterName u (varName v)
-      return (setVarName (setVarUnique v u) name)
-    alterName u n =
-      let occname = occName n
-          str = occNameString occname ++ "#nd"
-          occname' = mkOccName (occNameSpace occname) str
-      in tidyNameOcc (setNameUnique n u) occname'
 mkDerivingNF _ = return Nothing
+
+mkInstLifted ::  (TyCon, TyCon) -> TcM ([LInstDecl GhcRn])
+mkInstLifted (old, new) | isVanillaAlgTyCon new = do
+  liftedFamTycon <- getLiftedTycon
+  -- all vars excluding the monad var
+  let vars = map fst $ visTyConTyVarsRoles old
+  mVar <- varName <$> freshMonadTVar
+  let mty = toTy mVar
+  let liftedBase = mkHsAppTy (toTy (tyConName new)) (toTy mVar)
+  let genForArg n =
+        -- for each arity (starting at zero, because the monad tyvar is extra)
+        -- create a lifted declaration 'Lifted m (TYCON m v1 ... vn)'
+        let currentVars = reverse $ map varName (take n vars)
+            bndrs = HsOuterImplicit (mVar : currentVars)
+            pats = map HsValArg [mty, foldr appVars (toTy (tyConName old)) currentVars]
+            rhs = foldr (flip mkHsAppTy . mkHsAppTy (mkHsAppTy (toTy (tyConName liftedFamTycon)) mty) . toTy) liftedBase currentVars
+            eqn = FamEqn EpAnnNotUsed (noLocA $ tyConName liftedFamTycon) bndrs pats Prefix rhs
+        in  noLocA (TyFamInstD noExtField (TyFamInstDecl EpAnnNotUsed eqn))
+  return $ map genForArg [0 .. length vars]
+mkInstLifted _ = return []
+
 
 -- | Return a types its LHsType representation, without the outer Monad type.
 getRequired :: Name -> Type -> Maybe (LHsType GhcRn)

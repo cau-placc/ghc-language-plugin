@@ -12,7 +12,8 @@
 {-# LANGUAGE TypeFamilies           #-}
 {-# LANGUAGE ScopedTypeVariables    #-}
 {-# LANGUAGE TypeApplications       #-}
-
+{-# LANGUAGE PolyKinds              #-}
+{-# LANGUAGE TypeFamilyDependencies #-}
 {-# OPTIONS_GHC -Wno-inline-rule-shadowing #-}
 {-|
 Module      : Plugin.Effect.Classes
@@ -30,6 +31,9 @@ module Plugin.Effect.Classes where
 
 import GHC.Generics as Gen
 import Data.Kind
+import Data.Coerce
+
+type family Lifted (m :: Type -> Type) (a :: k) = (b :: k) | b -> m a
 
 -- | A class for Monads with support for explicit sharing of effects.
 class Monad s => Sharing s where
@@ -58,20 +62,20 @@ class Sharing m => Shareable m a where
 
 -- | A class for conversion between lifted and unlifted data types.
 -- For types with a generic instance, it can be derived automatically.
-class Monad m => Normalform m a b | m a -> b, m b -> a where
+class Monad m => Normalform m a where
   -- | Convert a data type to its unlifted representation and
   -- compute its normal form.
-  nf :: m a -> m b
-  default nf :: ( Gen.Generic a, Gen.Generic b
-                , NormalformGen m (Gen.Rep a) (Gen.Rep b))
-             => m a -> m b
+  nf :: m (Lifted m a) -> m a
+  default nf :: ( Gen.Generic a, Gen.Generic (Lifted m a)
+                , NormalformGen m (Gen.Rep (Lifted m a)) (Gen.Rep a))
+             => m (Lifted m a) -> m a
   nf ma = fmap Gen.to (nfGen (fmap Gen.from ma))
 
   -- | Convert a data type to its lifted representation.
-  liftE :: m b -> m a
-  default liftE :: ( Gen.Generic a, Gen.Generic b
-                   , NormalformGen m (Gen.Rep a) (Gen.Rep b))
-                => m b -> m a
+  liftE :: m a -> m (Lifted m a)
+  default liftE :: ( Gen.Generic a, Gen.Generic (Lifted m a)
+                   , NormalformGen m (Gen.Rep (Lifted m a)) (Gen.Rep a))
+                => m a -> m (Lifted m a)
   liftE mb = fmap Gen.to (liftEGen (fmap Gen.from mb))
 
 -- * Generic machinery for Shareable and Normalform
@@ -106,7 +110,7 @@ instance (Monad m,  NormalformGen m f1 g1, NormalformGen m f2 g2) =>
     liftEGen mx = mx >>= \case
       x Gen.:*: y -> (Gen.:*:) <$> liftEGen (return x) <*> liftEGen (return y)
 
-instance (Monad m, Normalform m a b) =>
+instance (Monad m, Lifted m b ~ a, Normalform m b) =>
   NormalformGen m (Gen.K1 i (m a)) (Gen.K1 j b) where
     nfGen mx = mx >>= \case
       Gen.K1 x -> Gen.K1 <$> nf x
@@ -145,65 +149,106 @@ instance (Sharing m, ShareConstraints m b) => ShareableGen m (Gen.K1 i (m b)) wh
 instance (Sharing m, ShareableGen m f) => ShareableGen m (Gen.M1 i t f) where
   shareArgsGen (Gen.M1 x) = Gen.M1 <$> shareArgsGen x
 
+-- * Lifted primitives
+
+newtype UnitND (m :: Type -> Type) = UnitND ()
+type instance Lifted m () = UnitND m
+
+newtype OrderingND (m :: Type -> Type) = OrderingND Ordering
+type instance Lifted m Ordering = OrderingND m
+
+newtype BoolND (m :: Type -> Type) = BoolND Bool
+type instance Lifted m Bool = BoolND m
+
+newtype IntND (m :: Type -> Type) = IntND Int
+type instance Lifted m Int = IntND m
+
+newtype IntegerND (m :: Type -> Type) = IntegerND Integer
+type instance Lifted m Integer = IntegerND m
+
+newtype FloatND (m :: Type -> Type) = FloatND Float
+type instance Lifted m Float = FloatND m
+
+newtype DoubleND (m :: Type -> Type) = DoubleND Double
+type instance Lifted m Double = DoubleND m
+
+newtype CharND (m :: Type -> Type) = CharND Char
+type instance Lifted m Char = CharND m
+
+infixr 0 :-->
+newtype (:-->) (m :: Type -> Type) a b = Func (m a -> m b)
+type instance Lifted m (->)     = (:-->) m
+type instance Lifted m ((->) a) = (:-->) m (Lifted m a)
+type instance Lifted m (a -> b) = (:-->) m (Lifted m a) (Lifted m b)
+
+
 -- * Instances for Normalform
 
-instance (Monad m) => Normalform m () () where
-  nf    = id
-  liftE = id
+instance (Monad m) => Normalform m () where
+  nf    = fmap coerce
+  liftE = fmap coerce
 
-instance (Monad m) => Normalform m Ordering Ordering where
-  nf    = id
-  liftE = id
+instance (Monad m) => Normalform m Ordering where
+  nf    = fmap coerce
+  liftE = fmap coerce
 
-instance (Monad m) => Normalform m Bool Bool where
-  nf    = id
-  liftE = id
+instance (Monad m) => Normalform m Bool where
+  nf    = fmap coerce
+  liftE = fmap coerce
 
-instance (Monad m) => Normalform m Int Int where
-  nf    = id
-  liftE = id
+instance (Monad m) => Normalform m Int where
+  nf    = fmap coerce
+  liftE = fmap coerce
 
-instance (Monad m) => Normalform m Integer Integer where
-  nf    = id
-  liftE = id
+instance (Monad m) => Normalform m Integer where
+  nf    = fmap coerce
+  liftE = fmap coerce
 
-instance (Monad m) => Normalform m Float Float where
-  nf    = id
-  liftE = id
+instance (Monad m) => Normalform m Float where
+  nf    = fmap coerce
+  liftE = fmap coerce
 
-instance (Monad m) => Normalform m Double Double where
-  nf    = id
-  liftE = id
+instance (Monad m) => Normalform m Double where
+  nf    = fmap coerce
+  liftE = fmap coerce
 
-instance (Monad m) => Normalform m Char Char where
-  nf    = id
-  liftE = id
+instance (Monad m) => Normalform m Char where
+  nf    = fmap coerce
+  liftE = fmap coerce
+
+instance (Normalform m a, Normalform m b)
+  => Normalform m ((->) a b) where
+    nf    mf =
+      mf >> return (error "Plugin Error: Cannot capture function types")
+    liftE mf = do
+      f <- mf
+      return (Func (liftE . fmap f . nf))
 
 -- * Instances for Shareable
 
-instance (Sharing m) => Shareable m () where
+instance (Sharing m) => Shareable m (UnitND m) where
   shareArgs = return
 
-instance (Sharing m) => Shareable m Ordering where
+instance (Sharing m) => Shareable m (OrderingND m) where
   shareArgs = return
 
-instance (Sharing m) => Shareable m Bool where
+instance (Sharing m) => Shareable m (BoolND m) where
   shareArgs = return
 
-instance (Sharing m) => Shareable m Int where
+instance (Sharing m) => Shareable m (IntND m) where
   shareArgs = return
 
-instance (Sharing m) => Shareable m Integer where
+instance (Sharing m) => Shareable m (IntegerND m) where
   shareArgs = return
 
-instance (Sharing m) => Shareable m Float where
+instance (Sharing m) => Shareable m (FloatND m) where
   shareArgs = return
 
-instance (Sharing m) => Shareable m Double where
+instance (Sharing m) => Shareable m (DoubleND m) where
   shareArgs = return
 
-instance (Sharing m) => Shareable m Char where
+instance (Sharing m) => Shareable m (CharND m) where
   shareArgs = return
 
-instance (Sharing m) => Shareable m (a %n -> b) where
-  shareArgs = return
+instance (Sharing m) => Shareable m ((:-->) m a b) where
+  shareArgs (Func f) = fmap Func (return f)

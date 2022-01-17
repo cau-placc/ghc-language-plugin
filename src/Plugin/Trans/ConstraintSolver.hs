@@ -253,10 +253,10 @@ removeGeneral remS tcs mtc ftc stc = removeGeneral' . expandTypeSynonyms
       (ty1', b1) <- removeGeneral' ty1
       (ty2', b2) <- removeGeneral' ty2
       return (AppTy ty1' ty2', b1 || b2)
-    removeGeneral' (TyConApp tc [ty])
+    removeGeneral' (TyConApp tc tys)
       | tc == mtc =
-        second (const True) <$> removeGeneral' ty
-    removeGeneral' (TyConApp tc [ty1, ty2])
+        second (const True) <$> removeGeneral' (last tys)
+    removeGeneral' (TyConApp tc [_, ty1, ty2])
       | tc == ftc = do
           ty1' <- fst <$> removeGeneral' ty1
           ty2' <- fst <$> removeGeneral' ty2
@@ -264,7 +264,11 @@ removeGeneral remS tcs mtc ftc stc = removeGeneral' . expandTypeSynonyms
     removeGeneral' (TyConApp tc args) = do
       (args', bs) <- unzip <$> mapM removeGeneral' args
       tc' <- lookupTyConMap GetOld tcs tc
-      return (TyConApp tc' args', or bs)
+      if tc /= tc' && intPrimTyCon /= tc'
+        then case args' of
+          []          -> error "removeNondet: no type argument to remove"
+          _ : noMArgs -> return (mkTyConApp tc' noMArgs, True)
+        else return (mkTyConApp tc' args', tc /= tc' || or bs)
     removeGeneral' (TyVarTy v) =
       return (TyVarTy v, False)
 

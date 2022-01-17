@@ -142,9 +142,9 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
         rmNondetVar (HsVar x (L l v)) = (HsVar x (L l (setVarType v
           (everywhere (mkT rmNondet) (varType v)))))
         rmNondetVar e = e
-        rmNondet (TyConApp tc [inner])
-          | mtycon == tc = inner
-        rmNondet (TyConApp tc [arg, res])
+        rmNondet (TyConApp tc tys)
+          | mtycon == tc = last tys
+        rmNondet (TyConApp tc [_, arg, res])
           | ftycon == tc = mkVisFunTyMany arg res
         rmNondet other   = other
     Nothing -> return ()
@@ -184,6 +184,8 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
     Right r -> return r
 
   let new = map snd tycons
+  mapM_ (\tc -> printAny "tc" (tc, mkTyConTy tc, tyConKind tc, tyConDataCons tc, map (\dc -> (dataConOrigArgTys dc, dataConOrigResTy dc)) (tyConDataCons tc))) new
+
   -- The order is important,
   -- as we want to keep t2 if it has the same unique as t1.
   let getRelevant (t1, Just t2) = if t1 == t2 then [t2] else [t1, t2]
@@ -219,100 +221,106 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
                  flip (foldl xopt_set) requiredExtensions
                  (flags { pluginModNames = [] })) $ do
 
-      -- gather neccessary derivings
-      derivs <- mkDerivings tycons
+      -- gather neccessary derivings and 'Lifted' type family instances
+      (derivs, insts) <- mkDerivings tycons
+      printAny "mkDerivings" (derivs, insts)
       -- check and rename those derivings
-      (env1, infos, derivBinds) <- tcDeriving [] derivs
-      setGblEnv env1 $ do
-        -- create all instances from those derivings
-        ((env2, lcl, derivedBindings), wc) <- captureTopConstraints $ do
-          bs <- tcInstDecls2 [] (bagToList infos)
-          -- typecheck other bindings that resulted from those derivings
-          (e,l) <- uncurry tcTopBinds (collectBind derivBinds)
-          return (e, l, bs)
+      (env0, infos1, derivInfo) <- tcInstDecls1 insts
+      printAny "tcInstDecls1" infos1
+      setGblEnv env0 $ do
+        (env1, infos2, derivBinds) <- tcDeriving derivInfo derivs
+        printAny "tcDeriving" (infos2, derivBinds)
+        setGblEnv env1 $ do
+          -- create all instances from those derivings
+          ((env2, lcl, derivedBindings), wc) <- captureTopConstraints $ do
+            bs <- tcInstDecls2 [] (infos1 ++ bagToList infos2)
+            printAny "tcInstDecls2" bs
+            -- typecheck other bindings that resulted from those derivings
+            (e,l) <- uncurry tcTopBinds (collectBind derivBinds)
+            return (e, l, bs)
 
-        -- Solve the constraints
-        wc' <- zonkWC wc
-        ev <- unionBags ( tcg_ev_binds env2 ) <$> simplifyTop wc'
+          -- Solve the constraints
+          wc' <- zonkWC wc
+          ev <- unionBags ( tcg_ev_binds env2 ) <$> simplifyTop wc'
 
-        -- zonk all evidence and new decls
-        (tenv2, ev', bs', _, _, _) <- zonkTopDecls ev derivedBindings [] [] []
+          -- zonk all evidence and new decls
+          (tenv2, ev', bs', _, _, _) <- zonkTopDecls ev derivedBindings [] [] []
 
-        -- Check if deriving generated an error.
-        errsVar <- getErrsVar
-        msgs <- readTcRef errsVar
-        if errorsFound msgs
-          -- Add error message if deriving failed and
-          -- suppress advanced infos, unless a debug option is set.
-          then if DumpDerivingErrs `elem` d_phases dopts
-            then do
-              addErrTc "The Curry-Plugin failed to derive internal instances."
-              failIfErrsM
-              return env
+          -- Check if deriving generated an error.
+          errsVar <- getErrsVar
+          msgs <- readTcRef errsVar
+          if errorsFound msgs
+            -- Add error message if deriving failed and
+            -- suppress advanced infos, unless a debug option is set.
+            then if DumpDerivingErrs `elem` d_phases dopts
+              then do
+                addErrTc "The Curry-Plugin failed to derive internal instances."
+                failIfErrsM
+                return env
+              else do
+                writeTcRef errsVar emptyMessages
+                failWithTc $ "The Curry-Plugin failed to lift the" <+>
+                            "definitions in this module." $+$
+                            "Did you use any unsupported language extension?" $+$
+                            "To see all internal errors, use the flag" $$
+                            "'-fplugin-opt" <+>
+                            "Plugin.CurryPlugin:dump-deriving-errs'"
+            -- If everything is ok, just continue as planned.
             else do
-              writeTcRef errsVar emptyMessages
-              failWithTc $ "The Curry-Plugin failed to lift the" <+>
-                           "definitions in this module." $+$
-                           "Did you use any unsupported language extension?" $+$
-                           "To see all internal errors, use the flag" $$
-                           "'-fplugin-opt" <+>
-                           "Plugin.CurryPlugin:dump-deriving-errs'"
-          -- If everything is ok, just continue as planned.
-          else do
 
-            -- update the env, but do not add derived bs',
-            -- as they should not be lifted
-            let tenv3 = plusTypeEnv tenv tenv2
-            writeTcRef (tcg_type_env_var env2) tenv3
-            let env3 = env2 { tcg_ev_binds = ev'
-                            , tcg_type_env = tenv3
-                            , tcg_tc_plugins = [solveShareAnyPlugin] }
-            setGblEnv env3 $ setLclEnv lcl $ do
+              -- update the env, but do not add derived bs',
+              -- as they should not be lifted
+              let tenv3 = plusTypeEnv tenv tenv2
+              writeTcRef (tcg_type_env_var env2) tenv3
+              let env3 = env2 { tcg_ev_binds = ev'
+                              , tcg_type_env = tenv3
+                              , tcg_tc_plugins = [solveShareAnyPlugin] }
+              setGblEnv env3 $ setLclEnv lcl $ do
 
-              -- compile pattern matching
-              prep <- bagToList <$>
-                liftBag (preprocessBinding tyconsMap False) (tcg_binds env3)
-              dumpWith DumpPatternMatched dopts prep
+                -- compile pattern matching
+                prep <- bagToList <$>
+                  liftBag (preprocessBinding tyconsMap False) (tcg_binds env3)
+                dumpWith DumpPatternMatched dopts prep
 
-              -- lift instance information
-              let origInsts = tcg_insts env
-              newInsts <- mapM (liftInstance tyconsMap) origInsts
+                -- lift instance information
+                let origInsts = tcg_insts env
+                newInsts <- mapM (liftInstance tyconsMap) origInsts
 
-              -- Remove all instances that were defined in this module
-              -- from all instances that were created during compilation,
-              -- and replace them with the new instances.
-              let allInsts = deleteFirstsBy ((. is_cls_nm) . (==) . is_cls_nm)
-                    (tcg_insts env3) origInsts ++ newInsts
-              -- For the environment, we have to keep all external instances,
-              -- while replacing all local instances with the new ones.
-              -- So we do the same as above,
-              -- but use tcg_inst_env instead of tcg_insts.
-              let newInstEnv = extendInstEnvList emptyInstEnv
-                    (deleteFirstsBy ((. is_cls_nm) . (==) . is_cls_nm)
-                      (instEnvElts (tcg_inst_env env3)) origInsts ++ newInsts)
-              dumpWith DumpInstEnv dopts newInstEnv
-              let env4 = env3 { tcg_insts = allInsts
-                              , tcg_inst_env = newInstEnv}
-              setGblEnv env4 $ do
+                -- Remove all instances that were defined in this module
+                -- from all instances that were created during compilation,
+                -- and replace them with the new instances.
+                let allInsts = deleteFirstsBy ((. is_cls_nm) . (==) . is_cls_nm)
+                      (tcg_insts env3) origInsts ++ newInsts
+                -- For the environment, we have to keep all external instances,
+                -- while replacing all local instances with the new ones.
+                -- So we do the same as above,
+                -- but use tcg_inst_env instead of tcg_insts.
+                let newInstEnv = extendInstEnvList emptyInstEnv
+                      (deleteFirstsBy ((. is_cls_nm) . (==) . is_cls_nm)
+                        (instEnvElts (tcg_inst_env env3)) origInsts ++ newInsts)
+                dumpWith DumpInstEnv dopts newInstEnv
+                let env4 = env3 { tcg_insts = allInsts
+                                , tcg_inst_env = newInstEnv}
+                setGblEnv env4 $ do
 
-                -- finally do the monadic lifting for functions and dicts
-                tcg_binds' <- liftBindings tyconsMap newInsts prep
+                  -- finally do the monadic lifting for functions and dicts
+                  tcg_binds' <- liftBindings tyconsMap newInsts prep
 
-                tcg_rules' <- mapM (liftRule tyconsMap) (tcg_rules env4)
+                  tcg_rules' <- mapM (liftRule tyconsMap) (tcg_rules env4)
 
-                (_, finalEvBinds, finalBinds, _, _, finalRules) <-
-                  zonkTopDecls emptyBag (listToBag tcg_binds') tcg_rules'
-                    [] []
+                  (_, finalEvBinds, finalBinds, _, _, finalRules) <-
+                    zonkTopDecls emptyBag (listToBag tcg_binds') tcg_rules'
+                      [] []
 
-                -- create the final environment with restored plugin field
-                let finalEnv = env4 { tcg_binds      = finalBinds
-                                    , tcg_tc_plugins = tcg_tc_plugins env
-                                    , tcg_ev_binds   = finalEvBinds
-                                    , tcg_rules      = finalRules
-                                    }
-                      `addTypecheckedBinds` [bs']
+                  -- create the final environment with restored plugin field
+                  let finalEnv = env4 { tcg_binds      = finalBinds
+                                      , tcg_tc_plugins = tcg_tc_plugins env
+                                      , tcg_ev_binds   = finalEvBinds
+                                      , tcg_rules      = finalRules
+                                      }
+                        `addTypecheckedBinds` [bs']
 
-                return finalEnv
+                  return finalEnv
   where
     liftBindings :: TyConMap -> [ClsInst] -> [LHsBindLR GhcTc GhcTc]
                  -> TcM [LHsBindLR GhcTc GhcTc]

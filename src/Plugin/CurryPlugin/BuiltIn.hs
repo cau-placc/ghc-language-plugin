@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase             #-}
 {-# LANGUAGE MultiParamTypeClasses  #-}
 {-# LANGUAGE FlexibleContexts       #-}
+{-# LANGUAGE FlexibleInstances      #-}
 {-# LANGUAGE RankNTypes             #-}
 {-# LANGUAGE PolyKinds              #-}
 {-# LANGUAGE DataKinds              #-}
@@ -10,6 +11,7 @@
 {-# LANGUAGE UndecidableInstances   #-}
 {-# LANGUAGE ConstraintKinds        #-}
 {-# LANGUAGE MagicHash              #-}
+{-# LANGUAGE TypeFamilies           #-}
 {-# OPTIONS_GHC -Wno-orphans        #-}
 {-# OPTIONS_GHC -Wno-unused-foralls #-}
 {-|
@@ -27,9 +29,7 @@ This module is not supposed to be imported by users, please import
 module Plugin.CurryPlugin.BuiltIn where
 
 import qualified Prelude                as P
-import           Prelude                     ( ($), Int, Integer, Char
-                                             , Float, Double
-                                             , Bool(..), Ordering(..) )
+import           Prelude                     ( ($), Bool(..), Ordering(..) )
 import qualified GHC.Real               as P
 import qualified GHC.Prim               as P
 import qualified GHC.Int                as P
@@ -37,37 +37,41 @@ import           Unsafe.Coerce
 import           GHC.Types                   ( RuntimeRep, Multiplicity )
 
 import Plugin.CurryPlugin.Monad
-import Plugin.Effect.Classes (Shareable(..))
-
--- | This is a lifted version of the unrestricted function type constructor
-type (:->) r s a b = (Nondet a -> Nondet b)
-
--- | This is a lifted version of the restricted function type constructor
-type (:-->) m r s a b = (Nondet a -> Nondet b)
+import Plugin.Effect.Classes
 
 -- | Alias for Shareable constraint specialized to the nondeterminism monad.
 type ShareableN a = Shareable Nondet a
 
+-- | This is a lifted version of the unrestricted function type constructor
+type (:--->) m r s a b = (:-->) m a b
+
+-- | This is a lifted version of the multiplicity-augmented (unrestricted) function type constructor
+type (:--->#) m mult r s a b = (:-->) m a b
+
 -- * Lifted list type and internal instances
 
 -- | Lifted defintion for Haskell's default list type '[]'
-data ListND a = Nil | Cons (Nondet a) (Nondet (ListND a))
+data ListND m a = Nil | Cons (m a) (m (ListND m a))
+
+type instance Lifted m [] = ListND m
+type instance Lifted m [a] = ListND m (Lifted m a)
 
 -- | Lifted smart constructor for 'Nil'
-nil :: Nondet (ListND a)
+nil :: Nondet (ListND Nondet a)
 nil = P.return Nil
 
 -- | Lifted smart constructor for 'Cons'
-cons :: Nondet (a --> ListND a --> ListND a)
+cons :: Nondet (a --> ListND Nondet a --> ListND Nondet a)
 cons = rtrnFunc $ \a -> rtrnFunc $ \as -> P.return (Cons a as)
 
 -- | Shareable instance for lists.
-instance Shareable Nondet a => Shareable Nondet (ListND a) where
-  shareArgs Nil         = P.return Nil
-  shareArgs (Cons x xs) = Cons P.<$> share x P.<*> share xs
+instance (ShareConstraints m a, ShareConstraints m (ListND m a), Sharing m) =>
+  Shareable m (ListND m a) where
+    shareArgs Nil         = P.return Nil
+    shareArgs (Cons x xs) = Cons P.<$> share x P.<*> share xs
 
 -- | Normalform instance for lists
-instance Normalform Nondet a1 a2 => Normalform Nondet (ListND a1) [a2] where
+instance (P.Monad m, Normalform m a) => Normalform m [a] where
   nf mxs = mxs P.>>= \case
     Nil       -> P.return []
     Cons x xs -> (:) P.<$> nf x P.<*> nf xs
@@ -79,24 +83,28 @@ instance Normalform Nondet a1 a2 => Normalform Nondet (ListND a1) [a2] where
 -- * Lifted tuple types and internal instances
 
 -- | Lifted defintion for Haskell's 2-ary tuple '(,)'
-data Tuple2ND a b = Tuple2 (Nondet a) (Nondet b)
+data Tuple2ND m a b = Tuple2 (m a) (m b)
+
+type instance Lifted m (,)     = Tuple2ND m
+type instance Lifted m ((,) a) = Tuple2ND m (Lifted m a)
+type instance Lifted m (a, b)  = Tuple2ND m (Lifted m a) (Lifted m b)
 
 -- | Selector for the first component of a lifted 2-ary tuple
-fst :: Nondet (Tuple2ND a b --> a)
+fst :: Nondet (Tuple2ND Nondet a b --> a)
 fst = rtrnFunc $ \t -> t P.>>= \(Tuple2 a _) -> a
 
 -- | Selector for the second component of a lifted 2-ary tuple
-snd :: Nondet (Tuple2ND a b --> b)
+snd :: Nondet (Tuple2ND Nondet a b --> b)
 snd = rtrnFunc $ \t -> t P.>>= \(Tuple2 _ b) -> b
 
 -- | Shareable instance for 2-ary tuple
-instance (Shareable Nondet a, Shareable Nondet b) =>
-  Shareable Nondet (Tuple2ND a b) where
+instance (ShareConstraints m a, ShareConstraints m b, Sharing m) =>
+  Shareable m (Tuple2ND m a b) where
     shareArgs (Tuple2 a b) = Tuple2 P.<$> share a P.<*> share b
 
 -- | Normalform instance for 2-ary tuple
-instance (Normalform Nondet a1 a2, Normalform Nondet b1 b2) =>
-  Normalform Nondet (Tuple2ND a1 b1) (a2, b2) where
+instance (P.Monad m, Normalform m a, Normalform m b) =>
+  Normalform m (a, b) where
     nf mxs = mxs P.>>= \(Tuple2 a b) -> (,) P.<$> nf a P.<*> nf b
     liftE mxs = mxs P.>>= \(a, b) -> Tuple2 P.<$> P.return (liftE (P.return a))
                                             P.<*> P.return (liftE (P.return b))
@@ -104,26 +112,29 @@ instance (Normalform Nondet a1 a2, Normalform Nondet b1 b2) =>
 -- * Other lifted types and internal instances
 
 -- | Lifted defintion for Haskell's 'String' type
-type StringND = ListND P.Char
+type StringND m = ListND m (CharND m)
 
 -- | Lifted defintion for Haskell's 'Ratio' type
-data RatioND a = !(Nondet a) :% !(Nondet a)
+data RatioND m a = !(m a) :% !(m a)
+
+type instance Lifted m P.Ratio = RatioND m
+type instance Lifted m (P.Ratio a) = RatioND m (Lifted m a)
 
 -- | Shareable instance for Ratios
-instance (Shareable Nondet a) =>
-  Shareable Nondet (RatioND a) where
+instance (ShareConstraints m a, Sharing m) =>
+  Shareable m (RatioND m a) where
     shareArgs (a :% b) = (:%) P.<$> share a P.<*> share b
 
 -- | Normalform instance for Ratios
-instance (Normalform Nondet a1 a2) =>
-  Normalform Nondet (RatioND a1) (P.Ratio a2) where
+instance (P.Monad m, Normalform m a) =>
+  Normalform m (P.Ratio a) where
     nf mxs = mxs P.>>= \(a :% b) -> (P.:%) P.<$> nf a P.<*> nf b
     liftE mxs = mxs P.>>= \(a P.:% b) ->
       (:%) P.<$> P.return (liftE (P.return a))
            P.<*> P.return (liftE (P.return b))
 
 -- | Lifted defintion for Haskell's 'Rational' type
-type RationalND = RatioND Integer
+type RationalND m = RatioND m (IntegerND m)
 
 
 -- * Lifted functions
@@ -136,7 +147,7 @@ type RationalND = RatioND Integer
 -- | Function to use for pattern match failures
 -- Pattern match failure is translated to a failed for Curry,
 -- ignoring the string.
-pE :: ShareableN a => Nondet (ListND Char --> a)
+pE :: ShareableN a => Nondet (StringND Nondet --> a)
 pE = rtrnFunc (P.>>= P.const failed)
 
 -- | Lifted identity function
@@ -144,8 +155,8 @@ id :: Nondet (a --> a)
 id = rtrnFunc P.id
 
 -- | Lifted logical negation
-not :: Nondet (Bool --> Bool)
-not = liftNondet1 P.not
+not :: Nondet (BoolND Nondet --> BoolND Nondet)
+not = liftNondet1NF P.not
 
 -- Note: In order to be able to keep all type-applications
 -- of the original code for the following "primops",
@@ -176,33 +187,33 @@ const :: Nondet (a --> b --> a)
 const = rtrnFunc $ \a -> rtrnFunc $ \_ -> a
 
 -- | Lifted logical and
-(&&) :: Nondet (Bool --> Bool --> Bool)
+(&&) :: Nondet (BoolND Nondet --> BoolND Nondet --> BoolND Nondet)
 (&&) =  rtrnFunc $ \a1 -> rtrnFunc $ \a2 -> a1 P.>>= \case
-  False -> P.return False
-  True  -> a2
+  BoolND False -> P.return (BoolND False)
+  BoolND True  -> a2
 
 -- | Lifted guard function used to desugar monad comprehensions
 guard :: (AlternativeND f, forall x . ShareableN x => ShareableN (f x))
-      => Nondet (Bool --> f ())
+      => Nondet (BoolND Nondet --> f (UnitND Nondet))
 guard = rtrnFunc $ \b -> b P.>>= \case
-  True  -> pure `app` (P.return ())
-  False -> empty
+  BoolND True  -> pure `app` (P.return (UnitND ()))
+  BoolND False -> empty
 
 -- | Lifted append function for lists
-append :: ShareableN a => Nondet (ListND a --> ListND a --> ListND a)
+append :: ShareableN a => Nondet (ListND Nondet a --> ListND Nondet a --> ListND Nondet a)
 append = rtrnFunc $ \xs -> rtrnFunc $ \ys -> xs P.>>= \case
   Nil       -> ys
   Cons a as -> P.return (Cons a (apply2 append as ys))
 
 -- | Lifted concatMap function for lists
 concatMap :: (ShareableN a, ShareableN b)
-          => Nondet ((a --> ListND b) --> ListND a --> ListND b)
+          => Nondet ((a --> ListND Nondet b) --> ListND Nondet a --> ListND Nondet b)
 concatMap = rtrnFunc $ \f -> rtrnFunc $ \xs -> xs P.>>= \case
   Nil       -> P.return Nil
   Cons a as -> append `app` (f `app` a) `app` (concatMap `app` f `app` as)
 
 -- | Lifted map function for lists
-map :: Nondet ((a --> b) --> ListND a --> ListND b)
+map :: Nondet ((a --> b) --> ListND Nondet a --> ListND Nondet b)
 map = rtrnFunc $ \f' -> share f' P.>>= \f ->
   rtrnFunc $ \xs -> xs P.>>= \case
   Nil       -> P.return Nil
@@ -216,18 +227,18 @@ coerce :: forall (k :: RuntimeRep) a b. (ShareableN a, ShareableN b)
 coerce = rtrnFunc $ \a -> a P.>>= \a' -> P.return (unsafeCoerce a')
 
 -- | Lifted equality test for strings
-eqString :: Nondet (StringND --> StringND --> Bool)
+eqString :: Nondet (StringND Nondet --> StringND Nondet --> BoolND Nondet)
 eqString = (==)
 
-(<#) :: Nondet (Int --> Int --> Int)
+(<#) :: Nondet (IntND Nondet --> IntND Nondet --> IntND Nondet)
 (<#) = rtrnFunc $ \a -> rtrnFunc $ \b ->
-  a P.>>= \ (P.I# a') -> b P.>>= \ (P.I# b') ->
-   P.return (P.I# (a' P.<# b'))
+  a P.>>= \ (IntND (P.I# a')) -> b P.>>= \ (IntND (P.I# b')) ->
+   P.return (IntND (P.I# (a' P.<# b')))
 
-(==#) :: Nondet (Int --> Int --> Int)
+(==#) :: Nondet (IntND Nondet --> IntND Nondet --> IntND Nondet)
 (==#) = rtrnFunc $ \a -> rtrnFunc $ \b ->
-  a P.>>= \ (P.I# a') -> b P.>>= \ (P.I# b') ->
-  P.return (P.I# (a' P.==# b'))
+  a P.>>= \ (IntND (P.I# a')) -> b P.>>= \ (IntND (P.I# b')) ->
+  P.return (IntND (P.I# (a' P.==# b')))
 
 -- |  Lifted composition operator for functions
 (.) :: (ShareableN a, ShareableN b, ShareableN c)
@@ -238,180 +249,179 @@ eqString = (==)
 -- * Lifted Show type class, instances and functions
 
 -- | Lifted ShowS type
-type ShowSND = StringND --> StringND
+type ShowSND m = (:-->) m (StringND m) (StringND m)
 
 -- | Lifted Show type class
 class ShowND a where
   {-# MINIMAL showsPrec | show #-}
-  showsPrec :: Nondet (Int --> a --> ShowSND)
+  showsPrec :: Nondet (IntND Nondet --> a --> ShowSND Nondet)
   showsPrec = rtrnFunc $ \_ -> rtrnFunc $ \x -> rtrnFunc $ \s ->
     apply2 append (show `app` x) s
 
-  show :: Nondet (a --> StringND)
+  show :: Nondet (a --> StringND Nondet)
   show = rtrnFunc $ \x -> apply2 shows x (P.return Nil)
 
-  showList :: Nondet (ListND a --> ShowSND)
+  showList :: Nondet (ListND Nondet a --> ShowSND Nondet)
   showList = rtrnFunc $ \ls -> rtrnFunc $ \s -> apply3 showsList__ shows ls s
 
-showsList__ :: Nondet ((a --> ShowSND) --> ListND a --> ShowSND)
+showsList__ :: Nondet ((a --> ShowSND Nondet) --> ListND Nondet a --> ShowSND Nondet)
 showsList__ = rtrnFunc $ \showx -> rtrnFunc $ \list -> rtrnFunc $ \s ->
   list P.>>= \case
     Nil       -> apply2 append (liftE (P.return "[]")) s
     Cons x xs ->
-      P.return (Cons (P.return '[') (apply2 showx x (apply3 showl showx xs s)))
+      P.return (Cons (liftE (P.return '[')) (apply2 showx x (apply3 showl showx xs s)))
   where
     showl = rtrnFunc $ \showx -> rtrnFunc $ \list -> rtrnFunc $ \s ->
       list P.>>= \case
         Nil       ->
-          P.return (Cons (P.return ']') s)
+          P.return (Cons (liftE (P.return ']')) s)
         Cons y ys ->
-          P.return (Cons (P.return ',')
+          P.return (Cons (liftE (P.return ','))
             (apply2 showx y (apply3 showl showx ys s)))
 
-shows :: ShowND a => Nondet (a --> ShowSND)
-shows = showsPrec `app` (P.return 0)
+shows :: ShowND a => Nondet (a --> ShowSND Nondet)
+shows = showsPrec `app` (liftE $ P.return 0)
 
-showString :: Nondet (StringND --> ShowSND)
+showString :: Nondet (StringND Nondet --> ShowSND Nondet)
 showString = append
 
-showCommaSpace :: Nondet ShowSND
+showCommaSpace :: Nondet (ShowSND Nondet)
 showCommaSpace = showString `app` (liftE (P.return ", "))
 
-showSpace :: Nondet ShowSND
+showSpace :: Nondet (ShowSND Nondet)
 showSpace =  showString `app` (liftE (P.return " "))
 
-showParen :: Nondet (Bool --> ShowSND --> ShowSND)
+showParen :: Nondet (BoolND Nondet --> ShowSND Nondet --> ShowSND Nondet)
 showParen = rtrnFunc $ \b -> rtrnFunc $ \s -> b P.>>= \case
-  True  -> apply2 (.) (showString `app` (liftE (P.return "(")))
+  BoolND True  -> apply2 (.) (showString `app` (liftE (P.return "(")))
           (apply2 (.) s (showString `app` (liftE (P.return ")"))))
-  False -> s
+  BoolND False -> s
 
-instance ShowND Bool where
-  show = rtrnFunc $ \x -> liftE (P.show P.<$> x)
+instance ShowND (BoolND Nondet) where
+  show = liftNondet1NF P.show
 
-instance ShowND () where
-  show = rtrnFunc $ \x -> liftE (P.show P.<$> x)
+instance ShowND (UnitND Nondet) where
+  show = liftNondet1NF P.show
 
-instance ShowND Int where
-  show = rtrnFunc $ \x -> liftE (P.show P.<$> x)
+instance ShowND (IntND Nondet) where
+  show = liftNondet1NF P.show
 
-instance ShowND Integer where
-  show = rtrnFunc $ \x -> liftE (P.show P.<$> x)
+instance ShowND (IntegerND Nondet) where
+  show = liftNondet1NF P.show
 
-instance ShowND Float where
-  show = rtrnFunc $ \x -> liftE (P.show P.<$> x)
+instance ShowND (FloatND Nondet) where
+  show = liftNondet1NF P.show
 
-instance ShowND Double where
-  show = rtrnFunc $ \x -> liftE (P.show P.<$> x)
+instance ShowND (DoubleND Nondet) where
+  show = liftNondet1NF P.show
 
-instance ShowND Char where
-  show = rtrnFunc $ \x -> liftE (P.show P.<$> x)
-  showList = rtrnFunc $ \ls -> rtrnFunc $ \s ->
-    liftE (P.showList P.<$> nf ls P.<*> nf s)
+instance ShowND (CharND Nondet) where
+  show = liftNondet1NF P.show
+  showList = liftNondet1NF P.showList
 
-instance (ShowND a, ShareableN a) => ShowND (ListND a) where
+instance (ShowND a, ShareableN a) => ShowND (ListND Nondet a) where
   show = rtrnFunc $ \xs -> apply2 showList xs (P.return Nil)
 
 -- * Lifted Eq type class, instances and functions
 
 -- | Lifted Eq type class
 class EqND a where
-  (==) :: Nondet (a --> a --> Bool)
+  (==) :: Nondet (a --> a --> BoolND Nondet)
   (==) = rtrnFunc $ \a1 -> rtrnFunc $ \a2 -> not `app` (apply2 (/=) a1 a2)
 
-  (/=) :: Nondet (a --> a --> Bool)
+  (/=) :: Nondet (a --> a --> BoolND Nondet)
   (/=) = rtrnFunc $ \a1 -> rtrnFunc $ \a2 -> not `app` (apply2 (==) a1 a2)
 
-instance EqND Bool where
-  (==) = liftNondet2 (P.==)
-  (/=) = liftNondet2 (P./=)
+instance EqND (BoolND Nondet) where
+  (==) = liftNondet2NF (P.==)
+  (/=) = liftNondet2NF (P./=)
 
-instance EqND () where
-  (==) = rtrnFunc $ \_ -> rtrnFunc $ \_ -> P.return True
-  (/=) = rtrnFunc $ \_ -> rtrnFunc $ \_ -> P.return False
+instance EqND (UnitND Nondet) where
+  (==) = liftNondet2NF (P.==)
+  (/=) = liftNondet2NF (P./=)
 
-instance EqND Int where
-  (==) = liftNondet2 (P.==)
-  (/=) = liftNondet2 (P./=)
+instance EqND (IntND Nondet) where
+  (==) = liftNondet2NF (P.==)
+  (/=) = liftNondet2NF (P./=)
 
-instance EqND Integer where
-  (==) = liftNondet2 (P.==)
-  (/=) = liftNondet2 (P./=)
+instance EqND (IntegerND Nondet) where
+  (==) = liftNondet2NF (P.==)
+  (/=) = liftNondet2NF (P./=)
 
-instance EqND Float where
-  (==) = liftNondet2 (P.==)
-  (/=) = liftNondet2 (P./=)
+instance EqND (FloatND Nondet) where
+  (==) = liftNondet2NF (P.==)
+  (/=) = liftNondet2NF (P./=)
 
-instance EqND Double where
-  (==) = liftNondet2 (P.==)
-  (/=) = liftNondet2 (P./=)
+instance EqND (DoubleND Nondet) where
+  (==) = liftNondet2NF (P.==)
+  (/=) = liftNondet2NF (P./=)
 
-instance EqND Char where
-  (==) = liftNondet2 (P.==)
-  (/=) = liftNondet2 (P./=)
+instance EqND (CharND Nondet) where
+  (==) = liftNondet2NF (P.==)
+  (/=) = liftNondet2NF (P./=)
 
-instance (EqND a, ShareableN a) => EqND (ListND a) where
+instance (EqND a, ShareableN a) => EqND (ListND Nondet a) where
   (==) = rtrnFunc $ \a1 -> rtrnFunc $ \a2 -> a1 P.>>= \case
     Nil       -> a2 P.>>= \case
-      Nil       -> P.return True
-      Cons _ _  -> P.return False
+      Nil       -> P.return $ BoolND True
+      Cons _ _  -> P.return $ BoolND False
     Cons x xs -> a2 P.>>= \case
-      Nil       -> P.return False
-      Cons y ys -> eqOn x y xs ys
+      Nil       -> P.return $ BoolND False
+      Cons y ys -> eqOn2 x y xs ys
 
 instance (EqND a, EqND b, ShareableN a, ShareableN b) =>
-  EqND (Tuple2ND a b) where
+  EqND (Tuple2ND Nondet a b) where
   (==) = rtrnFunc $ \x1 -> rtrnFunc $ \x2 -> do
     (Tuple2 a1 b1) <- x1
     (Tuple2 a2 b2) <- x2
-    eqOn a1 a2 b1 b2
+    eqOn2 a1 a2 b1 b2
 
-instance (EqND a, ShareableN a) => EqND (RatioND a) where
+instance (EqND a, ShareableN a) => EqND (RatioND Nondet a) where
   (==) = rtrnFunc $ \x1 -> rtrnFunc $ \x2 -> do
     (a1 :% b1) <- x1
     (a2 :% b2) <- x2
-    eqOn a1 a2 b1 b2
+    eqOn2 a1 a2 b1 b2
 
-eqOn :: (EqND a1, EqND a2, ShareableN a1, ShareableN a2)
-     => Nondet a1 -> Nondet a1 -> Nondet a2 -> Nondet a2 -> Nondet Bool
-eqOn x y xs ys = apply2 (&&) (apply2 (==) x y) (apply2 (==) xs ys)
+eqOn2 :: (EqND a1, EqND a2, ShareableN a1, ShareableN a2)
+     => Nondet a1 -> Nondet a1 -> Nondet a2 -> Nondet a2 -> Nondet (BoolND Nondet)
+eqOn2 x y xs ys = apply2 (&&) (apply2 (==) x y) (apply2 (==) xs ys)
 
 -- * Lifted Ord type class, instances and functions
 
 -- | Lifted Ord type class
 class EqND a => OrdND a where
   {-# MINIMAL compare | (<=) #-}
-  compare :: Nondet (a --> a --> Ordering)
+  compare :: Nondet (a --> a --> OrderingND Nondet)
   compare = rtrnFunc $ \a1 -> rtrnFunc $ \a2 ->
-    apply2 (==) a1 a2 P.>>= \b1 -> if b1
-      then P.return EQ
-      else apply2 (<=) a1 a2 P.>>= \b2 -> if b2
-        then P.return LT
-        else P.return GT
+    apply2 (==) a1 a2 P.>>= \(BoolND b1) -> if b1
+      then P.return (OrderingND EQ)
+      else apply2 (<=) a1 a2 P.>>= \(BoolND b2) -> if b2
+        then P.return $ OrderingND LT
+        else P.return $ OrderingND GT
 
-  (<) :: Nondet (a --> a --> Bool)
+  (<) :: Nondet (a --> a --> BoolND Nondet)
   (<) = rtrnFunc $ \a1 -> rtrnFunc $ \a2 ->
     apply2 compare a1 a2 P.>>= \case
-      LT -> P.return True
-      _  -> P.return False
+      OrderingND LT -> P.return $ BoolND True
+      _             -> P.return $ BoolND False
 
-  (<=) :: Nondet (a --> a --> Bool)
+  (<=) :: Nondet (a --> a --> BoolND Nondet)
   (<=) = rtrnFunc $ \a1 -> rtrnFunc $ \a2 ->
     apply2 compare a1 a2 P.>>= \case
-      GT -> P.return False
-      _  -> P.return True
+      OrderingND GT -> P.return $ BoolND False
+      _             -> P.return $ BoolND True
 
-  (>) :: Nondet (a --> a --> Bool)
+  (>) :: Nondet (a --> a --> BoolND Nondet)
   (>) = rtrnFunc $ \a1 -> rtrnFunc $ \a2 ->
     apply2 compare a1 a2 P.>>= \case
-      GT -> P.return True
-      _  -> P.return False
+      OrderingND GT -> P.return $ BoolND True
+      _             -> P.return $ BoolND False
 
-  (>=) :: Nondet (a --> a --> Bool)
+  (>=) :: Nondet (a --> a --> BoolND Nondet)
   (>=) = rtrnFunc $ \a1 -> rtrnFunc $ \a2 ->
     apply2 compare a1 a2 P.>>= \case
-      LT -> P.return False
-      _  -> P.return True
+      OrderingND LT -> P.return $ BoolND False
+      _             -> P.return $ BoolND True
 
   -- This default implementation is replaced at compile-time with maxDefault
   max :: Nondet (a --> a --> a)
@@ -425,50 +435,50 @@ maxDefault :: (OrdND a, ShareableN a) => Nondet (a --> a --> a)
 maxDefault = rtrnFunc $ \a1 -> rtrnFunc $ \a2 ->
   share a1 P.>>= \a1' -> share a2 P.>>= \a2' ->
   apply2 (>=) a1' a2' P.>>= \case
-    True -> a1'
-    _    -> a2'
+    BoolND True -> a1'
+    _           -> a2'
 
 minDefault :: (OrdND a, ShareableN a) => Nondet (a --> a --> a)
 minDefault = rtrnFunc $ \a1 -> rtrnFunc $ \a2 ->
   share a1 P.>>= \a1' -> share a2 P.>>= \a2' ->
   apply2 (<=) a1' a2' P.>>= \case
-    True -> a1'
-    _    -> a2'
+    BoolND True -> a1'
+    _           -> a2'
 
-instance OrdND Bool where
-  compare = liftNondet2 P.compare
+instance OrdND (BoolND Nondet) where
+  compare = liftNondet2NF P.compare
 
-instance OrdND () where
-  compare = rtrnFunc $ \_ -> rtrnFunc $ \_ -> P.return EQ
+instance OrdND (UnitND Nondet) where
+  compare = liftNondet2NF P.compare
 
-instance OrdND Int where
-  compare = liftNondet2 P.compare
+instance OrdND (IntND Nondet) where
+  compare = liftNondet2NF P.compare
 
-instance OrdND Integer where
-  compare = liftNondet2 P.compare
+instance OrdND (IntegerND Nondet) where
+  compare = liftNondet2NF P.compare
 
-instance OrdND Float where
-  compare = liftNondet2 P.compare
+instance OrdND (FloatND Nondet) where
+  compare = liftNondet2NF P.compare
 
-instance OrdND Double where
-  compare = liftNondet2 P.compare
+instance OrdND (DoubleND Nondet) where
+  compare = liftNondet2NF P.compare
 
-instance (OrdND a, ShareableN a) => OrdND (ListND a) where
+instance (OrdND a, ShareableN a) => OrdND (ListND Nondet a) where
   compare = rtrnFunc $ \x -> rtrnFunc $ \y ->
     x P.>>= \x' -> y P.>>= \y' -> case (x', y') of
-      (Nil      , Nil      ) -> P.return EQ
-      (Nil      , Cons _ _ ) -> P.return LT
-      (Cons _ _ , Nil      ) -> P.return GT
+      (Nil      , Nil      ) -> P.return (OrderingND EQ)
+      (Nil      , Cons _ _ ) -> P.return (OrderingND LT)
+      (Cons _ _ , Nil      ) -> P.return (OrderingND GT)
       (Cons a as, Cons b bs) -> apply2 compare a b P.>>= \case
-        EQ -> apply2 compare as bs
+        OrderingND EQ -> apply2 compare as bs
         o  -> P.return o
 
 instance (OrdND a, OrdND b, ShareableN a, ShareableN b) =>
-  OrdND (Tuple2ND a b) where
+  OrdND (Tuple2ND Nondet a b) where
   compare = rtrnFunc $ \x -> rtrnFunc $ \y ->
     x P.>>= \x' -> y P.>>= \y' -> case (x', y') of
       (Tuple2 a1 b1, Tuple2 a2 b2) -> apply2 compare a1 a2 P.>>= \case
-        EQ -> apply2 compare b1 b2
+        OrderingND EQ -> apply2 compare b1 b2
         o  -> P.return o
 
 -- * Lifted Num type class, instances and functions
@@ -481,46 +491,46 @@ class NumND a where
     (+) `app` a `app` (negate `app` b)
   (*) :: Nondet (a --> a --> a)
   negate :: Nondet (a --> a)
-  negate = rtrnFunc $ \a -> (-) `app` (fromInteger `app` (P.return 0)) `app` a
+  negate = rtrnFunc $ \a -> (-) `app` (fromInteger `app` (liftE (P.return 0))) `app` a
   abs    :: Nondet (a --> a)
   signum :: Nondet (a --> a)
-  fromInteger :: Nondet (P.Integer --> a)
+  fromInteger :: Nondet (IntegerND Nondet --> a)
 
-instance NumND Int where
-  (+) = liftNondet2 (P.+)
-  (-) = liftNondet2 (P.-)
-  (*) = liftNondet2 (P.*)
-  negate = liftNondet1 P.negate
-  abs    = liftNondet1 P.abs
-  signum = liftNondet1 P.signum
-  fromInteger = liftNondet1 P.fromInteger
+instance NumND (IntND Nondet) where
+  (+) = liftNondet2NF (P.+)
+  (-) = liftNondet2NF (P.-)
+  (*) = liftNondet2NF (P.*)
+  negate = liftNondet1NF P.negate
+  abs    = liftNondet1NF P.abs
+  signum = liftNondet1NF P.signum
+  fromInteger = liftNondet1NF P.fromInteger
 
-instance NumND Integer where
-  (+) = liftNondet2 (P.+)
-  (-) = liftNondet2 (P.-)
-  (*) = liftNondet2 (P.*)
-  negate = liftNondet1 P.negate
-  abs    = liftNondet1 P.abs
-  signum = liftNondet1 P.signum
-  fromInteger = liftNondet1 P.fromInteger
+instance NumND (IntegerND Nondet) where
+  (+) = liftNondet2NF (P.+)
+  (-) = liftNondet2NF (P.-)
+  (*) = liftNondet2NF (P.*)
+  negate = liftNondet1NF P.negate
+  abs    = liftNondet1NF P.abs
+  signum = liftNondet1NF P.signum
+  fromInteger = liftNondet1NF P.fromInteger
 
-instance NumND Float where
-  (+) = liftNondet2 (P.+)
-  (-) = liftNondet2 (P.-)
-  (*) = liftNondet2 (P.*)
-  negate = liftNondet1 P.negate
-  abs    = liftNondet1 P.abs
-  signum = liftNondet1 P.signum
-  fromInteger = liftNondet1 P.fromInteger
+instance NumND (FloatND Nondet) where
+  (+) = liftNondet2NF (P.+)
+  (-) = liftNondet2NF (P.-)
+  (*) = liftNondet2NF (P.*)
+  negate = liftNondet1NF P.negate
+  abs    = liftNondet1NF P.abs
+  signum = liftNondet1NF P.signum
+  fromInteger = liftNondet1NF P.fromInteger
 
-instance NumND Double where
-  (+) = liftNondet2 (P.+)
-  (-) = liftNondet2 (P.-)
-  (*) = liftNondet2 (P.*)
-  negate = liftNondet1 P.negate
-  abs    = liftNondet1 P.abs
-  signum = liftNondet1 P.signum
-  fromInteger = liftNondet1 P.fromInteger
+instance NumND (DoubleND Nondet) where
+  (+) = liftNondet2NF (P.+)
+  (-) = liftNondet2NF (P.-)
+  (*) = liftNondet2NF (P.*)
+  negate = liftNondet1NF P.negate
+  abs    = liftNondet1NF P.abs
+  signum = liftNondet1NF P.signum
+  fromInteger = liftNondet1NF P.fromInteger
 
 -- * Lifted Fractional type class, instances and functions
 
@@ -532,35 +542,35 @@ class NumND a => FractionalND a where
   (/) = rtrnFunc $ \x -> rtrnFunc $ \y -> apply2 (*) x  (recip `app` y)
 
   recip :: Nondet (a --> a)
-  recip = rtrnFunc $ \x -> apply2 (/) (fromInteger `app` (P.return 1)) x
+  recip = rtrnFunc $ \x -> apply2 (/) (fromInteger `app` (liftE (P.return 1))) x
 
-  fromRational :: Nondet (RationalND --> a)
+  fromRational :: Nondet (RationalND Nondet --> a)
 
-instance FractionalND Float where
-  (/) = liftNondet2 (P./)
-  fromRational = rtrnFunc $ \r -> P.fromRational P.<$> nf r
+instance FractionalND (FloatND Nondet) where
+  (/) = liftNondet2NF (P./)
+  fromRational = liftNondet1NF P.fromRational
 
-instance FractionalND Double where
-  (/) = liftNondet2 (P./)
-  fromRational = rtrnFunc $ \r -> P.fromRational P.<$> nf r
+instance FractionalND (DoubleND Nondet) where
+  (/) = liftNondet2NF (P./)
+  fromRational = liftNondet1NF P.fromRational
 
 -- * Lifted Real type class, instances and functions
 
 -- | Lifted Real type class
 class (NumND a, OrdND a) => RealND a where
-  toRational :: Nondet (a --> RationalND)
+  toRational :: Nondet (a --> RationalND Nondet)
 
-instance RealND Int where
-  toRational = rtrnFunc $ \i -> P.return ((toInteger `app` i) :% (P.return 1))
+instance RealND (IntND Nondet) where
+  toRational = liftNondet1NF P.toRational
 
-instance RealND Integer where
-  toRational = rtrnFunc $ \i -> P.return (i :% (P.return 1))
+instance RealND (IntegerND Nondet) where
+  toRational = liftNondet1NF P.toRational
 
-instance RealND Float where
-  toRational = rtrnFunc $ \f -> liftE (P.toRational P.<$> f)
+instance RealND (FloatND Nondet) where
+  toRational = liftNondet1NF P.toRational
 
-instance RealND Double where
-  toRational = rtrnFunc $ \d -> liftE (P.toRational P.<$> d)
+instance RealND (DoubleND Nondet) where
+  toRational = liftNondet1NF P.toRational
 
 -- * Lifted Integral type class, instances and functions
 
@@ -570,9 +580,9 @@ class (RealND a, EnumND a) => IntegralND a where
   rem       :: Nondet (a --> a --> a)
   div       :: Nondet (a --> a --> a)
   mod       :: Nondet (a --> a --> a)
-  quotRem   :: Nondet (a --> a --> Tuple2ND a a)
-  divMod    :: Nondet (a --> a --> Tuple2ND a a)
-  toInteger :: Nondet (a --> Integer)
+  quotRem   :: Nondet (a --> a --> Tuple2ND Nondet a a)
+  divMod    :: Nondet (a --> a --> Tuple2ND Nondet a a)
+  toInteger :: Nondet (a --> IntegerND Nondet)
 
   quot   = rtrnFunc $ \n -> rtrnFunc $ \d -> fst `app` (apply2 quotRem n d)
   rem    = rtrnFunc $ \n -> rtrnFunc $ \d -> snd `app` (apply2 quotRem n d)
@@ -583,42 +593,50 @@ class (RealND a, EnumND a) => IntegralND a where
   divMod = P.undefined
 
 divModDefault :: (IntegralND a, ShareableN a)
-              => Nondet (a --> a --> Tuple2ND a a)
+              => Nondet (a --> a --> Tuple2ND Nondet a a)
 divModDefault = rtrnFunc $ \n' -> rtrnFunc $ \d' ->
   share n' P.>>= \n -> share d' P.>>= \d ->
   let qr' = apply2 quotRem n d
   in share qr' P.>>= \qr ->
      qr P.>>= \(Tuple2 q r) -> apply2 (==) (signum `app` r)
                                            (negate `app` (signum `app` d))
-        P.>>= \b -> if b
+        P.>>= \(BoolND b) -> if b
           then P.return (Tuple2 (apply2 (-) q
-                                   (fromInteger `app` (P.return 1)))
+                                   (fromInteger `app` (liftE (P.return 1))))
                                    (apply2 (+) r d))
           else qr
 
-instance IntegralND Int where
-  quot = liftNondet2 (P.quot)
-  rem  = liftNondet2 (P.rem)
-  div  = liftNondet2 (P.div)
-  mod  = liftNondet2 (P.mod)
+instance IntegralND (IntND Nondet) where
+  quot = liftNondet2NF (P.quot)
+  rem  = liftNondet2NF (P.rem)
+  div  = liftNondet2NF (P.div)
+  mod  = liftNondet2NF (P.mod)
 
-  quotRem = rtrnFunc $ \a1 -> rtrnFunc $ \a2 -> liftE
-    (P.quotRem P.<$> a1 P.<*> a2)
-  divMod = rtrnFunc $ \a1 -> rtrnFunc $ \a2 -> liftE
-    (P.divMod P.<$> a1 P.<*> a2)
+  quotRem = rtrnFunc $ \a1 -> rtrnFunc $ \a2 -> do
+    IntND v1 <- a1
+    IntND v2 <- a2
+    liftE (P.return (P.quotRem v1 v2))
+  divMod = rtrnFunc $ \a1 -> rtrnFunc $ \a2 -> do
+    IntND v1 <- a1
+    IntND v2 <- a2
+    liftE (P.return (P.divMod v1 v2))
 
-  toInteger = liftNondet1 (P.toInteger)
+  toInteger = liftNondet1NF (P.toInteger)
 
-instance IntegralND Integer where
-  quot = liftNondet2 (P.quot)
-  rem  = liftNondet2 (P.rem)
-  div  = liftNondet2 (P.div)
-  mod  = liftNondet2 (P.mod)
+instance IntegralND (IntegerND Nondet) where
+  quot = liftNondet2NF (P.quot)
+  rem  = liftNondet2NF (P.rem)
+  div  = liftNondet2NF (P.div)
+  mod  = liftNondet2NF (P.mod)
 
-  quotRem = rtrnFunc $ \a1 -> rtrnFunc $ \a2 -> liftE
-    (P.quotRem P.<$> a1 P.<*> a2)
-  divMod = rtrnFunc $ \a1 -> rtrnFunc $ \a2 -> liftE
-    (P.divMod P.<$> a1 P.<*> a2)
+  quotRem = rtrnFunc $ \a1 -> rtrnFunc $ \a2 -> do
+    IntegerND v1 <- a1
+    IntegerND v2 <- a2
+    liftE (P.return (P.quotRem v1 v2))
+  divMod = rtrnFunc $ \a1 -> rtrnFunc $ \a2 -> do
+    IntegerND v1 <- a1
+    IntegerND v2 <- a2
+    liftE (P.return (P.divMod v1 v2))
 
   toInteger = rtrnFunc P.id
 
@@ -633,11 +651,11 @@ class FunctorND f where
   (<$) = rtrnFunc $ \a -> rtrnFunc $ \f ->
     apply2 fmap (const `app` a) f
 
-instance FunctorND (Tuple2ND a) where
+instance FunctorND (Tuple2ND Nondet a) where
   fmap = rtrnFunc $ \f -> rtrnFunc $ \t -> t P.>>= \case
     Tuple2 a b -> P.return (Tuple2 a (f `app` b))
 
-instance FunctorND ListND where
+instance FunctorND (ListND Nondet) where
   fmap = rtrnFunc $ \f -> rtrnFunc $ \l -> l P.>>= \case
     Nil       -> P.return Nil
     Cons x xs -> P.return (Cons (f `app` x) (apply2 fmap f xs))
@@ -664,7 +682,7 @@ class FunctorND f => ApplicativeND f where
     apply3 liftA2 const a b
   {-# MINIMAL pure, ((<*>) | liftA2) #-}
 
-instance ApplicativeND ListND where
+instance ApplicativeND (ListND Nondet) where
   pure = rtrnFunc $ \a -> P.return (Cons a (P.return Nil))
   (<*>) = rtrnFunc $ \fs -> rtrnFunc $ \as ->
     apply2 concatMap (rtrnFunc $ \a ->
@@ -674,18 +692,18 @@ instance ApplicativeND ListND where
 class ApplicativeND f => AlternativeND f where
   empty :: ShareableN a => Nondet (f a)
   (<|>) :: ShareableN a => Nondet (f a --> f a --> f a)
-  some  :: ShareableN a => Nondet (f a --> f (ListND a))
+  some  :: ShareableN a => Nondet (f a --> f (ListND Nondet a))
   some = rtrnFunc $ \v ->
     let many_v = apply2 (<|>) some_v (pure `app` (P.return Nil))
         some_v = apply3 liftA2 cons v many_v
     in some_v
-  many  :: ShareableN a => Nondet (f a --> f (ListND a))
+  many  :: ShareableN a => Nondet (f a --> f (ListND Nondet a))
   many = rtrnFunc $ \v ->
     let many_v = apply2 (<|>) some_v (pure `app` (P.return Nil))
         some_v = apply3 liftA2 cons v many_v
     in many_v
 
-instance AlternativeND ListND where
+instance AlternativeND (ListND Nondet) where
   empty = nil
   (<|>) = append
 
@@ -699,16 +717,16 @@ class ApplicativeND m => MonadND m where
   return = pure
   {-# MINIMAL (>>=) #-}
 
-instance MonadND ListND where
+instance MonadND (ListND Nondet) where
   (>>=) = rtrnFunc $ \a -> rtrnFunc $ \f -> a P.>>= \case
     Nil       -> P.return Nil
     Cons x xs -> apply2 append (f `app` x) (apply2 (>>=) xs f)
 
 -- | Lifted MonadFail type class
 class MonadND m => MonadFailND m where
-  fail :: ShareableN a => Nondet (StringND --> m a)
+  fail :: ShareableN a => Nondet (StringND Nondet --> m a)
 
-instance MonadFailND ListND where
+instance MonadFailND (ListND Nondet) where
   fail = rtrnFunc $ \_ -> P.return Nil
 
 -- * Lifted Enum type class, instances and functions
@@ -717,78 +735,78 @@ instance MonadFailND ListND where
 class EnumND a where
   succ :: Nondet (a --> a)
   succ = rtrnFunc $ \a ->
-    toEnum `app` (apply2 (+) (P.return 1) (fromEnum `app` a))
+    toEnum `app` (apply2 (+) (liftE $ P.return 1) (fromEnum `app` a))
   pred :: Nondet (a --> a)
   pred = rtrnFunc $ \a ->
-    toEnum `app` (apply2 (-) (P.return 1) (fromEnum `app` a))
+    toEnum `app` (apply2 (-) (liftE $ P.return 1) (fromEnum `app` a))
 
-  toEnum   :: Nondet (Int --> a)
-  fromEnum :: Nondet (a --> Int)
+  toEnum   :: Nondet (IntND Nondet --> a)
+  fromEnum :: Nondet (a --> IntND Nondet)
 
-  enumFrom       :: Nondet (a             --> ListND a)
+  enumFrom       :: Nondet (a             --> ListND Nondet a)
   enumFrom       = rtrnFunc $ \x1 ->
     apply2 map toEnum (enumFrom `app`
       (fromEnum `app` x1))
 
-  enumFromThen   :: Nondet (a --> a       --> ListND a)
+  enumFromThen   :: Nondet (a --> a       --> ListND Nondet a)
   enumFromThen   = rtrnFunc $ \x1 -> rtrnFunc $ \x2 ->
     apply2 map toEnum (apply2 enumFromThen
       (fromEnum `app` x1) (fromEnum `app` x2))
 
-  enumFromTo     :: Nondet (a       --> a --> ListND a)
+  enumFromTo     :: Nondet (a       --> a --> ListND Nondet a)
   enumFromTo     = rtrnFunc $ \x1 ->                   rtrnFunc $ \x3 ->
     apply2 map toEnum (apply2 enumFromTo
       (fromEnum `app` x1)                      (fromEnum `app` x3))
 
-  enumFromThenTo :: Nondet (a --> a --> a --> ListND a)
+  enumFromThenTo :: Nondet (a --> a --> a --> ListND Nondet a)
   enumFromThenTo = rtrnFunc $ \x1 -> rtrnFunc $ \x2 -> rtrnFunc $ \x3 ->
     apply2 map toEnum (apply3 enumFromThenTo
       (fromEnum `app` x1) (fromEnum `app` x2) (fromEnum `app` x3))
 
-instance EnumND Int where
-  succ = (+) `app` (P.return 1)
-  pred = (-) `app` (P.return 1)
+instance EnumND (IntND Nondet) where
+  succ = (+) `app` (liftE $ P.return 1)
+  pred = (-) `app` (liftE $ P.return 1)
 
   toEnum   = id
   fromEnum = id
 
   enumFrom = rtrnFunc $ \x1 ->
-    x1 P.>>= \v1 ->
+    x1 P.>>= \(IntND v1) ->
     liftE (P.return (P.enumFrom v1))
 
   enumFromThen = rtrnFunc $ \x1 -> rtrnFunc $ \x2 ->
-    x1 P.>>= \v1 -> x2 P.>>= \v2 ->
+    x1 P.>>= \(IntND v1) -> x2 P.>>= \(IntND v2) ->
     liftE (P.return (P.enumFromThen v1 v2))
 
   enumFromTo = rtrnFunc $ \x1 -> rtrnFunc $ \x3 ->
-    x1 P.>>= \v1 -> x3 P.>>= \v3 ->
+    x1 P.>>= \(IntND v1) -> x3 P.>>= \(IntND v3) ->
     liftE (P.return (P.enumFromTo v1 v3))
 
   enumFromThenTo = rtrnFunc $ \x1 -> rtrnFunc $ \x2 -> rtrnFunc $ \x3 ->
-    x1 P.>>= \v1 -> x2 P.>>= \v2 -> x3 P.>>= \v3 ->
+    x1 P.>>= \(IntND v1) -> x2 P.>>= \(IntND v2) -> x3 P.>>= \(IntND v3) ->
     liftE (P.return (P.enumFromThenTo v1 v2 v3))
 
-instance EnumND Integer where
-  succ = (+) `app` (P.return 1)
-  pred = (-) `app` (P.return 1)
+instance EnumND (IntegerND Nondet) where
+  succ = (+) `app` (liftE $ P.return 1)
+  pred = (-) `app` (liftE $ P.return 1)
 
   toEnum   = toInteger
   fromEnum = fromInteger
 
   enumFrom = rtrnFunc $ \x1 ->
-    x1 P.>>= \v1 ->
+    x1 P.>>= \(IntegerND v1) ->
     liftE (P.return (P.enumFrom v1))
 
   enumFromThen = rtrnFunc $ \x1 -> rtrnFunc $ \x2 ->
-    x1 P.>>= \v1 -> x2 P.>>= \v2 ->
+    x1 P.>>= \(IntegerND v1) -> x2 P.>>= \(IntegerND v2) ->
     liftE (P.return (P.enumFromThen v1 v2))
 
   enumFromTo = rtrnFunc $ \x1 -> rtrnFunc $ \x3 ->
-    x1 P.>>= \v1 -> x3 P.>>= \v3 ->
+    x1 P.>>= \(IntegerND v1) -> x3 P.>>= \(IntegerND v3) ->
     liftE (P.return (P.enumFromTo v1 v3))
 
   enumFromThenTo = rtrnFunc $ \x1 -> rtrnFunc $ \x2 -> rtrnFunc $ \x3 ->
-    x1 P.>>= \v1 -> x2 P.>>= \v2 -> x3 P.>>= \v3 ->
+    x1 P.>>= \(IntegerND v1) -> x2 P.>>= \(IntegerND v2) -> x3 P.>>= \(IntegerND v3) ->
     liftE (P.return (P.enumFromThenTo v1 v2 v3))
 
 -- * Lifted Bounded type class, instances and functions
@@ -798,14 +816,14 @@ class BoundedND a where
   minBound :: Nondet a
   maxBound :: Nondet a
 
-instance BoundedND Int where
-  minBound = P.return P.minBound
-  maxBound = P.return P.maxBound
+instance BoundedND (IntND Nondet) where
+  minBound = liftE $ P.return P.minBound
+  maxBound = liftE $ P.return P.maxBound
 
 class IsStringND a where
-  fromString :: Nondet (StringND --> a)
+  fromString :: Nondet (StringND Nondet --> a)
 
-instance (a ~ Char) => IsStringND (ListND a) where
+instance (a ~ CharND Nondet) => IsStringND (ListND Nondet a) where
   fromString = rtrnFunc $ \x -> x
 
 {-

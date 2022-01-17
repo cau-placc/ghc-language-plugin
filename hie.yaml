@@ -2,6 +2,8 @@ cradle:
   multi:
     - path: ./test-examples
       config: { cradle: { none: } }
+    - path: ./test
+      config: { cradle: { none: } }
     - path: ./sandbox
       config: { cradle: { none: } }
     - path: ./Setup.hs
@@ -9,6 +11,6 @@ cradle:
     - path: ./
       config:
         cradle:
-          stack:
+          cabal:
             - path: ./src
-              component: "ml-ghc-language-plugin:lib"
+              component: "curry-ghc-language-plugin"

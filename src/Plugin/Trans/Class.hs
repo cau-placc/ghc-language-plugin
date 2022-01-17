@@ -58,14 +58,15 @@ liftClass :: DynFlags             -- ^ Compiler flags
           -> IO Class             -- ^ Lifted class
 liftClass dflags stycon ftycon mtycon tcs tcsM tycon us cls = mdo
   -- Look up the new type constructors for all super classes
+  let (us1, us2) = splitUniqSupply us
   superclss <- mapM (fmap (replaceTyconTyPure tcs) . replaceTyconTy tcsM)
     (classSCTheta cls)
   -- Lift the super class selector functions
-  supersel  <- mapM (liftSuperSel dflags tcs tcsM cls') (classSCSelIds cls)
+  supersel  <- mapM (liftSuperSel dflags stycon ftycon mtycon us1 tcs tcsM cls') (classSCSelIds cls)
   -- Lift the associated types of the class
   astypes   <- mapM (liftATItem mtycon tcs tcsM cls) (classATItems cls)
   -- Lift all class functions
-  classops  <- mapM (liftClassOpItem dflags stycon ftycon mtycon tcs tcsM us cls cls')
+  classops  <- mapM (liftClassOpItem dflags stycon ftycon mtycon tcs tcsM us2 cls cls')
     (classOpItems cls)
   -- Create the new class from its lifted components
   let cls' = mkClass
@@ -74,12 +75,13 @@ liftClass dflags stycon ftycon mtycon tcs tcsM tycon us cls = mdo
   return cls'
 
 -- | Lift a super class selector function.
-liftSuperSel :: DynFlags -> UniqFM TyCon TyCon -> TyConMap -> Class -> Var
+liftSuperSel :: DynFlags -> TyCon -> TyCon -> TyCon -> UniqSupply
+             -> UniqFM TyCon TyCon -> TyConMap -> Class -> Var
              -> IO Var
-liftSuperSel dflags tcs tcsM cls v = do
+liftSuperSel dflags stycon ftycon mtycon us tcs tcsM cls v = do
   -- A super class selector is not lifted like a function.
   -- Instead we just have to update its mentioned type constructors.
-  ty' <- replaceTyconTyPure tcs <$> replaceTyconTy tcsM (varType v)
+  ty' <- replaceTyconTyPure tcs <$> liftInnerTy stycon ftycon (mkTyConTy mtycon) us tcsM (varType v)
   -- Create the new selector id with the correct attributes.
   return (mkExactNameDictSelId (varName v) cls ty' dflags)
 
@@ -88,7 +90,8 @@ liftClassOpItem :: DynFlags -> TyCon -> TyCon -> TyCon -> UniqFM TyCon TyCon
                 -> TyConMap -> UniqSupply -> Class -> Class -> ClassOpItem
                 -> IO ClassOpItem
 liftClassOpItem dflags stycon ftycon mtycon tcs tcsM us clsOld clsNew (v, mbdef)
-  = do  let (us1, us2) = splitUniqSupply us
+  = do  let (us1, tmp) = splitUniqSupply us
+            (us2, us3) = splitUniqSupply tmp
         -- The classOp has type forall clsVars . forall otherVars . (...).
         -- If we were to lift the full type,
         -- we would end up with Shareable constraints on clsVars.
@@ -98,7 +101,7 @@ liftClassOpItem dflags stycon ftycon mtycon tcs tcsM us clsOld clsNew (v, mbdef)
         let varCount = length (classTyVars clsOld)
         let (bndr, liftingType) = splitInvisPiTysN varCount (varType v)
         -- Now we can lift the type.
-        bndr' <- liftIO (mapM (replacePiTy tcsM) bndr)
+        bndr' <- liftIO (mapM (replacePiTy stycon ftycon (mkTyConTy mtycon) us3 tcsM) bndr)
         ty' <- replaceTyconTyPure tcs . mkPiTys bndr'
           <$> liftType stycon ftycon (mkTyConTy mtycon) us1 tcsM liftingType
         -- Create the new selector id with the correct attributes.

@@ -98,6 +98,7 @@ liftMonadicBinding lcl _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
   let cts = mkGivens ctloc allEvs
   let given' = given ++ cts
   (unlifted, _) <- liftIO (removeNondetShareable tcs mtc ftc stc (varType name))
+  printAny "unlifted" unlifted
   ty <- liftTypeTcM tcs unlifted
   let name' = setVarType name ty
   let wrapLike = createWrapperLike ty tvs allEvs
@@ -107,6 +108,8 @@ liftMonadicBinding lcl _ given tcs _ (FunBind wrap (L b name) eqs ticks) =
   (eqs', con) <- captureConstraints $ liftMonadicEquation
                     (if lcl then Nothing else Just (setVarType name monotype))
                     given' tcs eqs
+  printAny "eqs'" con
+  printAny "eqs'" (FunBind wrap (L b name') eqs' ticks :: HsBindLR GhcTc GhcTc)
   lvl <- getTcLevel
   env <- getLclEnv
   u <- getUniqueM
@@ -151,9 +154,11 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
 
   -- lift inner bindings
   let bs = map unLoc (bagToList f)
+  printAny "liftMonadicBinding" (AbsBinds a b c d e f g :: HsBindLR GhcTc GhcTc)
   f' <- listToBag . map noLocA . concat
           <$> mapM (fmap fst . liftMonadicBinding lcl True given' tcs [])
               (foldr (\(n, o, _) -> substitute n o) bs vs')
+  printAny "f'" f'
 
   -- lift any original evidence that is exported. This is only relevant
   -- for standalone AbsBinds that bind any class parent dictionary
@@ -162,6 +167,7 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
   vs'' <- mapM (\(v1,v2,v3) -> (,,v3)
                     <$> (setVarType v1 <$> liftTypeTcM tcs (varType v1))
                     <*> (setVarType v2 <$> liftTypeTcM tcs (varType v2))) vs'
+  printAny "b" ([AbsBinds a b allEvs d' e' f' g] :: [HsBindLR GhcTc GhcTc])
   return ([AbsBinds a b allEvs d' e' f' g], map (getLocFrom bs) vs'')
   where
     bindingVarMaybe :: HsBindLR GhcTc GhcTc -> Maybe (LocatedN Var)
@@ -206,7 +212,7 @@ liftMonadicBinding lcl _ given tcs _ (AbsBinds a b c d e f g)
           uss <- replicateM (length bs) getUniqueSupplyM
           let mkShareType t' = mkTyConApp stycon [mkTyConTy mtycon, t']
               cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
-          bs1' <- liftIO (mapM (replacePiTy tcs) bs1)
+          bs1' <- mapM (replacePiTyTcM tcs) bs1
           mkPiTys bs1' . flip (foldr mkInvisFunTyMany) cons
             <$> liftTypeTcM tcs t1
 
@@ -301,7 +307,7 @@ liftMonadicBinding _ _ _ tcs _ (VarBind x1 name e1)
             uss <- replicateM (length bs) getUniqueSupplyM
             let mkShareType t' = mkTyConApp stycon [mkTyConTy mtycon, t']
                 cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
-            bs1' <- liftIO (mapM (replacePiTy tcs) bs1)
+            bs1' <- mapM (replacePiTyTcM tcs) bs1
             (,cons) . mkPiTys bs1' . flip (foldr mkInvisFunTyMany) cons
               <$> liftTypeTcM tcs ty1
 
@@ -415,7 +421,7 @@ liftMonadicExpr _    _    e@(L _ (HsLit _ (HsIntPrim _ _))) = do
 liftMonadicExpr _    tcs e@(L _ HsLit{}) = do
   ty <- getTypeOrPanic e -- ok
   lifted <- mkApp mkNewReturnTh ty [e]
-  ty' <- liftIO (replaceTyconTy tcs ty)
+  ty' <- liftInnerTyTcM tcs ty
   res <- mkApp (mkNewLiftETh ty) ty' [lifted]
   return $ noLocA $ HsPar EpAnnNotUsed res
 liftMonadicExpr given tcs (L l (HsOverLit _ lit)) =
@@ -456,7 +462,8 @@ liftMonadicExpr _ tcs (L _ (XExpr (WrapExpr (HsWrap w (HsConLikeOut _ (RealDataC
     w' <- liftWrapperTcM True tcs w
     let (apps, absts) = collectTyApps w'
         realApps = drop (length absts) apps
-    let tys = conLikeInstOrigArgTys (RealDataCon c') realApps
+    mty <- mkTyConTy <$> getMonadTycon
+    let tys = conLikeInstOrigArgTys (RealDataCon c') (mty : realApps)
     let stricts = dataConImplBangs c'
     e <- fst <$> mkConLam tcs (Just w') c' (zip tys stricts) []
     return $ noLocA $ HsPar EpAnnNotUsed e
@@ -507,8 +514,10 @@ liftMonadicExpr _    _   e@(L _ ExplicitSum {}) = do
   return e
 liftMonadicExpr given tcs (L l (HsCase _ scr br)) = do
   br'@(MG (MatchGroupTc _ ty2) _ _) <- liftMonadicEquation Nothing given tcs br
+  printAny "ty2" ty2
   scr' <- liftMonadicExpr given tcs scr
   ty1 <- getTypeOrPanic scr >>= liftTypeTcM tcs -- ok
+  printAny "ty1" ty1
   let cse = L l $ HsLamCase EpAnnNotUsed br'
   mkBind scr' ty1 (noLocA $ HsPar EpAnnNotUsed cse) ty2
 liftMonadicExpr given tcs (L l (HsIf _ e1 e2 e3)) = do

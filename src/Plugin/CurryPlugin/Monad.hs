@@ -12,6 +12,7 @@
 {-# LANGUAGE DerivingVia                #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE RankNTypes                 #-}
+{-# OPTIONS_GHC -Wno-orphans            #-}
 {-|
 Module      : Plugin.CurryPlugin.Monad
 Description : Convenience wrapper for the effect
@@ -24,17 +25,17 @@ The monad type is a wrapper over the
 'Lazy' type from 'Plugin.Effect.CurryEffect'.
 -}
 module Plugin.CurryPlugin.Monad
-  ( Nondet(..), type (-->)(..), (?), failed, share
+  ( Lifted, Nondet(..), type (:-->)(..), type (-->), (?), failed, share
   , SearchMode(..)
   , Normalform(..), modeOp, allValues, allValuesNF
   , NondetTag(..)
-  , liftNondet1, liftNondet2
+  , liftNondet1, liftNondet2, liftNondet1NF, liftNondet2NF
   , app, apply2, apply2Unlifted, apply3
   , bind, rtrn, rtrnFunc, fmp, shre, shreTopLevel, seqValue
   , rtrnFuncUnsafePoly, appUnsafePoly )
   where
 
-import Language.Haskell.TH.Syntax
+import Language.Haskell.TH.Syntax (Lift)
 import Control.Applicative
 import Control.Monad
 import Unsafe.Coerce
@@ -132,8 +133,8 @@ modeOp BFS = bfs
 
 -- | Collect the results of a nondeterministic computation
 -- as their normal form in a tree.
-allValuesNF :: Normalform Nondet a b
-            => Nondet a -> Tree b
+allValuesNF :: Normalform Nondet b
+            => Nondet (Lifted Nondet b) -> Tree b
 allValuesNF = allValues . nf
 
 -- | Collect the results of a nondeterministic computation in a tree.
@@ -141,18 +142,7 @@ allValues :: Nondet a -> Tree a
 allValues = runLazyT . unNondet
 
 infixr 0 -->
-newtype a --> b = Func (Nondet a -> Nondet b)
-
-instance (Sharing m) => Shareable m (a --> b) where
-  shareArgs (Func f) = fmap Func (shareArgs f)
-
-instance (Normalform Nondet a1 a2, Normalform Nondet b1 b2)
-  => Normalform Nondet (a1 --> b1) (a2 -> b2) where
-    nf    mf =
-      mf >> return (error "Plugin Error: Cannot capture function types")
-    liftE mf = do
-      f <- mf
-      return (Func (liftE . fmap f . nf))
+type a --> b = (:-->) Nondet a b
 
 -- | Lift a unary function with the lifting scheme of the plugin.
 liftNondet1 :: (a -> b) -> Nondet (a --> b)
@@ -162,6 +152,17 @@ liftNondet1 f = rtrnFunc (\a -> a >>= \a' -> return (f a'))
 liftNondet2 :: (a -> b -> c) -> Nondet (a --> b --> c)
 liftNondet2 f = rtrnFunc (\a  -> rtrnFunc (\b  ->
                 a >>=  \a' -> b >>=     \b' -> return (f a' b')))
+
+-- | Lift a unary function with the lifting scheme of the plugin.
+liftNondet1NF :: (Normalform Nondet a, Normalform Nondet b)
+              => (a -> b) -> Nondet (Lifted Nondet (a -> b))
+liftNondet1NF f = rtrnFunc (\a -> nf a >>= \a' -> liftE (return (f a')))
+
+-- | Lift a 2-ary function with the lifting scheme of the plugin.
+liftNondet2NF :: (Normalform Nondet a, Normalform Nondet b, Normalform Nondet c)
+              => (a -> b -> c) -> Nondet (Lifted Nondet (a -> b -> c))
+liftNondet2NF f = rtrnFunc (\a  -> rtrnFunc (\b  ->
+                  nf a >>=  \a' -> nf b >>=     \b' -> liftE (return (f a' b'))))
 
 -- | Apply a lifted 2-ary function to its lifted arguments.
 apply2 :: Nondet (a --> b --> c) -> Nondet a -> Nondet b -> Nondet c

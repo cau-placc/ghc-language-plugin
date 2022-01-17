@@ -21,20 +21,18 @@ import Plugin.CurryPlugin.Monad
 
 -- | Evaluate a nullary nondeterministic function
 -- with the given search strategy.
-eval :: Normalform Nondet a b
-     => SearchMode -> Nondet a -> [b]
+eval :: Normalform Nondet b
+     => SearchMode -> Nondet (Lifted Nondet b) -> [b]
 eval = $(evalN 0)
 
 -- | Evaluate a unary nondeterministic function
 -- with the given search strategy and arguments
-eval1 :: (Normalform Nondet a1 a2, Normalform Nondet b1 b2)
-      => SearchMode -> Nondet (a1 --> b1) -> a2 -> [b2]
+eval1 :: (Normalform Nondet a, Normalform Nondet b)
+      => SearchMode -> Nondet (Lifted Nondet (a -> b)) -> a -> [b]
 eval1 = $(evalN 1)
 
 -- | Evaluate a 2-ary nondeterministic function
 -- with the given search strategy and arguments
-eval2 :: ( Normalform Nondet a1 a2
-         , Normalform Nondet b1 b2
-         , Normalform Nondet c1 c2)
-      => SearchMode -> Nondet (a1 --> b1 --> c1) -> a2 -> b2 -> [c2]
+eval2 :: ( Normalform Nondet a, Normalform Nondet b, Normalform Nondet c)
+      => SearchMode -> Nondet (Lifted Nondet (a -> b -> c)) -> a -> b -> [c]
 eval2 = $(evalN 2)

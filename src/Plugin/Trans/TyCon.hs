@@ -38,7 +38,7 @@ liftTycon :: DynFlags            -- ^ Compiler flags
           -> FamInstEnvs         -- ^ Family Instance Environments, both home and external
           -> TyCon               -- ^ 'Shareable' type constructor
           -> TyCon               -- ^ '-->' type constructor
-          -> TyCon               -- ^ 'Monad' type constructor
+          -> TyCon               -- ^ Monad type constructor
           -> UniqSupply          -- ^ Fresh supply of unique keys
           -> UniqFM TyCon TyCon  -- ^ Map of old TyCon's from this module to lifted ones
           -> TyConMap            -- ^ Map of imported old TyCon's to lifted ones
@@ -49,28 +49,33 @@ liftTycon :: DynFlags            -- ^ Compiler flags
 liftTycon dynFlags instEnvs stycon ftycon mtycon supply tcs tcsM tc
   | isVanillaAlgTyCon tc || isClassTyCon tc = mdo
     -- The tycon definition is cyclic, so we use this let-construction.
-    let u = uniqFromSupply supply
-        (supply', other) = splitUniqSupply supply
+    let (s1, tmp) = splitUniqSupply supply
+        (s2, s3) = splitUniqSupply tmp
+        u1 = uniqFromSupply supply
+        u2 = uniqFromSupply s2
         isCls = isJust (tyConClass_maybe tc)
+        monadKind = liftedTypeKind `mkVisFunTyMany` liftedTypeKind
+        mVar = mkTyVar (mkInternalName u1 (mkTyVarOcc "m") noSrcSpan) monadKind
+        mBinder = mkAnonTyConBinder VisArg mVar
     -- Lift the rhs of the underlying datatype definition.
     -- For classes, this lifts the implicit datatype for its dictionary.
-    (us2, rhs) <- liftAlgRhs isCls dynFlags instEnvs stycon ftycon mtycon tcs tcsM tycon other
+    (us2, rhs) <- liftAlgRhs isCls dynFlags instEnvs stycon ftycon mVar mtycon tcs tcsM tycon s1
       (algTyConRhs tc)
     -- Potentially lift any class information
     flav <- case (tyConRepName_maybe tc, tyConClass_maybe tc) of
           (Just p, Just c ) -> flip ClassTyCon p <$>
-            liftClass dynFlags stycon ftycon mtycon tcs tcsM tycon us2 c
+            liftClass dynFlags stycon ftycon undefined tcs tcsM tycon us2 c--TODO undefined was mtycon
           (Just p, Nothing) -> return (VanillaAlgTyCon p)
           _                 ->
             panicAnyUnsafe "Unknown flavour of type constructor" tc
     -- Create the new TyCon.
     let name | isClassTyCon tc = tyConName tc
-             | otherwise       = liftName (tyConName tc) u
+             | otherwise       = liftName (tyConName tc) u2
         tycon = mkAlgTyCon
-          name (tyConBinders tc) (tyConResKind tc)
-          (tyConRoles tc) (tyConCType tc) (tyConStupidTheta tc)
+          name (if isClassTyCon tc then tyConBinders tc else mBinder : tyConBinders tc) (tyConResKind tc)
+          (if isClassTyCon tc then tyConRoles tc else Representational : tyConRoles tc) Nothing []
           rhs flav (isGadtSyntaxTyCon tc)
-    return (supply', (tc, Just tycon))
+    return (s3, (tc, Just tycon))
   | isTypeSynonymTyCon tc = do
     let u = uniqFromSupply supply
         (supply1, supply2) = splitUniqSupply supply
@@ -79,9 +84,8 @@ liftTycon dynFlags instEnvs stycon ftycon mtycon supply tcs tcsM tc
       Just (_, origty) -> do
         -- lift only the "inner" type of synonyms
         ty <- replaceTyconTyPure tcs
-          <$> liftInnerTy stycon ftycon (mkTyConTy mtycon) supply2 tcsM origty
-        let name | isClassTyCon tc = tyConName tc
-                 | otherwise       = liftName (tyConName tc) u
+          <$> liftInnerTy stycon ftycon undefined supply2 tcsM origty--TODO undefined was mtycon
+        let name = liftName (tyConName tc) u
             tycon = mkSynonymTyCon
               name (tyConBinders tc) (tyConResKind tc)
               (tyConRoles tc) ty (isTauTyCon tc) (isFamFreeTyCon tc)
@@ -120,8 +124,9 @@ liftAlgRhs :: Bool                -- ^ Is it a class definition or not
            -> DynFlags            -- ^ Compiler flags
            -> FamInstEnvs         -- ^ Family Instance Environments, both home and external
            -> TyCon               -- ^ 'Shareable' type constructor
-           -> TyCon               -- ^ 'Monad' type constructor
            -> TyCon               -- ^ '-->' type constructor
+           -> Var                 -- ^ 'Monad' type variable
+           -> TyCon               -- ^ 'Monad' type constructor
            -> UniqFM TyCon TyCon  -- ^ Map of old TyCon's from this module to lifted ones
            -> TyConMap            -- ^ Map of imported old TyCon's to lifted ones
            -> TyCon               -- ^ Lifted TyCon of this rhs
@@ -129,22 +134,23 @@ liftAlgRhs :: Bool                -- ^ Is it a class definition or not
            -> AlgTyConRhs         -- ^ Rhs to be lifted
            -> IO (UniqSupply, AlgTyConRhs)
           -- ^ Next fresh unique key supply and lifted rhs
-liftAlgRhs isClass dflags instEnvs stycon ftycon mtycon tcs tcsM tycon us
+liftAlgRhs isClass dflags instEnvs stycon ftycon mvar mtycon tcs tcsM tycon us
   -- Just lift all constructors of a data decl.
   (DataTyCon cns size ne) = case listSplitUniqSupply us of
-    []      -> panicAnyUnsafe "Finite Unique supply" ()  
+    []      -> panicAnyUnsafe "Finite Unique supply" ()
     (u:uss) -> do
-      cns' <- zipWithM (liftConstr isClass dflags instEnvs stycon ftycon mtycon tcs tcsM tycon) uss cns
+      cns' <- zipWithM (liftConstr isClass dflags instEnvs stycon ftycon mvar mtycon tcs tcsM tycon) uss cns
       return (u, DataTyCon cns' size ne)
-liftAlgRhs isClass dflags instEnvs stycon ftycon mtycon tcs tcsM tycon us
+liftAlgRhs isClass dflags instEnvs stycon ftycon mvar mtycon tcs tcsM tycon us
   -- Depending on the origin of this newtype declaration (class or not),
   -- Perform a full lifting or just and inner lifting.
   (NewTyCon dc rhs _ co lev) = do
     let (u1, tmp1) = splitUniqSupply us
         (u2, tmp2) = splitUniqSupply tmp1
         (u3, u4  ) = splitUniqSupply tmp2
-    dc' <- liftConstr isClass dflags instEnvs stycon ftycon mtycon tcs tcsM tycon u1 dc
-    rhs' <- replaceTyconTyPure tcs <$> liftType stycon ftycon (mkTyConTy mtycon) u2 tcsM rhs
+    dc' <- liftConstr isClass dflags instEnvs stycon ftycon mvar mtycon tcs tcsM tycon u1 dc
+    let mtype = if isClass then mkTyConTy mtycon else mkTyVarTy mvar
+    rhs' <- replaceTyconTyPure tcs <$> liftType stycon ftycon mtype u2 tcsM rhs
 
     -- Only switch unique and name for datatypes, etc.
     -- (see comment above liftTycon)
@@ -153,12 +159,13 @@ liftAlgRhs isClass dflags instEnvs stycon ftycon mtycon tcs tcsM tycon us
     let axNameNew | isClass   = setNameUnique axName u
                   | otherwise = liftName axName u
 
+    let (vars, roles) = if isClass then (tyConTyVars tycon, tyConRoles tycon)
+                                   else (mvar : tyConTyVars tycon, Representational : tyConRoles tycon)
     -- Create new coercion axiom.
-    let (etavs, etaroles, etarhs) = eta_reduce (reverse (tyConTyVars tycon))
-                                      (reverse (tyConRoles tycon)) rhs'
+    let (etavs, etaroles, etarhs) = eta_reduce (reverse vars) (reverse roles) rhs'
     let co' = mkNewTypeCoAxiom axNameNew tycon etavs etaroles etarhs
     return (u4, NewTyCon dc' rhs' (etavs, etarhs) co' lev)
-liftAlgRhs _ _ _ _ _ _ _ _ _ u c = return (u, c)
+liftAlgRhs _ _ _ _ _ _ _ _ _ _ u c = return (u, c)
 
 -- | Eta-reduce type variables of a newtype declaration to generate a
 -- more siple newtype coercion.

@@ -23,27 +23,24 @@ library
     Example
     Example2
     Main
---
--- executable sandbox
---   import: deps
---   other-modules:
---     Example
---     Example2
---   main-is: Main.hs
---   ghc-options:
---     -O2
---     -fspecialise-aggressively
---     -fspec-constr-keen
---     -flate-specialise
---     -fexpose-all-unfoldings
---     -flate-dmd-anal
---     -fsimplifier-phases=5
---     -fsimpl-tick-factor=1000
---     -fmax-simplifier-iterations=10
---     -fstatic-argument-transformation
---     -funfolding-keeness-factor=30
---     -funfolding-fun-discount=1200
---     -funfolding-dict-discount=600
---     -ddump-simpl-stats -ddump-rule-firings
---     -ddump-simpl
---     -fforce-recomp
+
+executable sandbox
+  import: deps
+  other-modules:
+    Example
+  main-is: Main.hs
+  ghc-options:
+    -O2
+    -fspecialise-aggressively
+    -fspec-constr-keen
+    -flate-specialise
+    -fexpose-all-unfoldings
+    -flate-dmd-anal
+    -fsimplifier-phases=5
+    -fsimpl-tick-factor=1000
+    -fmax-simplifier-iterations=10
+    -fstatic-argument-transformation
+    -- -funfolding-fun-discount=1200
+    -- -funfolding-dict-discount=600
+    -fforce-recomp
+    -dcore-lint
