@@ -33,8 +33,8 @@ transCoerce tcs cts fromTy toTy = do
       argClassifications = zipWith classifyCoercion argsF argsT
       resClassification = classifyCoercion (Scaled Many resF) (Scaled Many resT)
   -- lift the types for later
-  fullResTy <- liftTypeTcM tcs toTy
-  fullArgTy <- liftTypeTcM tcs fromTy
+  fullResTy <- liftTypeTcM tcs undefined toTy
+  fullArgTy <- liftTypeTcM tcs undefined fromTy
 
   -- create the variable for the function to be coerced
   v <- freshVar (Scaled Many fullArgTy)
@@ -44,7 +44,7 @@ transCoerce tcs cts fromTy toTy = do
   -- create the lamda to bind the v
   let lam = mkLam (noLocA v) (Scaled Many fullArgTy) e fullResTy
   -- wrap everything in return . Func
-  mkApp (mkNewReturnFunTh fullArgTy) fullResTy [lam]
+  mkApp (mkNewReturnFunTh undefined fullArgTy) fullResTy [lam]
   where
     -- Go through the list of arguments and collect the variables that will
     -- hold the corresponding argument
@@ -56,10 +56,11 @@ transCoerce tcs cts fromTy toTy = do
       -- if newtype coercion is necessary, we will need to bind some stuff
       finalV <- (if isNewtypeClassification arg
                   then liftInnerTyTcM
-                  else liftTypeTcM) tcs resty >>= freshVar . Scaled Many
+                  else liftTypeTcM) tcs resty undefined >>= freshVar . Scaled Many
       ftc <- getFunTycon
       mtc <- getMonadTycon
-      let (_, ty') = splitMyFunTy mtc ftc (bindingType ty)
+      let mty = mkTyConApp mtc undefined
+      let (_, ty') = splitMyFunTy mty ftc (bindingType ty)
       -- collect remaining args
       e <- mkCoerceFunction ty' args res v ((arg,finalV):vs)
       -- create the bind if necessary
@@ -67,41 +68,41 @@ transCoerce tcs cts fromTy toTy = do
 
     mkArgBindIfRequired resTy (NewtypeCoercion _ ty2) e v = do
       -- for a newtype coercion, create the bind and both lambdas
-      ty2Lifted <- liftTypeTcM tcs ty2
+      ty2Lifted <- liftTypeTcM tcs undefined ty2
       let ty2Inner = bindingType ty2Lifted
       -- the lambda after bind
       let bindLam = mkLam (noLocA v) (Scaled Many ty2Inner) e resTy
       arg1V <- freshVar (Scaled Many ty2Lifted)
       let varE = noLocA (HsVar noExtField (noLocA arg1V))
       -- actual bind
-      bindE <- mkBind varE ty2Lifted bindLam resTy
+      bindE <- mkBind varE undefined ty2Lifted bindLam resTy
       -- and the lambda for the arg
       mkArgLam resTy ty2Lifted arg1V bindE
     mkArgBindIfRequired fullResTy arg e v = do
       -- if not a newtype coercion, just create the lambda for the arg
       let ty2 = getCoercionResTy arg
-      ty2Lifted <- liftTypeTcM tcs ty2
+      ty2Lifted <- liftTypeTcM tcs undefined ty2
       mkArgLam fullResTy ty2Lifted v e
 
     mkArgLam :: Type -> Type -> Var -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
     mkArgLam resTy ty2Lifted argV e = do
       let funLam = mkLam (noLocA argV) (Scaled Many ty2Lifted) e resTy
-      mkApp (mkNewReturnFunTh ty2Lifted) resTy [funLam]
+      mkApp (mkNewReturnFunTh undefined ty2Lifted) resTy [funLam]
 
     mkResultCoercion resTy args v (NewtypeCoercion ty1 ty2) = do
       -- if the result needs to be coerced via newtype, we need an additional
       -- return
-      fullFunTy <- liftTypeTcM tcs fromTy
-      ty1Lifted <- liftTypeTcM tcs ty1
-      ty2Lifted <- liftInnerTyTcM tcs ty2
+      fullFunTy <- liftTypeTcM tcs undefined fromTy
+      ty1Lifted <- liftTypeTcM tcs undefined ty1
+      ty2Lifted <- liftInnerTyTcM tcs undefined ty2
       let varE = noLocA (HsVar noExtField (noLocA v))
       res <- mkApplications args fullFunTy varE
       let wrap = WpCast (mkUnsafeCo Representational ty1Lifted ty2Lifted)
       let coerceRes = mkHsWrap wrap (unLoc res)
-      mkApp mkNewReturnTh (bindingType resTy) [noLocA coerceRes]
+      mkApp (mkNewReturnTh undefined) (bindingType resTy) [noLocA coerceRes]
     mkResultCoercion _     args v co = do
       -- if not a newtype coercion, we can just coerce the result if required
-      fullFunTy <- liftTypeTcM tcs fromTy
+      fullFunTy <- liftTypeTcM tcs undefined fromTy
       let varE = noLocA (HsVar noExtField (noLocA v))
       res <- mkApplications args fullFunTy varE
       mkCoerceIfRequired NoReverse co (unLoc res)
@@ -111,35 +112,36 @@ transCoerce tcs cts fromTy toTy = do
     mkApplications ((coercion, v):rest) ty e = do
       ftc <- getFunTycon
       mtc <- getMonadTycon
-      let (argty, ty') = splitMyFunTy mtc ftc (bindingType ty)
+      let mty = mkTyConApp mtc undefined
+      let (argty, ty') = splitMyFunTy mty ftc (bindingType ty)
       let varE = HsVar noExtField (noLocA v)
       -- coerce the arg if required
       varECoerced <- mkCoerceIfRequired Reverse coercion varE
       -- and create the app to apply it to the function
-      e' <- mkFuncApp cts e ty varECoerced argty
+      e' <- mkFuncApp cts e undefined ty varECoerced argty
       mkApplications rest ty' (noLocA (HsPar EpAnnNotUsed e'))
 
     mkCoerceIfRequired :: ReverseOrNot -> CoercionClassification -> HsExpr GhcTc -> TcM (LHsExpr GhcTc)
     mkCoerceIfRequired _         (NoCoercion _)            e =
       return (noLocA e)
     mkCoerceIfRequired Reverse   (PhantomCoercion ty1 ty2) e = do
-      argty <- liftTypeTcM tcs ty1
-      resty <- liftTypeTcM tcs ty2
+      argty <- liftTypeTcM tcs undefined ty1
+      resty <- liftTypeTcM tcs undefined ty2
       let coer = mkUnsafeCo Representational resty argty
       return $ noLocA $ mkHsWrap (WpCast coer) e
     mkCoerceIfRequired NoReverse (PhantomCoercion ty1 ty2) e = do
-      argty <- liftTypeTcM tcs ty1
-      resty <- liftTypeTcM tcs ty2
+      argty <- liftTypeTcM tcs undefined ty1
+      resty <- liftTypeTcM tcs undefined ty2
       let coer = mkUnsafeCo Representational argty resty
       return $ noLocA $ mkHsWrap (WpCast coer) e
     mkCoerceIfRequired Reverse   (NewtypeCoercion ty1 ty2) e = do
-      argty <- liftTypeTcM    tcs ty1
-      resty <- liftInnerTyTcM tcs ty2
+      argty <- liftTypeTcM    tcs undefined ty1
+      resty <- liftInnerTyTcM tcs undefined ty2
       let coer = mkUnsafeCo Representational resty argty
       return $ noLocA $ mkHsWrap (WpCast coer) e
     mkCoerceIfRequired NoReverse (NewtypeCoercion ty1 ty2) e = do
-      argty <- liftInnerTyTcM tcs ty1
-      resty <- liftTypeTcM    tcs ty2
+      argty <- liftInnerTyTcM tcs undefined ty1
+      resty <- liftTypeTcM    tcs undefined ty2
       let coer = mkUnsafeCo Representational argty resty
       return $ noLocA $ mkHsWrap (WpCast coer) e
 

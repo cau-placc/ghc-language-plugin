@@ -15,34 +15,13 @@
 {-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE RankNTypes                 #-}
 {-# OPTIONS_GHC -Wno-orphans            #-}
-{-# LANGUAGE ExistentialQuantification #-}
-{-|
-Module      : Plugin.CurryPlugin.Monad
-Description : Convenience wrapper for the effect
-Copyright   : (c) Kai-Oliver Prott (2020)
-Maintainer  : kai.prott@hotmail.de
-
-This module contains the actual monad used by the plugin and a few
-convenicence functions.
-The monad type is a wrapper over the
-'Lazy' type from 'Plugin.Effect.CurryEffect'.
--}
-module Plugin.CurryPlugin.Monad
-  ( Lifted, Free(..), type (:-->)(..)
-  , Normalform(..)
-  , inject, run, (\/), foldFree, type (:<:)(..), type (:+:)(..), None
-  , liftNondet1, liftNondet2, liftNondet1NF, liftNondet2NF
-  , app, apply2, apply2Unlifted, apply3
-  , bind, rtrn, rtrnFunc, fmp, shre, shreTopLevel, seqValue
-  , rtrnFuncUnsafePoly, appUnsafePoly, module Plugin.Effect.Annotation )
-  where
+module Plugin.CurryPlugin.Free where
 
 import Control.Applicative
 import Control.Monad
 import Unsafe.Coerce
 import Prelude hiding (fail)
 
-import Plugin.Effect.Annotation
 import Plugin.Effect.Classes
 
 {-# INLINE[0] bind #-}
@@ -88,7 +67,7 @@ fmp :: Functor sig => (a -> b) -> Free sig a -> Free sig b
 fmp = fmap
 
 {-# INLINE[0] shre #-}
-shre :: (Shareable (Free sig) a, Functor sig) => Free sig a -> Free sig (Free sig a)
+shre :: (Functor sig, Shareable (Free sig) a) => Free sig a -> Free sig (Free sig a)
 shre = share
 
 {-# INLINE[0] shreTopLevel #-}
@@ -104,18 +83,18 @@ seqValue a b = a >>= \a' -> a' `seq` b
 data Free sig a
   = Var a
   | Op (sig (Free sig a))
+  deriving stock (Functor)
   deriving anyclass (SharingTop)
-  deriving stock Functor
 
 instance Functor sig => Applicative (Free sig) where
   pure = Var
   (<*>) = ap
 
-instance Functor sig => Monad (Free sig) where
+instance (Functor sig) => Monad (Free sig) where
   Var x >>= f = f x
   Op op >>= f = Op (fmap (>>= f) op)
 
-instance Functor sig => Sharing (Free sig) where
+instance Functor sig => Sharing (Free sig) where 
   share = (>>= return . return)
 
 foldFree :: Functor sig => (a -> b) -> (sig b -> b) -> Free sig a -> b

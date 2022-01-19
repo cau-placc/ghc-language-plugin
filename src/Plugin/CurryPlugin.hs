@@ -9,7 +9,7 @@ plugin :: Plugin
 plugin = setConfigFlagsFor flags languagePlugin
   where
     flags = [ (fst monadModConfigStr, "Plugin.CurryPlugin.Monad")
-            , (fst monadNameConfigStr, "Nondet")
+            , (fst monadNameConfigStr, "Free")
             , (fst funModConfigStr, "Plugin.Effect.Classes")
             , (fst funNameConfigStr, ":-->")
             , (fst preludeModConfigStr, "Plugin.CurryPlugin.Prelude")

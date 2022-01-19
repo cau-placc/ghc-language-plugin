@@ -30,6 +30,7 @@ modernized with a generic implementation by Kai-Oliver Prott.
 module Plugin.Effect.Classes where
 
 import GHC.Generics as Gen
+import GHC.Real
 import Data.Kind
 import Data.Coerce
 
@@ -252,3 +253,82 @@ instance (Sharing m) => Shareable m (CharND m) where
 
 instance (Sharing m) => Shareable m ((:-->) m a b) where
   shareArgs (Func f) = fmap Func (return f)
+
+
+-- | This is a lifted version of the unrestricted function type constructor
+type (:--->) m r s a b = (:-->) m a b
+
+-- | This is a lifted version of the multiplicity-augmented (unrestricted) function type constructor
+type (:--->#) m mult r s a b = (:-->) m a b
+
+-- * Lifted list type and internal instances
+
+-- | Lifted defintion for Haskell's default list type '[]'
+data ListND m a = Nil | Cons (m a) (m (ListND m a))
+
+type instance Lifted m [] = ListND m
+type instance Lifted m [a] = ListND m (Lifted m a)
+
+-- | Shareable instance for lists.
+instance (ShareConstraints m a, ShareConstraints m (ListND m a), Sharing m) =>
+  Shareable m (ListND m a) where
+    shareArgs Nil         = return Nil
+    shareArgs (Cons x xs) = Cons <$> share x <*> share xs
+
+-- | Normalform instance for lists
+instance (Monad m, Normalform m a) => Normalform m [a] where
+  nf mxs = mxs >>= \case
+    Nil       -> return []
+    Cons x xs -> (:) <$> nf x <*> nf xs
+  liftE mxs = mxs >>= \case
+    []   -> return Nil
+    x:xs -> Cons <$> return (liftE (return x))
+                 <*> return (liftE (return xs))
+
+-- * Lifted tuple types and internal instances
+
+-- | Lifted defintion for Haskell's 2-ary tuple '(,)'
+data Tuple2ND m a b = Tuple2 (m a) (m b)
+
+type instance Lifted m (,)     = Tuple2ND m
+type instance Lifted m ((,) a) = Tuple2ND m (Lifted m a)
+type instance Lifted m (a, b)  = Tuple2ND m (Lifted m a) (Lifted m b)
+
+-- | Shareable instance for 2-ary tuple
+instance (ShareConstraints m a, ShareConstraints m b, Sharing m) =>
+  Shareable m (Tuple2ND m a b) where
+    shareArgs (Tuple2 a b) = Tuple2 <$> share a <*> share b
+
+-- | Normalform instance for 2-ary tuple
+instance (Monad m, Normalform m a, Normalform m b) =>
+  Normalform m (a, b) where
+    nf mxs = mxs >>= \(Tuple2 a b) -> (,) <$> nf a <*> nf b
+    liftE mxs = mxs >>= \(a, b) -> Tuple2 <$> return (liftE (return a))
+                                            <*> return (liftE (return b))
+
+-- * Other lifted types and internal instances
+
+-- | Lifted defintion for Haskell's 'String' type
+type StringND m = ListND m (CharND m)
+
+-- | Lifted defintion for Haskell's 'Ratio' type
+data RatioND m a = !(m a) :%# !(m a)
+
+type instance Lifted m Ratio = RatioND m
+type instance Lifted m (Ratio a) = RatioND m (Lifted m a)
+
+-- | Shareable instance for Ratios
+instance (ShareConstraints m a, Sharing m) =>
+  Shareable m (RatioND m a) where
+    shareArgs (a :%# b) = (:%#) <$> share a <*> share b
+
+-- | Normalform instance for Ratios
+instance (Monad m, Normalform m a) =>
+  Normalform m (Ratio a) where
+    nf mxs = mxs >>= \(a :%# b) -> (:%) <$> nf a <*> nf b
+    liftE mxs = mxs >>= \(a :% b) ->
+      (:%#) <$> return (liftE (return a))
+           <*> return (liftE (return b))
+
+-- | Lifted defintion for Haskell's 'Rational' type
+type RationalND m = RatioND m (IntegerND m)

@@ -41,34 +41,33 @@ import Plugin.Effect.Classes
 
 -- | Create the lambda functions used to lift value constructors.
 -- Look at their lifting for details.
-mkConLam :: TyConMap -> Maybe HsWrapper -> DataCon
+mkConLam :: TyConMap -> Type -> Maybe HsWrapper -> DataCon
          -> [(Scaled Type, HsImplBang)] -> [Id] -> TcM (LHsExpr GhcTc, Type)
 -- list of types is empty -> apply the collected variables.
-mkConLam _ mw c [] vs = do
+mkConLam _ argty mw c [] vs = do
     mtycon <- getMonadTycon
+    let mty = mkTyConApp mtycon [argty]
     -- Use the given wrapper for the constructor.
     let wrap = case mw of
-          Just w  -> XExpr . WrapExpr . (HsWrap (WpTyApp (mkTyConTy mtycon) <.> w))
-          Nothing -> XExpr . WrapExpr . HsWrap (WpTyApp (mkTyConTy mtycon))
+          Just w  -> XExpr . WrapExpr . (HsWrap (WpTyApp mty <.> w))
+          Nothing -> XExpr . WrapExpr . HsWrap (WpTyApp mty)
     -- Apply all variables in reverse to the constructor.
     let e = foldl ((noLocA .) . HsApp EpAnnNotUsed)
             (noLocA (wrap (HsConLikeOut noExtField (RealDataCon c))))
             (map (noLocA . HsVar noExtField . noLocA) $ reverse vs)
-    printAny "e" e
     -- Get the result type of the constructor.
     ty <- snd . splitFunTys <$> getTypeOrPanic e -- ok
     -- Wrap the whole term in a 'return'.
-    e' <- mkApp mkNewReturnTh ty [noLocA $ HsPar EpAnnNotUsed e]
-    mty <- mkTyConTy <$> getMonadTycon
+    e' <- mkApp (mkNewReturnTh argty) ty [noLocA $ HsPar EpAnnNotUsed e]
     return (e', mkAppTy mty ty)
 -- Create lambdas for the remaining types.
-mkConLam tcs w c ((Scaled _ ty, strictness) : tys) vs = do
+mkConLam tcs argty w c ((Scaled _ ty, strictness) : tys) vs = do
   mtc <- getMonadTycon
   -- Create the new variable to be applied to the constructor.
   let vty' = Scaled Many ty
   v <- freshVar (Scaled Many ty)
   -- Create the inner part of the term with the remaining type arguments.
-  (e, resty) <- mkConLam tcs w c tys (v:vs) -- (return \xs -> Cons x xs, SML (List a -> List a)
+  (e, resty) <- mkConLam tcs argty w c tys (v:vs) -- (return \xs -> Cons x xs, SML (List a -> List a)
   ftc <- getFunTycon
   let lamty2 = mkTyConApp ftc [bindingType ty, bindingType resty] -- a --> (List a --> List a)
   -- Add a seq if C is strict in this arg
@@ -79,45 +78,45 @@ mkConLam tcs w c ((Scaled _ ty, strictness) : tys) vs = do
       -- create the lambda-bound variable, that needs to be shared
       v' <- freshVar vty'
       -- create share
-      s <- mkApp (mkNewShareTh tcs) ty [noLocA (HsVar noExtField (noLocA v'))]
+      s <- mkApp (mkNewShareTh tcs argty) ty [noLocA (HsVar noExtField (noLocA v'))]
       mtycon <- getMonadTycon
       -- create seqValue
       seqE <- mkApp (mkNewSeqValueTh (bindingType ty)) (bindingType resty)
                 [noLocA (HsVar noExtField (noLocA v)), e]
       let l = noLocA (HsPar EpAnnNotUsed (mkLam (noLocA v) vty' seqE resty))
       let sty = mkTyConApp mtycon [ty]
-      shareE <- mkBind (noLocA (HsPar EpAnnNotUsed s)) sty l resty
+      shareE <- mkBind (noLocA (HsPar EpAnnNotUsed s)) argty sty l resty
       return (shareE, v')
   -- Make the lambda for this variable
   let e'' = mkLam (noLocA v') (Scaled Many ty) e' resty
   -- Wrap the whole term in a 'return'.
-  e''' <- mkApp (mkNewReturnFunTh ty) resty [noLocA $ HsPar EpAnnNotUsed e'']
-  let mty = mkTyConTy mtc
+  e''' <- mkApp (mkNewReturnFunTh argty ty) resty [noLocA $ HsPar EpAnnNotUsed e'']
+  let mty = mkTyConApp mtc [argty]
   return (e''', mkAppTy mty lamty2)
 
 -- | Create a '(>>=)' for the given arguments and apply them.
-mkBind :: LHsExpr GhcTc -> Type -> LHsExpr GhcTc -> Type
+mkBind :: LHsExpr GhcTc -> Type -> Type -> LHsExpr GhcTc -> Type
        -> TcM (LHsExpr GhcTc)
-mkBind scr ty1 arg ty2 = do
+mkBind scr argty ty1 arg ty2 = do
   let ty1' = bindingType ty1
   let ty2' = bindingType ty2
-  mkApp (mkNewBindTh ty1') ty2' [scr, arg]
+  mkApp (mkNewBindTh argty ty1') ty2' [scr, arg]
 
 -- | Create a '(>>)' for the given arguments and apply them.
-mkSequence :: LHsExpr GhcTc -> Type -> LHsExpr GhcTc -> Type
+mkSequence :: LHsExpr GhcTc -> Type -> Type -> LHsExpr GhcTc -> Type
        -> TcM (LHsExpr GhcTc)
-mkSequence scr ty1 arg ty2 = do
+mkSequence scr argty ty1 arg ty2 = do
   let ty1' = bindingType ty1
   let ty2' = bindingType ty2
-  mkApp (mkNewSequenceTh ty1') ty2' [scr, arg]
+  mkApp (mkNewSequenceTh argty ty1') ty2' [scr, arg]
 
 -- | Create a 'app' for the given arguments and apply them.
-mkFuncApp :: [Ct] -> LHsExpr GhcTc -> Type -> LHsExpr GhcTc -> Type
+mkFuncApp :: [Ct] -> LHsExpr GhcTc -> Type -> Type -> LHsExpr GhcTc -> Type
           -> TcM (LHsExpr GhcTc)
-mkFuncApp given op ty1 arg ty2 = do
+mkFuncApp given op argty ty1 arg ty2 = do
   let ty1' = bindingType ty1
   let ty2' = bindingType ty2
-  mkAppWith (mkNewAppTh ty1') given ty2' [op, arg]
+  mkAppWith (mkNewAppTh argty ty1') given ty2' [op, arg]
 
 -- | Apply the given list of arguments to a term created by the first function.
 mkApp :: (Type -> TcM (LHsExpr GhcTc))
@@ -135,28 +134,26 @@ mkAppWith con _ typ args = do
   return $ foldl mkHsApp e' args
 
 -- | Create a 'return' for the given argument types.
-mkNewReturnTh :: Type -> TcM (LHsExpr GhcTc)
-mkNewReturnTh etype = do
+mkNewReturnTh :: Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewReturnTh argty etype = do
   mtycon <- getMonadTycon
   ps_expr <- queryBuiltinFunctionName "rtrn"
-  let mty = mkTyConTy mtycon
+  let mty = mkTyConApp mtycon [argty]
   let expType = mkVisFunTyMany etype $ -- 'e ->
                 mkAppTy mty etype      -- m 'e
-  printAny "expType" expType
-  printAny "ps_expr" ps_expr
   mkNewPs ps_expr expType
 
 -- | Create a 'return . Fun' for the given argument types.
-mkNewReturnFunTh :: Type -> Type -> TcM (LHsExpr GhcTc)
-mkNewReturnFunTh arg res = do
+mkNewReturnFunTh :: Type -> Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewReturnFunTh argty arg res = do
   ftc <- getFunTycon
   mtycon <- getMonadTycon
-  let mty = mkTyConTy mtycon
+  let mty = mkTyConApp mtycon [argty]
   if isMonoType arg
     then do
       let expType = mkVisFunTyMany (mkVisFunTyMany arg res) $ -- (arg -> res) ->
                     mkAppTy mty (mkTyConApp ftc               -- m ((-->)
-                      [ mkTyConApp mtycon []                  --     m
+                      [ mty                                   --     m
                       , bindingType arg                       --     unM arg
                       , bindingType res ])                    --     unM res)
       ps_expr <- queryBuiltinFunctionName "rtrnFunc"
@@ -183,11 +180,11 @@ mkNewReturnFunTh arg res = do
       mkNewPs ps_expr expType
 
 -- | Create a '(>>=)' for the given argument types.
-mkNewBindTh :: Type -> Type -> TcM (LHsExpr GhcTc)
-mkNewBindTh etype btype = do
+mkNewBindTh :: Type -> Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewBindTh argty etype btype = do
   mtycon <- getMonadTycon
   ps_expr <- queryBuiltinFunctionName "bind"
-  let mty = mkTyConTy mtycon
+  let mty = mkTyConApp mtycon [argty]
   let resty = mkAppTy mty btype
   let expType = mkVisFunTyMany (mkAppTy mty etype) $        -- m 'e ->
                 mkVisFunTyMany (mkVisFunTyMany etype resty) -- (e' -> m b) ->
@@ -195,24 +192,23 @@ mkNewBindTh etype btype = do
   mkNewPs ps_expr expType
 
 -- | Create a '(>>)' for the given argument types.
-mkNewSequenceTh :: Type -> Type -> TcM (LHsExpr GhcTc)
-mkNewSequenceTh etype btype = do
+mkNewSequenceTh :: Type -> Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewSequenceTh argty etype btype = do
   mtycon <- getMonadTycon
   ps_expr <- queryBuiltinFunctionName "sequence"
-  let mty = mkTyConTy mtycon
+  let mty = mkTyConApp mtycon [argty]
   let resty = mkAppTy mty btype
   let expType = mkVisFunTyMany (mkAppTy mty etype) $        -- m 'e ->
                 mkVisFunTyMany resty resty                  -- m b -> m b
   mkNewPs ps_expr expType
 
 -- | Create a 'app' for the given argument types.
-mkNewAppTh :: Type -> Type -> TcM (LHsExpr GhcTc)
-mkNewAppTh optype argtype = do
+mkNewAppTh :: Type -> Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewAppTh argty optype argtype = do
   mtycon <- getMonadTycon
   ftycon <- getFunTycon
-  let (_, restype) = splitMyFunTy mtycon ftycon optype
-  printAny "optype" optype
-  let mty = mkTyConTy mtycon
+  let mty = mkTyConApp mtycon [argty]
+  let (_, restype) = splitMyFunTy mty ftycon optype
   if isMonoType argtype
     then do
       let expType = mkVisFunTyMany (mkAppTy mty optype) $ -- m optype ->
@@ -258,18 +254,18 @@ mkNewSeqValueTh atype btype = do
   mkNewPs ps_expr expType
 
 -- | Create a 'fmap' for the given argument types.
-mkNewFmapTh :: Type -> Type -> TcM (LHsExpr GhcTc)
-mkNewFmapTh etype btype = do
+mkNewFmapTh :: Type -> Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewFmapTh argty etype btype = do
   mtycon <- getMonadTycon
   ps_expr <- queryBuiltinFunctionName "fmp"
-  let appMty = mkTyConApp mtycon . (:[])
+  let appMty t = mkTyConApp mtycon [argty, t]
   let expType = mkVisFunTyMany (mkVisFunTyMany etype btype) $ -- ('e -> 'b) ->
                 mkVisFunTyMany (appMty etype) (appMty btype)  -- m 'e -> m 'b
   mkNewPs ps_expr expType
 
 -- | Create a 'share' for the given argument types.
-mkNewShareTh :: TyConMap -> Type -> TcM (LHsExpr GhcTc)
-mkNewShareTh tcs ty
+mkNewShareTh :: TyConMap -> Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewShareTh tcs argty ty
   | isForAllTy ty = do
     sp <- getSrcSpanM
     mtc <- getMonadTycon
@@ -287,9 +283,10 @@ mkNewShareTh tcs ty
     return (noLocA $ HsVar noExtField $ noLocA $ mkVanillaGlobal nm expType)
   | otherwise     = do
   mtycon <- getMonadTycon
+  let mty = mkTyConApp mtycon [argty]
   ps_expr <- queryBuiltinFunctionName "shre"
   let expType = mkVisFunTyMany ty $    -- a ->
-                mkTyConApp mtycon [ty] -- m a
+                mkAppTy mty ty -- m a
   mkNewPs ps_expr expType
 
 mkNewShareTop :: (Int, String) -> Type -> TcM (LHsExpr GhcTc)
@@ -304,53 +301,57 @@ mkNewShareTop key ty = do
   return (mkHsApp e arg)
 
 -- | Create a 'liftE' for the given argument types.
-mkNewLiftETh :: Type -> Type -> TcM (LHsExpr GhcTc)
-mkNewLiftETh ty1 ty2 = do
-  mty <- (. (: [])) . mkTyConApp <$> getMonadTycon
+mkNewLiftETh :: Type -> Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewLiftETh argty ty1 ty2 = do
+  mtc <- getMonadTycon
+  let mty = mkTyConApp mtc [argty]
   th_expr <- liftQ [| liftE |]
-  let expType = mkVisFunTyMany (mty ty1) (mty ty2) -- m a -> m b
+  let expType = mkVisFunTyMany (mkAppTy mty ty1) (mkAppTy mty ty2) -- m a -> m b
   mkNewAny th_expr expType
 
 -- | Create a 'nf' for the given argument types.
-mkNewNfTh :: Type -> Type -> TcM (LHsExpr GhcTc)
-mkNewNfTh ty1 ty2 = do
-  mty <- (. (: [])) . mkTyConApp <$> getMonadTycon
+mkNewNfTh :: Type -> Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewNfTh argty ty1 ty2 = do
+  mtc <- getMonadTycon
+  let mty = mkTyConApp mtc [argty]
   th_expr <- liftQ [| nf |]
-  let expType = mkVisFunTyMany (mty ty1) (mty ty2) -- m a -> m b
+  let expType = mkVisFunTyMany (mkAppTy mty ty1) (mkAppTy mty ty2) -- m a -> m b
   mkNewAny th_expr expType
 
 -- | Create a 'apply1' for the given argument types.
-mkNewApply1 :: Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewApply1 :: Type -> Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewApply1 = mkNewAppTh
 
 -- | Create a 'apply2' for the given argument types.
-mkNewApply2 :: Type -> Type -> Type -> TcM (LHsExpr GhcTc)
-mkNewApply2 ty1 ty2 ty3 = do
-  mtycon <- getMonadTycon
+mkNewApply2 :: Type -> Type -> Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewApply2 argty ty1 ty2 ty3 = do
+  mtc <- getMonadTycon
+  let mty = mkTyConApp mtc [argty]
   ftycon <- getFunTycon
   ps_expr <- queryBuiltinFunctionName "apply2"
-  let mkMyFunTy arg res = mkTyConApp ftycon [arg, res]
+  let mkMyFunTy arg res = mkTyConApp ftycon [mty, arg, res]
   let expType =
-        mkVisFunTyMany (mkTyConApp mtycon              -- m (
-              [mkMyFunTy ty1 (mkMyFunTy ty2 ty3)]) $   --   a --> b --> c) ->
-          mkVisFunTyMany (mkTyConApp mtycon [ty1]) $   -- m a ->
-            mkVisFunTyMany (mkTyConApp mtycon [ty2]) $ -- m b ->
-              mkTyConApp mtycon [ty3]                  -- m c
+        mkVisFunTyMany (mkAppTy mty                  -- m (
+              (mkMyFunTy ty1 (mkMyFunTy ty2 ty3))) $ --   a --> b --> c) ->
+          mkVisFunTyMany (mkAppTy mty ty1) $         -- m a ->
+            mkVisFunTyMany (mkAppTy mty ty2) $       -- m b ->
+              mkAppTy mty ty3                        -- m c
   mkNewPs ps_expr expType
 
 -- | Create a 'apply2Unlifted' for the given argument types.
-mkNewApply2Unlifted :: Type -> Type -> Type -> TcM (LHsExpr GhcTc)
-mkNewApply2Unlifted ty1 ty2 ty3 = do
-  mtycon <- getMonadTycon
+mkNewApply2Unlifted :: Type -> Type -> Type -> Type -> TcM (LHsExpr GhcTc)
+mkNewApply2Unlifted argty ty1 ty2 ty3 = do
+  mtc <- getMonadTycon
+  let mty = mkTyConApp mtc [argty]
   ftycon <- getFunTycon
   ps_expr <- queryBuiltinFunctionName "apply2Unlifted"
   let mkMyFunTy arg res = mkTyConApp ftycon [arg, res]
   let expType =
-        mkVisFunTyMany (mkTyConApp mtycon            -- m (
-              [mkMyFunTy ty1 (mkMyFunTy ty2 ty3)]) $ --   a --> b --> c) ->
-          mkVisFunTyMany (mkTyConApp mtycon [ty1]) $ -- m a ->
+        mkVisFunTyMany (mkAppTy mty                  -- m (
+              (mkMyFunTy ty1 (mkMyFunTy ty2 ty3))) $ --   a --> b --> c) ->
+          mkVisFunTyMany (mkAppTy mty ty1) $         -- m a ->
             mkVisFunTyMany ty2 $                     -- b ->
-              mkTyConApp mtycon [ty3]                -- m c
+              mkAppTy mty ty3                        -- m c
   mkNewPs ps_expr expType
 
 -- | Create a '(>>=)' specialized to lists for list comprehensions.
@@ -508,10 +509,10 @@ mkHsWrap :: HsWrapper -> HsExpr GhcTc -> HsExpr GhcTc
 mkHsWrap WpHole e = e
 mkHsWrap w      e = XExpr (WrapExpr (HsWrap w e))
 
-splitMyFunTy :: TyCon -> TyCon -> Type -> (Type, Type)
-splitMyFunTy mtc ftc (coreView -> Just ty)    = splitMyFunTy mtc ftc ty
-splitMyFunTy mtc ftc (TyConApp tc [mty, ty1, ty2])
-  | tc == ftc = (mkTyConApp mtc [ty1], mkTyConApp mtc [ty2])
+splitMyFunTy :: Type -> TyCon -> Type -> (Type, Type)
+splitMyFunTy mty ftc (coreView -> Just ty)    = splitMyFunTy mty ftc ty
+splitMyFunTy mty ftc (TyConApp tc [_mty', ty1, ty2])
+  | tc == ftc = (mkAppTy mty ty1, mkAppTy mty ty2)
   | otherwise = error $ showSDocUnsafe $ ppr (tc, ftc, mty, ty1, ty2)
 splitMyFunTy _   _   ty@((TyConApp _ xs)) = error $ showSDocUnsafe $ ppr (ty, length xs)
 splitMyFunTy _   _   ty = error $ showSDocUnsafe $ ppr ty

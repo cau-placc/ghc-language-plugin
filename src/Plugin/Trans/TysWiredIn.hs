@@ -58,47 +58,27 @@ loadDefaultTyConMap = do
 load :: (Name, String) -> TcM (TyCon, TyCon)
 load (n, s) = do
   old <- tcLookupTyCon n
-  builtInModule <- lookupConfig builtInModConfigStr
-  new <- getTyCon builtInModule s
+  new <- getTyCon "Plugin.Effect.Classes" s
   return (old, new)
 
 -- | Get the lifted and unlifted TyCons of type constructors that are
 -- not in 'PrelNames' for some reason.
 loadAdditional :: TcM [(TyCon, TyCon)]
 loadAdditional = do
-  builtInModule <- lookupConfig builtInModConfigStr
-  -- AlternativeClassName in PrelNames is incorrect, so we look it up manually
-  bse  <- findImportedOrPanic "GHC.Base"
-  altA <- tcLookupTyCon =<< lookupOrig bse ( mkTcOcc "Alternative" )
-  newA <- getTyCon builtInModule "AlternativeND"
+  bse <- findImportedOrPanic "GHC.Base"
 
   -- String is not in PrelNames, so we do the same.
   altS <- tcLookupTyCon =<< lookupOrig bse ( mkTcOcc "String" )
-  newS <- getTyCon builtInModule "StringND"
-
-  -- And again for ShowS.
-  shw  <- findImportedOrPanic "GHC.Show"
-  altH <- tcLookupTyCon =<< lookupOrig shw ( mkTcOcc "ShowS" )
-  newH <- getTyCon builtInModule "ShowSND"
-
-  -- And again for Real.
-  real <- findImportedOrPanic "GHC.Real"
-  altR <- tcLookupTyCon =<< lookupOrig real ( mkTcOcc "Real" )
-  newR <- getTyCon builtInModule "RealND"
-
-  -- And again for Integral
-  altI <- tcLookupTyCon =<< lookupOrig real ( mkTcOcc "Integral" )
-  newI <- getTyCon builtInModule "IntegralND"
+  newS <- getTyCon "Plugin.Effect.Classes" "StringND"
 
   -- And again for (->)
   let altF = unrestrictedFunTyCon
-  newF <- getTyCon builtInModule ":--->#"
+  newF <- getTyCon "Plugin.Effect.Classes" ":--->#"
 
   let altFR = funTyCon
-  newFR <- getTyCon builtInModule ":--->"
+  newFR <- getTyCon "Plugin.Effect.Classes" ":--->"
 
-  return [ (altH, newH), (altR, newR), (altI, newI), (altA, newA)
-         , (altS, newS), (altF, newF), (altFR, newFR)
+  return [ (altS, newS), (altF, newF), (altFR, newFR)
          , (intPrimTyCon, intTyCon)]
 
 -- | A list of GHC's built-in type constructor names and the names of
@@ -107,27 +87,10 @@ originalNamesToLoad :: [(Name, String)]
 originalNamesToLoad = names
   where
     names =
-      [ (eqClassName          , "EqFL")
-      , (ordClassName         , "OrdFL")
-      , (showClassName        , "ShowFL")
-      , (enumClassName        , "EnumFL")
-      , (numClassName         , "NumFL")
-      , (integralClassName    , "IntegralFL")
-      , (boundedClassName     , "BoundedFL")
-      , (functorClassName     , "FunctorFL")
-      , (applicativeClassName , "ApplicativeFL")
-      , (monadClassName       , "MonadFL")
-      , (monadFailClassName   , "MonadFailFL")
-      , (isStringClassName    , "IsStringFL")
-      , (listTyConName        , "ListFL")
-      , (rationalTyConName    , "RationalFL")
-      , (ratioTyConName       , "RatioFL")
-      , (charTyConName        , "CharFL")
-      , (intTyConName         , "IntFL")
-      , (boolTyConName        , "BoolFL")
-      , (orderingTyConName    , "OrderingFL")
-      , (tyConName unitTyCon  , "UnitFL")
-      , (integerTyConName     , "IntegerFL")
+      [ (listTyConName        , "ListND")
+      , (rationalTyConName    , "RationalND")
+      , (ratioTyConName       , "RatioND")
+      , (charTyConName        , "CharND")
       ] ++
       map tupleWithArity [2 .. maxTupleArity]
 

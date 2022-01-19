@@ -177,7 +177,9 @@ liftClassConstraint :: TyConMap -> PredType -> [Type] -> Class
                     -> (PredType -> [Type] -> Class -> r)
                     -> TcPluginM (Maybe r)
 liftClassConstraint m pty xi cls f = unsafeTcPluginTcM $ do
-  xi' <- mapM (liftInnerTyTcM m) xi
+  xi' <- mapM (liftInnerTyTcM m undefined) xi
+  let tctyvar = undefined 
+  let argty = mkTyVarTy tctyvar
   -- There are a few things to keep in mind here:
   -- 1. If cls is a multi parameter class (i.e. length xi /= 1), then it
   --    is defnitely not built-in.
@@ -200,14 +202,14 @@ liftClassConstraint m pty xi cls f = unsafeTcPluginTcM $ do
     then do
       Just cls' <- tyConClass_maybe
         <$> liftIO (lookupTyConMap GetNew m (classTyCon cls))
-      pty' <- liftTypeTcM m pty
+      pty' <- liftTypeTcM m argty pty
       return (Just (f pty' xi' cls'))
     -- If nothing in the xi type changes, we unlift the class.
     -- If that did nothing, return Nothing
     else do
       Just cls' <- tyConClass_maybe
         <$> liftIO (lookupTyConMap GetOld m (classTyCon cls))
-      pty' <- liftTypeTcM m pty
+      pty' <- liftTypeTcM m argty pty
       if cls /= cls'
         then return (Just (f pty' xi' cls'))
         else return Nothing

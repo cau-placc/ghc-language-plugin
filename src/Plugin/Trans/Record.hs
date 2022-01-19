@@ -79,7 +79,7 @@ liftRecSelMG tcs f (MG (MatchGroupTc args res) (L _ alts) orig)
   = do
     args' <- liftIO (mapM (replaceTyconScaled tcs) args)
     -- Lift the result type of this match group accordingly.
-    res' <- liftTypeTcM tcs res
+    res' <- liftTypeTcM tcs undefined res
     alts' <- mapM (liftRecSelAlt tcs f) alts
     return (MG (MatchGroupTc args' res') (noLocA alts') orig)
 
@@ -88,13 +88,13 @@ liftRecSelAlt :: TyConMap -> Var -> LMatch GhcTc (LHsExpr GhcTc)
               -> TcM (LMatch GhcTc (LHsExpr GhcTc))
 liftRecSelAlt tcs f (L _ (Match _ (FunRhs _ fixity strict) [pat] rhs)) = do
   -- Lift any left-side pattern.
-  (pat', vs') <- liftPattern tcs pat
+  (pat', vs') <- liftPattern tcs undefined pat
   let vs = map (\(a, L _ b) -> (a, b)) vs'
   let ctxt = FunRhs (noLocA (varName f)) fixity strict :: HsMatchContext GhcRn
   -- Replace any variables on the right side.
   -- Thankfully, a record selector is always just a single variable on the rhs.
   rhs' <- everywhere (mkT (replaceVarExpr (map swap vs)))
-            <$> everywhereM (mkM (liftErrorWrapper tcs)) rhs
+            <$> everywhereM (mkM (liftErrorWrapper tcs undefined)) rhs
   return (noLocA (Match EpAnnNotUsed ctxt [pat'] rhs'))
 liftRecSelAlt _ _ x = return x
 

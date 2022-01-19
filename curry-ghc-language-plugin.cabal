@@ -41,6 +41,7 @@ common deps
     mtl              -any,
     extra            -any,
     split            -any,
+    random           -any
   ghc-options:      -Wall
   default-language: Haskell2010
   other-extensions:
@@ -108,6 +109,8 @@ library
     Plugin.CurryPlugin.BuiltIn
     Plugin.CurryPlugin.Encapsulation
     Plugin.CurryPlugin.Monad
+    Plugin.CurryPlugin.Free
+    Plugin.CurryPlugin.Main
   other-modules:
     Plugin.CurryPlugin.ForeignExport
     Plugin.CurryPlugin.THEval

@@ -11,8 +11,7 @@ Prelude of Base packages, while the built-In module is just added so that it
 is loaded in every plugin-compiled module.
 -}
 module Plugin.CurryPlugin.ForeignExport
-  ( (?), failed
-  , Bool(..), Int, Integer, Char, String, Ordering(..)
+  ( Bool(..), Int, Integer, Char, String, Ordering(..)
   , Ratio, Rational, Float, Double
   , Show(..), Eq(..), Ord(..)
   , Num(..), Fractional(..), Real(..), Integral(..), Enum(..), Bounded(..)

@@ -30,7 +30,7 @@ liftInstance tcs (ClsInst _ _ origDfn tvs origCls origTys origDf ov orp) = do
   cls <- liftIO $ getLiftedClass origCls tcs
 
   -- Update type constructors
-  tys <- mapM (liftInnerTyTcM tcs) origTys
+  tys <- mapM (liftInnerTyTcM tcs undefined) origTys
   let tyc = map (fmap fst . splitTyConApp_maybe) tys
   let tyn = map mkRoughMatchTc tyc
 
@@ -39,7 +39,7 @@ liftInstance tcs (ClsInst _ _ origDfn tvs origCls origTys origDf ov orp) = do
 
   -- Split the lifted type into invisible pi-types (forall, constraints) #
   -- and the rest.
-  (pis, inner) <- splitInvisPiTys <$> liftInnerTyTcM tcs (varType origDf)
+  (pis, inner) <- splitInvisPiTys <$> liftInnerTyTcM tcs undefined (varType origDf)
   -- Get named binders (e.g., foralls).
   -- Extract variables from named binders.
   let bs = mapMaybe namedTyCoVarBinder_maybe pis

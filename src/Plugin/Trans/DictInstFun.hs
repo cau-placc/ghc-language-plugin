@@ -97,7 +97,7 @@ liftDictExpr cls w tcs (L l ex) = L l <$> liftDictExpr' ex
     -- and lifting its wrapper.
     liftDictExpr' (XExpr (WrapExpr
       (HsWrap cw (HsConLikeOut _ (RealDataCon dc))))) = do
-      cw' <- replaceWrapper tcs cw
+      cw' <- replaceWrapper tcs undefined cw
       dc' <- liftIO (getLiftedCon dc tcs)
       return (XExpr (WrapExpr
         (HsWrap cw' (HsConLikeOut noExtField (RealDataCon dc')))))
@@ -134,7 +134,7 @@ liftDictExpr cls w tcs (L l ex) = L l <$> liftDictExpr' ex
               cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
           bs' <- mapM (replacePiTyTcM tcs) (bs1 ++ bs2)
           ty' <- mkPiTys bs' . flip (foldr mkInvisFunTyMany) cons
-            <$> liftTypeTcM tcs ty2
+            <$> liftTypeTcM tcs undefined ty2
           return (setVarType v ty')
 
       -- Use the given wrapper expression.

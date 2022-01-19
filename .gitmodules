@@ -1,0 +1,3 @@
+[submodule "effect-monad"]
+	path = effect-monad
+	url = git@github.com:hsfl-pltp/effect-monad.git

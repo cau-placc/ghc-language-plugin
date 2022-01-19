@@ -184,7 +184,6 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
     Right r -> return r
 
   let new = map snd tycons
-  mapM_ (\tc -> printAny "tc" (tc, mkTyConTy tc, tyConKind tc, tyConDataCons tc, map (\dc -> (dataConOrigArgTys dc, dataConOrigResTy dc)) (tyConDataCons tc))) new
 
   -- The order is important,
   -- as we want to keep t2 if it has the same unique as t1.
@@ -223,18 +222,14 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
 
       -- gather neccessary derivings and 'Lifted' type family instances
       (derivs, insts) <- mkDerivings tycons
-      printAny "mkDerivings" (derivs, insts)
       -- check and rename those derivings
       (env0, infos1, derivInfo) <- tcInstDecls1 insts
-      printAny "tcInstDecls1" infos1
       setGblEnv env0 $ do
         (env1, infos2, derivBinds) <- tcDeriving derivInfo derivs
-        printAny "tcDeriving" (infos2, derivBinds)
         setGblEnv env1 $ do
           -- create all instances from those derivings
           ((env2, lcl, derivedBindings), wc) <- captureTopConstraints $ do
             bs <- tcInstDecls2 [] (infos1 ++ bagToList infos2)
-            printAny "tcInstDecls2" bs
             -- typecheck other bindings that resulted from those derivings
             (e,l) <- uncurry tcTopBinds (collectBind derivBinds)
             return (e, l, bs)
@@ -325,7 +320,7 @@ liftMonadPlugin mdopts env = setGblEnv env $ do
     liftBindings :: TyConMap -> [ClsInst] -> [LHsBindLR GhcTc GhcTc]
                  -> TcM [LHsBindLR GhcTc GhcTc]
     liftBindings y z = fmap (map noLocA) .
-      concatMapM (fmap fst . liftMonadicBinding False False [] y z . unLoc)
+      concatMapM (fmap fst . liftMonadicBinding False [] Nothing y z . unLoc)
 
     collectBind (ValBinds _ b s)              = ([(Recursive, b)], s)
     collectBind (XValBindsLR (NValBinds b s)) = (b, s)

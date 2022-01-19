@@ -21,7 +21,7 @@ import Plugin.Trans.Util
 liftRule :: TyConMap -> LRuleDecl GhcTc -> TcM (LRuleDecl GhcTc)
 liftRule tcs r@(L l (HsRule x nm act tvs tmvs lhs rhs)) = do
   tmvs' <- mapM (liftRuleBndr tcs) tmvs
-  (lhs', constraints) <- captureConstraints (liftMonadicExpr [] tcs lhs)
+  (lhs', constraints) <- captureConstraints (liftMonadicExpr [] undefined tcs lhs)
 
   evs <- case constraints of
     WC wanted impl holes
@@ -33,7 +33,7 @@ liftRule tcs r@(L l (HsRule x nm act tvs tmvs lhs rhs)) = do
   lclEnv <- getLclEnv
 
   (L loc rhs', WC wanted impl holes) <-
-    captureConstraints (liftMonadicExpr [] tcs rhs)
+    captureConstraints (liftMonadicExpr [] undefined tcs rhs)
   let ctloc = mkGivenLoc topTcLevel UnkSkol lclEnv
   let given = listToBag $ mkGivens ctloc evs
   rhs'' <- L loc . flip mkHsWrap rhs' . mkWpLet . EvBinds <$>
@@ -55,7 +55,7 @@ liftRule tcs r@(L l (HsRule x nm act tvs tmvs lhs rhs)) = do
 liftRuleBndr :: TyConMap -> LRuleBndr GhcTc -> TcM (LRuleBndr GhcTc)
 liftRuleBndr tcs   (L l1 (RuleBndr    x (L l2 v) ))
   | isId v = L l1 . RuleBndr x . L l2 . setVarType v
-                <$> liftTypeTcM tcs (varType v)
+                <$> liftTypeTcM tcs undefined (varType v)
 liftRuleBndr _   b@(L _  (RuleBndrSig _ _       _)) =
   panicAny "Unexpected RuleBndrSig" b
 liftRuleBndr _   b = return b

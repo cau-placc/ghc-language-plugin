@@ -28,19 +28,8 @@ import Plugin.CurryPlugin.Monad
 --   Examples:
 --   >>> $(evalGeneric DFS 'someNullaryFunction)
 --   >>> $(evalGeneric BFS 'someUnaryFunction  ) arg1
-evalGeneric :: SearchMode -> Name -> Q Exp
-evalGeneric sma fname = do
-  ty <- reify fname >>= \case
-    VarI     _ ty _ -> return ty
-    ClassOpI _ ty _ -> return ty
-    _               -> fail "Only functions can be captured"
-  argsT <- collectArgs ty
-  vs <- replicateM (length argsT) (newName "x")
-  sme <- [| sma |]
-  ev <- genEval sme fname (zip vs argsT)
-  if null vs
-    then return ev
-    else return (LamE (map VarP vs) ev)
+evalGeneric :: a -> Name -> Q Exp
+evalGeneric sma fname = undefined
 
 -- | 'evalN' encapsulates a nondeterministic computation and traverses its
 --   results via the given search strategy.
@@ -53,13 +42,7 @@ evalGeneric sma fname = do
 --   >>> $(evalN 0) DFS someNullaryFunction
 --   >>> $(evalN 1) BFS someUnaryFunction   arg1
 evalN :: Int -> Q Exp
-evalN n = do
-  fname <- newName "f"
-  smv <- newName "sm"
-  vs <- replicateM n (newName "x")
-  -- type does not matter, as long as it is not a nondeterministic function
-  ev <- genEval (VarE smv) fname (map (,WildCardT) vs)
-  return (LamE (map VarP (smv : fname : vs)) ev)
+evalN n = undefined
 
 -- | Deconstruct a lifted type to collect its arguments.
 collectArgs :: Type -> Q [Type]
@@ -78,29 +61,12 @@ collectArgs _                     = return []
 -- | Generate the 'allValues' part of a wrapper for a given search mode,
 -- wrapped function and list of arguments.
 genEval :: Exp -> Name -> [(Name, Type)] -> Q Exp
-genEval sma fname [] = do
-  rEff  <- [| \mode m -> modeOp mode (allValuesNF m) |]
-  return (AppE (AppE rEff sma) (VarE fname))
-genEval sma fname args = do
-  rEff  <- [| \mode inn f -> modeOp mode $
-                  allValuesNF (f >>= \(Func f') -> inn f') |]
-  inner <- genHelp args
-  return (foldl AppE rEff [sma, inner, VarE fname])
-  where
-    genHelp :: [(Name, Type)] -> Q Exp
-    genHelp []           = error "cannot happen"
-    genHelp [(v,_)]      = do
-      ex <- [| \vv vx -> vx (liftE (return vv)) |]
-      return (AppE ex (VarE v))
-    genHelp ((v,_):rest) = do
-      ex <- [| \inn vv vx -> vx (liftE (return vv)) >>= \(Func f) -> inn f |]
-      inner <- genHelp rest
-      return (foldl AppE ex [inner, VarE v])
+genEval sma fname [] = undefined
 
 -- | Name of the monad 'Nondet' used in the lifting.
 ndName :: Name
-ndName = ''Nondet
+ndName = undefined
 
 -- | Name of the function type '-->' used in the lifting.
 funcName :: Name
-funcName = ''(-->)
+funcName = undefined
