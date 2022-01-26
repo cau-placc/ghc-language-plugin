@@ -5,6 +5,10 @@
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ImpredicativeTypes #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE DataKinds #-}
 
 module Plugin.CurryPlugin.Main where
 
@@ -12,6 +16,15 @@ import Control.Monad (liftM2, replicateM)
 import Plugin.CurryPlugin.Monad
 import System.Random (getStdRandom, random)
 import Prelude hiding (fail)
+import Data.Kind
+import Data.List (nub)
+import Data.Data (Data, Proxy(..))
+import Type.Reflection
+
+import qualified Language.Haskell.TH
+import           Language.Haskell.TH hiding (Type)
+import qualified Language.Haskell.TH.Syntax
+import           Language.Haskell.TH.Syntax hiding (Type)
 
 none :: None a -> a
 none sig = case sig of
@@ -117,6 +130,72 @@ choose3 fx fy = inject (Choose3 fx fy id)
 
 data Fail a = Fail
   deriving (Functor)
+
+
+
+
+
+  
+data EffectAnn (a :: [Type -> Type]) 
+  = Typeable a => Open
+  | Typeable a => Closed
+
+deriving instance Typeable a => (Data (EffectAnn a))
+
+effectAnnToConstraint :: Language.Haskell.TH.Type -> EffectAnn a -> Language.Haskell.TH.Type
+effectAnnToConstraint sig ann = case ann of 
+  Open   -> thTypesToOpenConstraint   sig (getTHEffectAnnTypes ann)
+  Closed -> thTypesToClosedConstraint sig (getTHEffectAnnTypes ann)
+
+thTypesToOpenConstraint :: Language.Haskell.TH.Type -> [Language.Haskell.TH.Type] -> Language.Haskell.TH.Type 
+thTypesToOpenConstraint sig xs = foldl AppT (TupleT (length xs)) (map (\x -> AppT (AppT (ConT ''(:<:)) x) sig) xs)
+
+thTypesToClosedConstraint :: Language.Haskell.TH.Type -> [Language.Haskell.TH.Type] -> Language.Haskell.TH.Type 
+thTypesToClosedConstraint sig xs = AppT (AppT (ConT ''(~)) sig) (foldl (AppT . AppT (ConT ''(:+:))) (ConT ''None) xs)
+
+getTHEffectAnnTypes :: forall a. EffectAnn a -> [Language.Haskell.TH.Type]
+getTHEffectAnnTypes Open = getTypeReps (typeRep @a)
+getTHEffectAnnTypes Closed = getTypeReps (typeRep @a) 
+
+getTypeReps :: TypeRep a -> [Language.Haskell.TH.Type]
+getTypeReps rep = case splitApps rep of 
+  (tc, [x, SomeTypeRep xs]) | tc == hCons -> tyConToThType x : getTypeReps xs
+  (tc, [])                  | tc == hNil  -> []
+  _                                       -> error "unmatched list typeRep"
+
+tyConToThType :: SomeTypeRep -> Language.Haskell.TH.Type
+tyConToThType (SomeTypeRep r) = 
+  foldl (\b -> AppT b . tyConToThType) tcTyconTy xs
+  where
+    tcTyconTy = ConT (mkNameG TcClsName (tyConPackage tc) (tyConModule tc) (tyConName tc))
+    (tc, xs) = splitApps r
+
+hCons :: TyCon
+hCons = typeRepTyCon (typeRep @'[Type -> Type])
+
+hNil :: TyCon
+hNil = typeRepTyCon (typeRep @('[] @(Type -> Type)))
+
+{-
+ghci> :set -XTypeFamilies -XTemplateHaskell -XDataKinds 
+ghci> type ClosedExample sig = $(return $ effectAnnToConstraint (VarT (mkName "sig")) (Closed @'[Fail, Choose1]))
+ghci> type OpenExample sig = $(return $ effectAnnToConstraint (VarT (mkName "sig")) (Open @'[Fail, Choose1]))
+ghci> :i ClosedExample 
+type ClosedExample :: (* -> *) -> Constraint
+type ClosedExample sig =
+  sig ~ ((None :+: Fail) :+: Choose1) :: Constraint
+  	-- Defined at <interactive>:2:1
+ghci> :i OpenExample 
+type OpenExample :: (* -> *) -> Constraint
+type OpenExample sig =
+  (Fail :<: sig, Choose1 :<: sig) :: Constraint
+  	-- Defined at <interactive>:3:1
+-}
+
+
+
+
+
 
 fail :: (Fail :<: sig) => Free sig a
 fail = inject Fail
