@@ -17,6 +17,7 @@ module Plugin.CurryPlugin.ForeignExport
   , Num(..), Fractional(..), Real(..), Integral(..), Enum(..), Bounded(..)
   , Functor(..), Applicative(..), Alternative(..), Monad(..), MonadFail(..)
   , IsString(..)
+  , open, closed, Fail(..), Choose1(..)
   ) where
 
 import Data.Ratio
@@ -25,6 +26,7 @@ import Data.String
 import Control.Applicative
 
 import Plugin.CurryPlugin.Monad
+import Plugin.CurryPlugin.Main (open, closed, Fail(..), Choose1(..))
 import Plugin.CurryPlugin.BuiltIn ()
 
 {-# ANN module Nondeterministic #-}

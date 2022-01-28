@@ -140,6 +140,7 @@ test-suite tests
     Plugin.Effect.Transformers
     Plugin.CurryPlugin.THEval
     Plugin.CurryPlugin.Tree
+    Plugin.CurryPlugin.Main
   build-depends:
     curry-ghc-language-plugin,
     process   -any,

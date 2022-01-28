@@ -127,7 +127,7 @@ liftMonadicBinding lcl given argty' tcs _ (FunBind wrap (L b name) eqs ticks) =
   binds' <- snd <$> zonkTcEvBinds zEnv (TcEvBinds bindsVar)
   let wx = wx' <.> mkWpLet binds'
 
-  let fullwrap = (wrapLike <.> wx)
+  let fullwrap = wrapLike <.> wx
   ticks' <- mapM (liftTick tcs argty) ticks
   let name' = setVarType name ty
   return ([FunBind fullwrap (L b name') eqs' ticks'], [])
@@ -190,11 +190,16 @@ liftMonadicBinding lcl given argty' tcs _ (AbsBinds a b c d e f g)
     -- both the poly and mono type and for local bindings as well
     liftEx :: [Var] -> [Var] -> Type -> Maybe Var -> ABExport GhcTc -> TcM (ABExport GhcTc, Maybe (Var,Var,Var))
     liftEx vs evs mty sigVar' (ABE x v1 v2 _ p) = do
+      env <- getGblEnv
+      let aenv = tcg_ann_env env
+      let anns = findAnns deserializeWithData aenv (NamedTarget (varName v1)) 
       -- change unique only for local decls, as only those are shared
       u <- if lcl then getUniqueM else return (varUnique v1)
       sigVar <- case sigVar' of
         Just v -> return v
         Nothing -> freshMonadTVar
+      tys <- mapM (constraintTypeForAnn (occName sigVar)) anns
+      printAny "sigty" tys
       let argty = mkTyVarTy sigVar
       -- lift types
       mtycon <- getMonadTycon

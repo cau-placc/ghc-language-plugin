@@ -2,14 +2,15 @@
 {-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE DataKinds #-}
-
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE PolyKinds #-}
 module Plugin.CurryPlugin.Main where
 
 import Control.Monad (liftM2, replicateM)
@@ -133,19 +134,24 @@ data Fail a = Fail
 
 
 
+open :: forall (a :: [Type -> Type]). Typeable a => EffectAnn
+open   = Open (getTHEffectAnnTypes (OpenTypeable @a))
 
+closed :: forall (a :: [Type -> Type]). Typeable a => EffectAnn
+closed = Closed (getTHEffectAnnTypes (ClosedTypeable @a))
 
+data EffectAnn = Open   { effectAnnTys :: [Language.Haskell.TH.Type] }
+               | Closed { effectAnnTys :: [Language.Haskell.TH.Type] }
+  deriving (Eq, Show, Data)
   
-data EffectAnn (a :: [Type -> Type]) 
-  = Typeable a => Open
-  | Typeable a => Closed
+data EffectAnnTypeable (a :: [Type -> Type]) 
+  = Typeable a => OpenTypeable
+  | Typeable a => ClosedTypeable
 
-deriving instance Typeable a => (Data (EffectAnn a))
-
-effectAnnToConstraint :: Language.Haskell.TH.Type -> EffectAnn a -> Language.Haskell.TH.Type
+effectAnnToConstraint :: Language.Haskell.TH.Type -> EffectAnn -> Language.Haskell.TH.Type
 effectAnnToConstraint sig ann = case ann of 
-  Open   -> thTypesToOpenConstraint   sig (getTHEffectAnnTypes ann)
-  Closed -> thTypesToClosedConstraint sig (getTHEffectAnnTypes ann)
+  Open   tys -> thTypesToOpenConstraint   sig tys
+  Closed tys -> thTypesToClosedConstraint sig tys
 
 thTypesToOpenConstraint :: Language.Haskell.TH.Type -> [Language.Haskell.TH.Type] -> Language.Haskell.TH.Type 
 thTypesToOpenConstraint sig xs = foldl AppT (TupleT (length xs)) (map (\x -> AppT (AppT (ConT ''(:<:)) x) sig) xs)
@@ -153,11 +159,11 @@ thTypesToOpenConstraint sig xs = foldl AppT (TupleT (length xs)) (map (\x -> App
 thTypesToClosedConstraint :: Language.Haskell.TH.Type -> [Language.Haskell.TH.Type] -> Language.Haskell.TH.Type 
 thTypesToClosedConstraint sig xs = AppT (AppT (ConT ''(~)) sig) (foldl (AppT . AppT (ConT ''(:+:))) (ConT ''None) xs)
 
-getTHEffectAnnTypes :: forall a. EffectAnn a -> [Language.Haskell.TH.Type]
-getTHEffectAnnTypes Open = getTypeReps (typeRep @a)
-getTHEffectAnnTypes Closed = getTypeReps (typeRep @a) 
+getTHEffectAnnTypes :: forall a. EffectAnnTypeable a -> [Language.Haskell.TH.Type]
+getTHEffectAnnTypes OpenTypeable   = getTypeReps (typeRep @a)
+getTHEffectAnnTypes ClosedTypeable = getTypeReps (typeRep @a) 
 
-getTypeReps :: TypeRep a -> [Language.Haskell.TH.Type]
+getTypeReps :: TypeRep (a :: k) -> [Language.Haskell.TH.Type]
 getTypeReps rep = case splitApps rep of 
   (tc, [x, SomeTypeRep xs]) | tc == hCons -> tyConToThType x : getTypeReps xs
   (tc, [])                  | tc == hNil  -> []

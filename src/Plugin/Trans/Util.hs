@@ -9,7 +9,8 @@ This module contains various utility functions.
 -}
 module Plugin.Trans.Util where
 
-import Language.Haskell.TH            ( Exp, Q, runQ )
+import Language.Haskell.TH                 ( Exp, Q, runQ, mkName, TyVarBndr(..))
+import qualified Language.Haskell.TH as TH ( Type (..), Specificity(..)  )
 import Language.Haskell.Syntax.Extension
 import Control.Monad.IO.Class
 import Data.Tuple.Extra
@@ -25,15 +26,19 @@ import GHC.Hs.Extension
 import GHC.Hs.Expr
 import GHC.Hs.Lit
 import GHC.Tc.Types
+import GHC.Tc.Module
 import GHC.Tc.Gen.Expr
 import GHC.Tc.Types.Evidence
 import GHC.Tc.Utils.Monad
+import GHC.Tc.Utils.Zonk
 import GHC.Core.TyCo.Rep
 import GHC.Unit.Finder
 import GHC.Rename.Expr
 import GHC.Data.Bag
 import GHC.Types.SourceText
 import GHC.Parser.Annotation
+
+import Plugin.CurryPlugin.Main  
 
 namedTyCoVarBinder_maybe :: TyCoBinder -> Maybe TyCoVarBinder
 namedTyCoVarBinder_maybe (Named v) = Just v
@@ -42,6 +47,19 @@ namedTyCoVarBinder_maybe _         = Nothing
 -- | Lift a computation from the 'Q' monad to the type checker monad.
 liftQ :: Q a -> TcM a
 liftQ = liftIO . runQ
+
+constraintTypeForAnn :: OccName -> EffectAnn -> TcM Type 
+constraintTypeForAnn v ann = case convertToHsType Generated noSrcSpan $
+  TH.ForallT [PlainTV (mkName (occNameString v)) TH.InferredSpec] [] $
+  effectAnnToConstraint (TH.VarT (mkName (occNameString v))) ann of 
+    Left err -> failWithTc err
+    Right t  -> do
+      hsc <- getTopEnv 
+      (errs, res) <- liftIO (tcRnType hsc DefaultFlexi True t)
+      addMessages errs
+      case res of
+        Just (t', _) -> return t'
+        Nothing     -> failWithTc (text "Internal error: failed to transform annotation type")
 
 findImportedOrPanic :: String -> TcM Module
 findImportedOrPanic mname = do
@@ -75,12 +93,12 @@ mkNewAny ex ty = do
       flags <- getDynFlags
       panic ("Error while converting TemplateHaskell: " ++ showSDoc flags msg)
     Right res -> return res
-  fmap fst (rnLExpr ps_expr) >>= flip tcCheckMonoExpr ty
+  rnLExpr ps_expr >>= flip tcCheckMonoExpr ty . fst 
 
 mkNewPs :: RdrName -> Type -> TcM (LHsExpr GhcTc)
 mkNewPs nm ty = do
   let ps_expr = noLocA (HsVar noExtField (noLocA nm))
-  fmap fst (rnLExpr ps_expr) >>= flip tcCheckMonoExpr ty
+  rnLExpr ps_expr >>= flip tcCheckMonoExpr ty . fst
 
 -- | Get the type of the given expression or return Nothing
 -- if its type annotations are inconsistent.
