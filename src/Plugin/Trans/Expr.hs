@@ -68,7 +68,7 @@ import Plugin.Trans.FunWiredIn
 import Plugin.Trans.CreateSyntax
 import Plugin.Trans.DictInstFun
 import Plugin.Trans.ConstraintSolver
-import Plugin.Effect.Classes (liftE)
+import Plugin.Effect.Classes (embed)
 
 -- | Transform the given binding with a monadic lifting to incorporate
 -- our nondeterminism as an effect.
@@ -759,9 +759,9 @@ liftVarWithWrapper given tcs w v dttKey
     let appliedType = head $ fst $ collectTyApps w
     liftedType <- liftTypeTcM tcs appliedType
     -- tagToEnum :: Int# -> tyApp in w
-    -- returnFunc (\flint ndint -> ndint >>= \(I# i) -> liftE (tagToEnum @w i)))
+    -- returnFunc (\flint ndint -> ndint >>= \(I# i) -> liftE (tagToEnum @w i))
     lam <- liftQ [| \ttenum ndint -> ndint >>=
-                    (\(I# i) -> liftE (return (ttenum i))) |]
+                    (\(I# i) -> liftE (ttenum i)) |]
     mtycon <- getMonadTycon
     let argty = mkTyConApp mtycon [intTy]
     let resty = liftedType

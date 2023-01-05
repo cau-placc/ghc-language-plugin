@@ -1,6 +1,8 @@
 {-# LANGUAGE TemplateHaskellQuotes #-}
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE ViewPatterns          #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TypeApplications      #-}
 {-|
 Module      : Plugin.Trans.CreateSyntax
 Description : Helper functions to create parts of GHC's AST
@@ -301,7 +303,7 @@ mkNewShareTop key ty = do
 mkNewLiftETh :: Type -> Type -> TcM (LHsExpr GhcTc)
 mkNewLiftETh ty1 ty2 = do
   mty <- (. (: [])) . mkTyConApp <$> getMonadTycon
-  th_expr <- liftQ [| liftE |]
+  th_expr <- liftQ [| (>>= liftE) |]
   let expType = mkVisFunTyMany (mty ty1) (mty ty2) -- m a -> m b
   mkNewAny th_expr expType
 

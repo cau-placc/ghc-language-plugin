@@ -5,11 +5,12 @@
 {-# LANGUAGE FlexibleContexts       #-}
 {-# LANGUAGE UndecidableInstances   #-}
 {-# LANGUAGE DefaultSignatures      #-}
-{-# LANGUAGE LambdaCase             #-}
+{-# LANGUAGE TypeApplications       #-}
 {-# LANGUAGE LinearTypes            #-}
 {-# LANGUAGE ConstraintKinds        #-}
 {-# LANGUAGE TypeFamilies           #-}
 {-# LANGUAGE ScopedTypeVariables    #-}
+{-# LANGUAGE AllowAmbiguousTypes    #-}
 
 {-# OPTIONS_GHC -Wno-inline-rule-shadowing #-}
 {-|
@@ -59,64 +60,64 @@ class Sharing m => Shareable m a where
 class Monad m => Normalform m a b | m a -> b, m b -> a where
   -- | Convert a data type to its unlifted representation and
   -- compute its normal form.
-  nf :: m a -> m b
+  nf :: a -> m b
   default nf :: ( Gen.Generic a, Gen.Generic b
                 , NormalformGen m (Gen.Rep a) (Gen.Rep b))
-             => m a -> m b
-  nf ma = fmap Gen.to (nfGen (fmap Gen.from ma))
+             => a -> m b
+  nf a = fmap Gen.to (nfGen (Gen.from a))
 
-  -- | Convert a data type to its lifted representation.
-  liftE :: m b -> m a
-  default liftE :: ( Gen.Generic a, Gen.Generic b
+  -- | Convert a data type to its embedd representation.
+  embed :: b -> a
+  default embed :: ( Gen.Generic a, Gen.Generic b
                    , NormalformGen m (Gen.Rep a) (Gen.Rep b))
-                => m b -> m a
-  liftE mb = fmap Gen.to (liftEGen (fmap Gen.from mb))
+                => b -> a
+  embed b = Gen.to (embedGen @m (Gen.from b))
 
 -- * Generic machinery for Shareable and Normalform
 
 class Monad m => NormalformGen m f g where
-  nfGen    :: m (f x) -> m (g y)
-  liftEGen :: m (g x) -> m (f y)
+  nfGen    :: f x -> m (g y)
+  embedGen :: g x -> f y
 
 instance (Monad m) => NormalformGen m Gen.V1 Gen.V1 where
   nfGen _ = undefined
-  liftEGen _ = undefined
+  embedGen _ = undefined
 
 instance (Monad m) => NormalformGen m Gen.U1 Gen.U1 where
-  nfGen mx = mx >>= \case
+  nfGen x' = case x' of
     Gen.U1 -> return Gen.U1
-  liftEGen mx = mx >>= \case
-    Gen.U1 -> return Gen.U1
+  embedGen x' = case x' of
+    Gen.U1 -> Gen.U1
 
 instance (Monad m, NormalformGen m f1 g1, NormalformGen m f2 g2) =>
   NormalformGen m (f1 Gen.:+: f2) (g1 Gen.:+: g2) where
-    nfGen mx = mx >>= \case
-      Gen.L1 x -> Gen.L1 <$> nfGen (return x)
-      Gen.R1 x -> Gen.R1 <$> nfGen (return x)
-    liftEGen mx = mx >>= \case
-      Gen.L1 x -> Gen.L1 <$> liftEGen (return x)
-      Gen.R1 x -> Gen.R1 <$> liftEGen (return x)
+    nfGen x' = case x' of
+      Gen.L1 x -> Gen.L1 <$> nfGen x
+      Gen.R1 x -> Gen.R1 <$> nfGen x
+    embedGen x' = case x' of
+      Gen.L1 x -> Gen.L1 (embedGen @m x)
+      Gen.R1 x -> Gen.R1 (embedGen @m x)
 
 instance (Monad m,  NormalformGen m f1 g1, NormalformGen m f2 g2) =>
   NormalformGen m (f1 Gen.:*: f2) (g1 Gen.:*: g2) where
-    nfGen mx = mx >>= \case
-      x Gen.:*: y -> (Gen.:*:) <$> nfGen (return x) <*> nfGen (return y)
-    liftEGen mx = mx >>= \case
-      x Gen.:*: y -> (Gen.:*:) <$> liftEGen (return x) <*> liftEGen (return y)
+    nfGen x' = case x' of
+      x Gen.:*: y -> (Gen.:*:) <$> nfGen x <*> nfGen y
+    embedGen x' = case x' of
+      x Gen.:*: y -> embedGen @m x Gen.:*: embedGen @m y
 
 instance (Monad m, Normalform m a b) =>
   NormalformGen m (Gen.K1 i (m a)) (Gen.K1 j b) where
-    nfGen mx = mx >>= \case
-      Gen.K1 x -> Gen.K1 <$> nf x
-    liftEGen mx = mx >>= \case
-      Gen.K1 x -> return (Gen.K1 (liftE (return x)))
+    nfGen x' = case x' of
+      Gen.K1 x -> Gen.K1 <$> (x >>= nf)
+    embedGen x' = case x' of
+      Gen.K1 x -> Gen.K1 (return (embed @m x))
 
 instance (Monad m, NormalformGen m f g) =>
   NormalformGen m (Gen.M1 i t f) (Gen.M1 j h g) where
-    nfGen mx = mx >>= \case
-      Gen.M1 x -> Gen.M1 <$> nfGen (return x)
-    liftEGen mx = mx >>= \case
-      Gen.M1 x -> Gen.M1 <$> liftEGen (return x)
+    nfGen x' = case x' of
+      Gen.M1 x -> Gen.M1 <$> nfGen x
+    embedGen x' = case x' of
+      Gen.M1 x -> Gen.M1 (embedGen @m x)
 
 class Sharing m => ShareableGen m f where
   shareArgsGen :: f x -> m (f x)
@@ -146,36 +147,36 @@ instance (Sharing m, ShareableGen m f) => ShareableGen m (Gen.M1 i t f) where
 -- * Instances for Normalform
 
 instance (Monad m) => Normalform m () () where
-  nf    = id
-  liftE = id
+  nf    = return
+  embed = id
 
 instance (Monad m) => Normalform m Ordering Ordering where
-  nf    = id
-  liftE = id
+  nf    = return
+  embed = id
 
 instance (Monad m) => Normalform m Bool Bool where
-  nf    = id
-  liftE = id
+  nf    = return
+  embed = id
 
 instance (Monad m) => Normalform m Int Int where
-  nf    = id
-  liftE = id
+  nf    = return
+  embed = id
 
 instance (Monad m) => Normalform m Integer Integer where
-  nf    = id
-  liftE = id
+  nf    = return
+  embed = id
 
 instance (Monad m) => Normalform m Float Float where
-  nf    = id
-  liftE = id
+  nf    = return
+  embed = id
 
 instance (Monad m) => Normalform m Double Double where
-  nf    = id
-  liftE = id
+  nf    = return
+  embed = id
 
 instance (Monad m) => Normalform m Char Char where
-  nf    = id
-  liftE = id
+  nf    = return
+  embed = id
 
 -- * Instances for Shareable
 

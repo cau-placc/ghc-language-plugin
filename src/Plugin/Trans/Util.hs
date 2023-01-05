@@ -1,5 +1,6 @@
-{-# OPTIONS_GHC "-Wno-orphans" #-}
-
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications    #-}
+{-# OPTIONS_GHC "-Wno-orphans"   #-}
 -- |
 -- Module      : Plugin.Trans.Util
 -- Description : Various utility functions
@@ -15,6 +16,9 @@ import Data.List
 import Data.List.Split
 import Data.Tuple.Extra
 import Data.Typeable
+import Language.Haskell.Syntax.Extension
+import Language.Haskell.TH (Exp, Q, runQ)
+
 import GHC.Core.TyCo.Rep
 import GHC.Data.Bag
 import GHC.Hs.Binds
@@ -35,8 +39,8 @@ import GHC.Tc.Utils.Monad
 import GHC.ThToHs
 import GHC.Types.SourceText
 import GHC.Unit.Finder
-import Language.Haskell.Syntax.Extension
-import Language.Haskell.TH (Exp, Q, runQ)
+
+import Plugin.Effect.Classes
 
 {-# ANN module "HLint: ignore Use camelCase" #-}
 
@@ -298,3 +302,7 @@ mkImplications given tvs lvl env bindsVar (WC simpl impl holes) =
         emptyVarSet
         emptyVarSet
         IC_Unsolved
+
+-- | Shortcut for transforming a value into its lifted variant.
+liftE :: forall m a b. Normalform m a b => b -> m a
+liftE = return . embed @m
