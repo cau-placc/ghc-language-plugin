@@ -3,7 +3,7 @@
 {-|
 Module      : Plugin.Trans.Preprocess
 Description : Simplify functions to prepare for lifting
-Copyright   : (c) Kai-Oliver Prott (2020)
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
 Maintainer  : kai.prott@hotmail.de
 
 This module simplifies functions to prepare them for the lifting phase.
@@ -85,8 +85,7 @@ preprocessExpr tcs (L l1 (HsVar x (L l2 v))) = do
   ftc <- getFunTycon
   stc <- getShareClassTycon
   v' <- setVarType v . fst <$> liftIO (removeNondet tcs mtc ftc stc (varType v))
-  let e = (L l1 (HsVar x (L l2 v')))
-  return e
+  return (L l1 (HsVar x (L l2 v')))
 preprocessExpr _ e@(L _ HsLit{}) =
   return e
 preprocessExpr tcs (L l (HsOverLit x lit)) =
@@ -192,12 +191,12 @@ preprocessExpr _ e@(L _ (HsSpliceE _ _)) =  do
     "Template Haskell and Quotation are not supported by the plugin")
   failIfErrsM
   return e
-preprocessExpr _ e@(L _ (HsTcBracketOut _ _ _ _)) = do
+preprocessExpr _ e@(L _ HsTcBracketOut {}) = do
   reportError (mkMsgEnvelope (getLocA e) neverQualify
     "Template Haskell and Quotation are not supported by the plugin")
   failIfErrsM
   return e
-preprocessExpr _ e@(L _ (HsProc _ _ _)) = do
+preprocessExpr _ e@(L _ HsProc {}) = do
   reportError (mkMsgEnvelope (getLocA e) neverQualify
     "Arrow notation is not supported by the plugin")
   failIfErrsM
@@ -226,8 +225,8 @@ preprocessExpr _ e@(L _ (HsIPVar _ _)) = do
     "Implicit parameters are not supported by the plugin")
   failIfErrsM
   return e
-preprocessExpr _ (L _ (HsRnBracketOut _ _ _)) = undefined
-preprocessExpr _ (L _ (HsGetField _ _ _)) = undefined -- TODO
+preprocessExpr _ (L _ HsRnBracketOut {}) = undefined
+preprocessExpr _ (L _ HsGetField {}) = undefined -- TODO
 preprocessExpr _ (L _ (HsProjection _ _)) = undefined -- TODO
 
 preprocessArithExpr :: TyConMap -> ArithSeqInfo GhcTc
@@ -263,7 +262,7 @@ preprocessStmts tcs (s:ss) = do
       b' <- preprocessSynExpr tcs b
       f'  <- maybe (return Nothing) (fmap Just . preprocessSynExpr tcs) f
       return (L l (BindStmt (XBindStmtTc b' m ty f') p e'))
-    preprocessStmt (L _ (ApplicativeStmt _ _ _)) = do
+    preprocessStmt (L _ ApplicativeStmt {}) = do
       reportError (mkMsgEnvelope (getLocA s) neverQualify
         "Applicative do-notation is not supported by the plugin")
       failIfErrsM
@@ -276,17 +275,17 @@ preprocessStmts tcs (s:ss) = do
     preprocessStmt (L l (LetStmt x bs)) = do
       bs' <- preprocessLocalBinds tcs (noLoc bs)
       return (L l (LetStmt x (unLoc bs')))
-    preprocessStmt (L _ (ParStmt _ _ _ _)) =  do
+    preprocessStmt (L _ ParStmt {}) =  do
       reportError (mkMsgEnvelope (getLocA s) neverQualify
         "Parallel list comprehensions are not supported by the plugin")
       failIfErrsM
       return s
-    preprocessStmt (L _ (TransStmt _ _ _ _ _ _ _ _ _)) = do
+    preprocessStmt (L _ TransStmt {}) = do
       reportError (mkMsgEnvelope (getLocA s) neverQualify
         "Transformative list comprehensions are not supported by the plugin")
       failIfErrsM
       return s
-    preprocessStmt (L _ (RecStmt _ _ _ _ _ _ _)) =  do
+    preprocessStmt (L _ RecStmt {}) =  do
       reportError (mkMsgEnvelope (getLocA s) neverQualify
         "Recursive do-notation is not supported by the plugin")
       failIfErrsM

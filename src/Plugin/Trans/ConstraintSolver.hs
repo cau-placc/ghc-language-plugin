@@ -1,7 +1,7 @@
 {-|
 Module      : Plugin.Trans.ConstraintSolver
 Description : Constraint solver plugin to type check imported definitions
-Copyright   : (c) Kai-Oliver Prott (2020)
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
 Maintainer  : kai.prott@hotmail.de
 
 This module contains the constraint solver plugin that
@@ -11,13 +11,13 @@ This plugin is disabled automatically during lifting.
 -}
 module Plugin.Trans.ConstraintSolver
   ( tcPluginSolver, removeNondetShareable, removeNondet, solveShareAnyPlugin
-  , mkImplications
   ) where
 
+import Control.Monad
+import Control.Monad.IO.Class
 import Data.Maybe
 import Data.IORef
 import Data.Tuple.Extra
-import Control.Monad.IO.Class
 
 import GHC.Types.Name.Occurrence
 import GHC.Plugins
@@ -27,10 +27,8 @@ import GHC.Tc.Plugin
 import GHC.Tc.Types.Origin
 import GHC.Tc.Types.Constraint
 import GHC.Tc.Types.Evidence
-import GHC.Tc.Utils.TcType
 import GHC.Core.Class
 import GHC.Core.TyCo.Rep
-import GHC.Data.Bag
 
 import Plugin.Trans.Type
 import Plugin.Trans.Var
@@ -107,8 +105,8 @@ transformWanted m c (CNonCanonical (CtWanted (TyConApp tc [k1, k2, ty1, ty2])
                  (HoleDest (CoercionHole var href)) si loc)
                AbstractTyConReason)
       case res of
-        Just ((EvExpr (Coercion co), (CIrredCan w' _)), Just new) ->
-          return (Just ((EvExpr (Coercion co), (CNonCanonical w')), Just new))
+        Just ((EvExpr (Coercion co), CIrredCan w' _), Just new) ->
+          return (Just ((EvExpr (Coercion co), CNonCanonical w'), Just new))
         x -> return x
 -- Transform irreducible constraints like
 -- "(Nondet t1) ~# (Nondet t2)" to "t1 ~# t2".
@@ -244,7 +242,7 @@ removeGeneral remS tcs mtc ftc stc = removeGeneral' . expandTypeSynonyms
       (ty2', b2) <- removeGeneral' ty2
       return (FunTy f m ty1' ty2', b1 || b2)
     removeGeneral' (CastTy ty kc) =
-      first (flip CastTy kc) <$> removeGeneral' ty
+      first (`CastTy` kc) <$> removeGeneral' ty
     removeGeneral' (CoercionTy c) =
       return (CoercionTy c, False)
     removeGeneral' (LitTy l) =
@@ -262,7 +260,7 @@ removeGeneral remS tcs mtc ftc stc = removeGeneral' . expandTypeSynonyms
           ty2' <- fst <$> removeGeneral' ty2
           return (FunTy VisArg Many ty1' ty2', True)
     removeGeneral' (TyConApp tc args) = do
-      (args', bs) <- unzip <$> mapM removeGeneral' args
+      (args', bs) <- mapAndUnzipM removeGeneral' args
       tc' <- lookupTyConMap GetOld tcs tc
       return (TyConApp tc' args', or bs)
     removeGeneral' (TyVarTy v) =
@@ -276,21 +274,3 @@ newDummyEvId v = unsafeTcPluginTcM $ do
   u <- getUniqueM
   let name = mkSystemName u (mkVarOcc "#dummy_remove")
   return $ mkLocalVar (DFunId True) name Many (varType v) vanillaIdInfo
-
-mkImplications :: [Ct] -> [TcTyVar] -> TcLevel -> TcLclEnv -> EvBindsVar
-               -> WantedConstraints -> Bag Implication
-mkImplications given tvs lvl env bindsVar (WC simpl impl holes) =
-  listToBag $ map mkImplication (simplSingles ++ implSingles ++ holesSingles)
-  where
-    simplSingles = bagToList $
-      mapBag (\e -> WC (listToBag [e]) emptyBag emptyBag) simpl
-    implSingles  = bagToList $
-      mapBag (\e -> WC emptyBag (listToBag [e]) emptyBag) impl
-    holesSingles =
-      bagToList $ mapBag (\e -> WC emptyBag emptyBag (listToBag [e])) holes
-
-    givenVars = map (ctEvEvId . cc_ev) $ filter isGivenCt given
-
-    mkImplication c =
-      Implic lvl tvs UnkSkol givenVars MaybeGivenEqs False env c bindsVar
-        emptyVarSet emptyVarSet IC_Unsolved

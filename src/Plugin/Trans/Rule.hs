@@ -1,8 +1,14 @@
+{-|
+Module      : Plugin.Trans.Rule
+Description : Transforms rewrite rules for the plugin.
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
+Maintainer  : kai.prott@hotmail.de
+-}
 module Plugin.Trans.Rule (liftRule) where
 
 import Data.Maybe
 
-import GHC.Hs
+import GHC.Hs hiding (mkHsWrap)
 import GHC.Plugins
 import GHC.Tc.Types
 import GHC.Tc.Types.Constraint
@@ -25,9 +31,9 @@ liftRule tcs r@(L l (HsRule x nm act tvs tmvs lhs rhs)) = do
 
   evs <- case constraints of
     WC wanted impl holes
-      | isEmptyBag impl && isEmptyBag holes && allBag isWantedCt wanted
+      | allBag isWantedCt wanted
       -> return $ mapMaybe extractEvVar $ bagToList wanted
-    _ -> panicAny "Lifting of rule lead to unexpected constraints" r
+      | otherwise -> panicAny "Lifting of rule lead to unexpected constraints" (r, wanted, impl, holes)
   let dicts = map (noLoc . RuleBndr EpAnnNotUsed . noLocA) evs
 
   lclEnv <- getLclEnv
@@ -56,6 +62,6 @@ liftRuleBndr :: TyConMap -> LRuleBndr GhcTc -> TcM (LRuleBndr GhcTc)
 liftRuleBndr tcs   (L l1 (RuleBndr    x (L l2 v) ))
   | isId v = L l1 . RuleBndr x . L l2 . setVarType v
                 <$> liftTypeTcM tcs (varType v)
-liftRuleBndr _   b@(L _  (RuleBndrSig _ _       _)) =
+liftRuleBndr _   b@(L _  RuleBndrSig {}) =
   panicAny "Unexpected RuleBndrSig" b
 liftRuleBndr _   b = return b

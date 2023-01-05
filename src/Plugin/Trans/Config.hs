@@ -1,7 +1,7 @@
 {-|
 Module      : Plugin.Trans.Config
 Description : Configuration of the plugin
-Copyright   : (c) Kai-Oliver Prott (2020)
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
 Maintainer  : kai.prott@hotmail.de
 
 This module contains our various functions to get the configuration

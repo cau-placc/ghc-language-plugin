@@ -1,6 +1,5 @@
 {-# LANGUAGE RankNTypes             #-}
 {-# LANGUAGE TypeOperators          #-}
-{-# LANGUAGE MultiParamTypeClasses  #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE FlexibleInstances      #-}
 {-# LANGUAGE FlexibleContexts       #-}
@@ -11,13 +10,12 @@
 {-# LANGUAGE ConstraintKinds        #-}
 {-# LANGUAGE TypeFamilies           #-}
 {-# LANGUAGE ScopedTypeVariables    #-}
-{-# LANGUAGE TypeApplications       #-}
 
 {-# OPTIONS_GHC -Wno-inline-rule-shadowing #-}
 {-|
 Module      : Plugin.Effect.Classes
 Description : Type classes used for the effect implementation
-Copyright   : (c) Kai-Oliver Prott (2020)
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
 Maintainer  : kai.prott@hotmail.de
 
 This module contains type classes for the nondeterminism effect,
@@ -30,7 +28,6 @@ module Plugin.Effect.Classes where
 
 import GHC.Generics as Gen
 import Data.Kind
-import Data.Coerce
 
 -- | A class for Monads with support for explicit sharing of effects.
 class Monad s => Sharing s where
@@ -112,7 +109,7 @@ instance (Monad m, Normalform m a b) =>
     nfGen mx = mx >>= \case
       Gen.K1 x -> Gen.K1 <$> nf x
     liftEGen mx = mx >>= \case
-      Gen.K1 x -> Gen.K1 <$> return (liftE (return x))
+      Gen.K1 x -> return (Gen.K1 (liftE (return x)))
 
 instance (Monad m, NormalformGen m f g) =>
   NormalformGen m (Gen.M1 i t f) (Gen.M1 j h g) where

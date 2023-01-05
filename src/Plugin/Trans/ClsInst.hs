@@ -1,7 +1,7 @@
 {-|
 Module      : Plugin.Trans.ClsInst
 Description : Functions to handle lifting of instance information
-Copyright   : (c) Kai-Oliver Prott (2020)
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
 Maintainer  : kai.prott@hotmail.de
 
 This module contains a function to lift the information that GHC has

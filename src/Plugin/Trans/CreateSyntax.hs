@@ -1,10 +1,10 @@
-{-# LANGUAGE TemplateHaskell   #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ViewPatterns      #-}
+{-# LANGUAGE TemplateHaskellQuotes #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE ViewPatterns          #-}
 {-|
 Module      : Plugin.Trans.CreateSyntax
 Description : Helper functions to create parts of GHC's AST
-Copyright   : (c) Kai-Oliver Prott (2020)
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
 Maintainer  : kai.prott@hotmail.de
 
 This module contains a lot of different helper functions to create
@@ -373,7 +373,7 @@ mkListReturn a = do
   return (SyntaxExprTc (unLoc res) [WpHole] WpHole)
   where
     mk _ = do
-      th_expr <- liftQ [| \x -> (:) x [] |]
+      th_expr <- liftQ [| (: []) |]
       let expType = a `mkVisFunTyMany` mkTyConApp listTyCon [a]
       mkNewAny th_expr expType
 
@@ -386,7 +386,7 @@ mkListFail a = do
   return (SyntaxExprTc (unLoc res) [WpHole] WpHole)
   where
     mk _ = do
-      th_expr <- liftQ [|  \_ -> [] |]
+      th_expr <- liftQ [| const [] |]
       let expType = stringTy `mkVisFunTyMany` mkTyConApp listTyCon [a]
       mkNewAny th_expr expType
 
@@ -399,7 +399,7 @@ mkListGuard = do
   return (SyntaxExprTc (unLoc res) [WpHole] WpHole)
   where
     mk _ = do
-      th_expr <- liftQ [| \b -> if b then [()] else [] |]
+      th_expr <- liftQ [| \b -> [() | b] |]
       let expType = boolTy `mkVisFunTyMany` mkTyConApp listTyCon [unitTy]
       mkNewAny th_expr expType
 
@@ -497,10 +497,6 @@ toLetExpr :: (RecFlag, LHsBinds GhcTc) -> LHsExpr GhcTc -> LHsExpr GhcTc
 toLetExpr b e = noLocA (HsLet noExtField bs e)
   where
     bs = HsValBinds EpAnnNotUsed (XValBindsLR (NValBinds [b] []))
-
-mkHsWrap :: HsWrapper -> HsExpr GhcTc -> HsExpr GhcTc
-mkHsWrap WpHole e = e
-mkHsWrap w      e = XExpr (WrapExpr (HsWrap w e))
 
 splitMyFunTy :: TyCon -> TyCon -> Type -> (Type, Type)
 splitMyFunTy mtc ftc (coreView -> Just ty)    = splitMyFunTy mtc ftc ty
