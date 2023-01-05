@@ -2,7 +2,7 @@
 {-|
 Module      : Plugin.Trans.Import
 Description : A Renamer plugin to check if imported modules are compatible
-Copyright   : (c) Kai-Oliver Prott (2020)
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
 Maintainer  : kai.prott@hotmail.de
 
 This module implements the Renamer plugin that checks if all imported

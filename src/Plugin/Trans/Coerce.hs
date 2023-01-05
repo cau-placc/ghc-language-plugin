@@ -1,4 +1,10 @@
 {-# LANGUAGE TypeFamilies #-}
+{-|
+Module      : Plugin.Trans.Coerce
+Description : Translates coercions for the plugin
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
+Maintainer  : kai.prott@hotmail.de
+-}
 module Plugin.Trans.Coerce where
 
 import Language.Haskell.Syntax.Extension
@@ -16,6 +22,7 @@ import GHC.Parser.Annotation
 import Plugin.Trans.CreateSyntax
 import Plugin.Trans.Type
 import Plugin.Trans.Var
+import Plugin.Trans.Util
 
 -- Create function to resemble a coercion after lifting. Example:
 -- newtype W = W Int

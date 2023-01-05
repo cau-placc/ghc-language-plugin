@@ -1,10 +1,10 @@
-{-# LANGUAGE ViewPatterns        #-}
-{-# LANGUAGE LambdaCase          #-}
-{-# LANGUAGE TemplateHaskell     #-}
+{-# LANGUAGE ViewPatterns          #-}
+{-# LANGUAGE LambdaCase            #-}
+{-# LANGUAGE TemplateHaskellQuotes #-}
 {-|
 Module      : Plugin.Trans.Type
 Description : Various functions to get or lift type-related things
-Copyright   : (c) Kai-Oliver Prott (2020)
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
 Maintainer  : kai.prott@hotmail.de
 
 This module contains our various functions to lift types and everything else
@@ -189,7 +189,7 @@ liftTypeParametrized sh stc ftc mty s tcs t
             -- Make a 'Sharable' constraint for each variable
             cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
         -- Update any type constructors of the pre-existing constraints.
-        pis' <- mapM (replacePiTy tcs) pis
+        pis' <- mapM (replacePiTy stc ftc mty us tcs) pis
         -- Include 'Shareable' constraints.
         mkPiTys pis' . flip (foldr mkInvisFunTyMany) cons
           -- use the top-level version to get the isDictTy check
@@ -237,11 +237,20 @@ liftTypeParametrized sh stc ftc mty s tcs t
       return (mkAppTy mty ty)
 
 -- | Update type constructors in a pi-type
-replacePiTy :: TyConMap -> TyBinder -> IO TyBinder
-replacePiTy _   (Named b              ) = return (Named b)
-replacePiTy tcs (Anon  f (Scaled m t)) =
+replacePiTy :: TyCon -> TyCon -> Type -> UniqSupply -> TyConMap -> TyBinder -> IO TyBinder
+replacePiTy _ _ _ _ _ (Named b) = return (Named b)
+replacePiTy stc ftc mty us tcs (Anon f (Scaled m t)) =
   (\m' t' -> Anon f (Scaled m' t'))
-    <$> replaceTyconTy tcs m <*> replaceTyconTy tcs t
+    <$> replaceTyconTy tcs m
+    <*> liftInnerTy stc ftc mty us tcs t
+
+replacePiTyTcM :: TyConMap -> TyBinder -> TcM TyBinder
+replacePiTyTcM tcs b = do
+  mtc <- getMonadTycon
+  stc <- getMonadTycon
+  ftc <- getFunTycon
+  us <- getUniqueSupplyM
+  liftIO (replacePiTy stc ftc (mkTyConTy mtc) us tcs b)
 
 -- | Create 'Shareable' constraint for the given type variable.
 mkShareable :: (Type -> Type) -> UniqSupply -> TyCoVarBinder -> Maybe Type
@@ -256,7 +265,7 @@ mkShareableFor us mkShareType b@(Bndr v _) rest =
   let args = fst (splitFunTys (tyVarKind v))
       (u1, u2) = splitUniqSupply us
       vs = zipWith (\(Scaled _ t) -> mkTyVarWith t) args (uniqsFromSupply u1)
-      bs = map (flip Bndr Inferred) vs
+      bs = map (`Bndr` Inferred) vs
       vskinds = map mkTyVarTy vs
       innr = map ((. Just) . mkShareableFor u2 mkShareType) bs
       -- innr = [\ty -> ForAllTy b . (Shareable bty => ty)]
@@ -438,10 +447,12 @@ liftDefaultType tcs cls ty = do
       bs = mapMaybe namedTyCoVarBinder_maybe bs1
   uss <- replicateM (length bs) getUniqueSupplyM
   mtc <- getMonadTycon
+  ftc <- getFunTycon
   stc <- getShareClassTycon
+  us <- getUniqueSupplyM
   let mkShareType t' = mkTyConApp stc [mkTyConTy mtc, t']
       cons = catMaybes $ zipWith (mkShareable mkShareType) uss bs
-  bs' <- liftIO (mapM (replacePiTy tcs) bs1)
+  bs' <- liftIO (mapM (replacePiTy stc ftc (mkTyConTy mtc) us tcs) bs1)
   mkPiTys bs' . flip (foldr mkInvisFunTyMany) cons
     <$> liftTypeTcM tcs ty1
 
@@ -538,7 +549,7 @@ replaceWrapper tcs = replaceWrapper'
 -- Here, we want to lift the type applications, EXCEPT the LiftedRep.
 liftErrorWrapper :: TyConMap -> HsWrapper -> TcM HsWrapper
 liftErrorWrapper tcs (WpTyApp ty)
-  | maybe True (not . isPromotedDataCon) (fst <$> splitTyConApp_maybe ty)
+  | maybe True (not . isPromotedDataCon . fst) (splitTyConApp_maybe ty)
                          = WpTyApp <$> liftTypeTcM tcs ty
 liftErrorWrapper _   w = return w
 
@@ -682,7 +693,7 @@ instantiateWith apps ty =
 createWrapperFor :: Type -> [Type] -> [Var] -> HsWrapper
 createWrapperFor ty apps evids =
   let (hd, _) = splitInvisPiTys ty
-  in (wrapperArg hd apps evids)
+  in wrapperArg hd apps evids
   where
     wrapperArg (Named _ :xs) (a:as) evs    =
       wrapperArg xs as evs <.> WpTyApp a

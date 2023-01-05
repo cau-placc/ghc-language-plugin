@@ -1,7 +1,7 @@
 {-|
 Module      : Plugin.Trans.TysWiredIn
 Description : Module to load built-in type constructors
-Copyright   : (c) Kai-Oliver Prott (2020)
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
 Maintainer  : kai.prott@hotmail.de
 
 This module contains the function to load the initial type constructor map that

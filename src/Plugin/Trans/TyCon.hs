@@ -1,9 +1,8 @@
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE RecursiveDo   #-}
+{-# LANGUAGE RecursiveDo #-}
 {-|
 Module      : Plugin.Trans.TyCon
 Description : Functions to lift type constructors.
-Copyright   : (c) Kai-Oliver Prott (2020)
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
 Maintainer  : kai.prott@hotmail.de
 
 This module contains a function to lift a type constructor,
@@ -50,7 +49,8 @@ liftTycon dynFlags instEnvs stycon ftycon mtycon supply tcs tcsM tc
   | isVanillaAlgTyCon tc || isClassTyCon tc = mdo
     -- The tycon definition is cyclic, so we use this let-construction.
     let u = uniqFromSupply supply
-        (supply', other) = splitUniqSupply supply
+        (supply', tmp) = splitUniqSupply supply
+        (supply'', other) = splitUniqSupply tmp
         isCls = isJust (tyConClass_maybe tc)
     -- Lift the rhs of the underlying datatype definition.
     -- For classes, this lifts the implicit datatype for its dictionary.
@@ -58,9 +58,9 @@ liftTycon dynFlags instEnvs stycon ftycon mtycon supply tcs tcsM tc
       (algTyConRhs tc)
     -- Potentially lift any class information
     flav <- case (tyConRepName_maybe tc, tyConClass_maybe tc) of
-          (Just p, Just c ) -> flip ClassTyCon p <$>
+          (Just p, Just c ) -> flip ClassTyCon (liftRepName supply'' p) <$>
             liftClass dynFlags stycon ftycon mtycon tcs tcsM tycon us2 c
-          (Just p, Nothing) -> return (VanillaAlgTyCon p)
+          (Just p, Nothing) -> return (VanillaAlgTyCon (liftRepName supply'' p))
           _                 ->
             panicAnyUnsafe "Unknown flavour of type constructor" tc
     -- Create the new TyCon.
@@ -132,7 +132,7 @@ liftAlgRhs :: Bool                -- ^ Is it a class definition or not
 liftAlgRhs isClass dflags instEnvs stycon ftycon mtycon tcs tcsM tycon us
   -- Just lift all constructors of a data decl.
   (DataTyCon cns size ne) = case listSplitUniqSupply us of
-    []      -> panicAnyUnsafe "Finite Unique supply" ()  
+    []      -> panicAnyUnsafe "Finite Unique supply" ()
     (u:uss) -> do
       cns' <- zipWithM (liftConstr isClass dflags instEnvs stycon ftycon mtycon tcs tcsM tycon) uss cns
       return (u, DataTyCon cns' size ne)

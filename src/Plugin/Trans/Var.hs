@@ -1,7 +1,7 @@
 {-|
 Module      : Plugin.Trans.Var
 Description : Various helper to create variables
-Copyright   : (c) Kai-Oliver Prott (2020)
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
 Maintainer  : kai.prott@hotmail.de
 
 This module contains various functions to generate fresh variables and other
@@ -10,8 +10,9 @@ stuff to deal with variables.
 module Plugin.Trans.Var where
 
 import Data.Syb
+import Data.List
 
-import GHC.Types.Name.Occurrence
+import GHC.Types.Name.Occurrence hiding (varName)
 import GHC.Plugins
 import GHC.Tc.Types
 import GHC.Core.TyCo.Rep
@@ -60,5 +61,26 @@ countVarOcc v e = length (listify (\v' -> varUnique v' == u) e)
 liftName :: Name -> Unique -> Name
 liftName n u =
   let occ = occName n
-      occ' = mkOccName (occNameSpace occ) (occNameString occ ++ "ND")
+      occ' = addNameSuffix occ
   in tidyNameOcc (setNameUnique n u) occ'
+
+-- | Change the unique of the given name and add a suffix.
+liftVarName :: Var -> Unique -> Var
+liftVarName n u = setVarName (setVarUnique n u) (liftName (varName n) u)
+
+isLiftedDefaultName :: OccName -> OccName -> Bool
+isLiftedDefaultName o1 o2 = o1 == o2
+
+addNameSuffix :: OccName -> OccName
+addNameSuffix o
+  | isSymOcc o = mkOccName (occNameSpace o) (occNameString o ++ "#")
+  | otherwise = mkOccName (occNameSpace o) (occNameString o ++ "ND")
+
+removeNameSuffix :: OccName -> OccName
+removeNameSuffix o
+  | isSymOcc o = case occNameString o of
+      s | last s == '#' -> mkOccName (occNameSpace o) (init s)
+      _ -> o
+  | otherwise = case occNameString o of
+      s | "ND" `isSuffixOf` s -> mkOccName (occNameSpace o) (init (init s))
+      _ -> o

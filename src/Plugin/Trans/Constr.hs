@@ -2,7 +2,7 @@
 {-|
 Module      : Plugin.Trans.Constr
 Description : Functions to handle lifting of value constructor declarations
-Copyright   : (c) Kai-Oliver Prott (2020)
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
 Maintainer  : kai.prott@hotmail.de
 
 This module contains a function to lift a data or newtype
@@ -11,9 +11,10 @@ functions to get the lifted constructors and record selectors from
 the type constructor map.
 -}
 module Plugin.Trans.Constr
-  ( liftConstr, getLiftedCon, getLiftedRecSel, RecordLiftingException(..)
+  ( liftConstr, getLiftedCon, getLiftedRecSel, RecordLiftingException(..), liftRepName
   ) where
 
+import Data.Maybe
 import Data.List
 import Control.Monad
 import Control.Exception
@@ -25,6 +26,7 @@ import GHC.Core.PatSyn
 import GHC.Core.FamInstEnv
 
 import Plugin.Trans.Type
+import Plugin.Trans.Util
 import Plugin.Trans.Var
 
 -- | Exception type when lifting of a class fails.
@@ -65,23 +67,32 @@ liftConstr :: Bool                -- ^ True iff the type constructor should not 
            -> UniqSupply          -- ^ Supply of fresh unique keys
            -> DataCon             -- ^ Constructor to be lifted
            -> IO DataCon          -- ^ Lifted constructor
-liftConstr noRename dflags instEnvs stycon ftycon mtycon tcs tcsM tycon s cn = do
+liftConstr isClass dflags instEnvs stycon ftycon mtycon tcs tcsM tycon s cn = do
 
   -- Create all required unique keys.
   let (s1, tmp1) = splitUniqSupply s
       (s2, tmp2) = splitUniqSupply tmp1
       (s3, tmp3) = splitUniqSupply tmp2
-      (s4, s5  ) = splitUniqSupply tmp3
-      ss = listSplitUniqSupply s4
+      (s4, tmp4) = splitUniqSupply tmp3
+      (s5, s6) = splitUniqSupply tmp4
+      tmpUs = listSplitUniqSupply s4
+      (uss, ss) = splitAt (length (dataConUserTyVarBinders cn)) tmpUs
+
+  let mkShareTy ty = mkTyConApp stycon [mkTyConTy mtycon, ty]
+      newSuperClassArgs
+        | isClass = catMaybes $ zipWith (\u (Bndr tv _) -> Scaled Many
+                                            <$> mkShareable mkShareTy u (Bndr tv Required)) uss
+                              $ dataConUserTyVarBinders cn
+        | otherwise = []
 
   -- Lift all constructor arguments and update any type constructors.
-  argtys <- liftIO (zipWithM liftAndReplaceType ss (dataConOrigArgTys cn))
+  argtys <- (newSuperClassArgs++) <$> liftIO (zipWithM liftAndReplaceType ss (dataConOrigArgTys cn))
 
   -- Create the new worker and constructor names, if required.
   let w        = dataConWorkId cn
       origName1 = dataConName cn
       origName2 = varName w
-      (name1, name2) = if noRename
+      (name1, name2) = if isClass
         then (origName1, origName2)
         else (liftName origName1 (uniqFromSupply s1),
               liftName origName2 (uniqFromSupply s2))
@@ -97,13 +108,15 @@ liftConstr noRename dflags instEnvs stycon ftycon mtycon tcs tcsM tycon s cn = d
               Nothing   -> NoDataConRep
               Just wrap -> initUs_ s5 $ do
                 uWrap <- getUniqueM
-                let wrap' = if noRename then varName wrap else
+                let wrap' = if isClass then varName wrap else
                               liftName (varName wrap) uWrap
                 let bangs = dataConImplBangs cn
                 mkDataConRep dflags instEnvs wrap' (Just bangs) dc
       -- Create the new constructor.
       dc = mkDataCon
-        name1 (dataConIsInfix cn) (tyConName $ promoteDataCon cn)
+        name1
+        (dataConIsInfix cn)
+        (maybe (tyConName $ promoteDataCon cn) (liftRepName s6) (tyConRepName_maybe tycon))
         (dataConSrcBangs cn) fs (dataConUnivTyVars cn)
         (dataConExTyCoVars cn) (dataConUserTyVarBinders cn) (dataConEqSpec cn)
         (dataConTheta cn) argtys resty NoRRI tycon
@@ -171,3 +184,8 @@ getLiftedRecSel _ _ _ _ _ p@(RecSelPatSyn _) v =
   throw (RecordLiftingException v p reason)
     where
       reason = "Pattern synonyms are not supported by the plugin yet"
+
+liftRepName :: UniqSupply -> TyConRepName -> TyConRepName
+liftRepName u n
+  | Just mdl <- nameModule_maybe n = mkExternalName (uniqFromSupply u) mdl (mkOccName (occNameSpace (occName n)) (occNameString (occName n) ++ "ND" ++ show (uniqFromSupply u))) noSrcSpan
+  | otherwise = panicAnyUnsafe "no module in repName" n

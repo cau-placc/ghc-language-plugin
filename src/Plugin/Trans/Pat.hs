@@ -1,10 +1,10 @@
-{-# LANGUAGE TupleSections     #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell   #-}
+{-# LANGUAGE TupleSections         #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE TemplateHaskellQuotes #-}
 {-|
 Module      : Plugin.Trans.PatternMatching
 Description : Lift pattern expressions
-Copyright   : (c) Kai-Oliver Prott (2020)
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
 Maintainer  : kai.prott@hotmail.de
 
 This module provides a function to lift a pattern and extract any potential
@@ -84,7 +84,7 @@ liftPat' _ p@(ListPat (ListPatTc _ (Just _)) _) = do
 liftPat' tcs (TuplePat tys args box) = do
   con <- liftIO (getLiftedCon (tupleDataCon box (length tys)) tcs)
   let lc = noLocA (RealDataCon con)
-  (args', vs) <- unzip <$> mapM (liftPat tcs) args
+  (args', vs) <- mapAndUnzipM (liftPat tcs) args
   tys' <- mapM (liftInnerTyTcM tcs) tys
   let det = PrefixCon [] args'
   let res = ConPat (ConPatTc tys' [] [] (EvBinds emptyBag) WpHole) lc det
@@ -113,13 +113,13 @@ liftPat' _ p@ConPat {} = do
     "Pattern synonyms are not supported by the plugin")
   failIfErrsM
   return (p, [])
-liftPat' _ p@(ViewPat _ _ _) = do
+liftPat' _ p@ViewPat {} = do
   l <- getSrcSpanM
   reportError (mkMsgEnvelope l neverQualify
     "View patterns are not supported by the plugin")
   failIfErrsM
   return (p, [])
-liftPat' _ p@(SplicePat _ _) = do
+liftPat' _ p@SplicePat {} = do
   l <- getSrcSpanM
   reportError (mkMsgEnvelope l neverQualify
     "Spliced patterns are not supported by the plugin")
@@ -141,7 +141,7 @@ liftPat' _   (LitPat _ (HsIntPrim _ i)) = do
   return (NPat intTy (noLoc overLit) negSyn eqSyn, [])
 liftPat' _   p@(LitPat _ _)  = return (p, [])
 liftPat' _   p@NPat {}       = return (p, [])
-liftPat' _   p@(NPlusKPat _ _ _ _ _ _) = do
+liftPat' _   p@NPlusKPat {} = do
   l <- getSrcSpanM
   reportError (mkMsgEnvelope l neverQualify
     "N+k patterns are not supported by the plugin")
@@ -153,10 +153,10 @@ liftPat' tcs (XPat (CoPat _ p _)) = liftPat' tcs p
 liftConDetail :: TyConMap -> RecSelParent -> HsConPatDetails GhcTc
               -> TcM (HsConPatDetails GhcTc, [(Var, LocatedN Var)])
 liftConDetail tcs _ (PrefixCon _ args) = do
-  (args', vs) <- unzip <$> mapM (liftPat tcs) args
+  (args', vs) <- mapAndUnzipM (liftPat tcs) args
   return (PrefixCon [] args', concat vs)
 liftConDetail tcs p (RecCon (HsRecFields flds d)) = do
-  (flds', vs) <- unzip <$> mapM (liftRecFld tcs p) flds
+  (flds', vs) <- mapAndUnzipM (liftRecFld tcs p) flds
   return (RecCon (HsRecFields flds' d), concat vs)
 liftConDetail tcs _ (InfixCon arg1 arg2) = do
   (arg1', vs1) <- liftPat tcs arg1

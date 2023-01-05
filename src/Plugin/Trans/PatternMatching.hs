@@ -6,7 +6,7 @@
 {-|
 Module      : Plugin.Trans.PatternMatching
 Description : Simplify pattern matching
-Copyright   : (c) Kai-Oliver Prott (2020)
+Copyright   : (c) Kai-Oliver Prott (2020 - 2023)
 Maintainer  : kai.prott@hotmail.de
 
 This module simplifies pattern matching for functions, case, let and lambda
@@ -88,7 +88,7 @@ matchExpr (HsCase _ (L _ (HsVar _ (L _ v)))
   (MG (MatchGroupTc _ res) (L _ alts) _)) = do
   e <- errorExpr CaseAlt res >>= compileMatching [v] res alts
   return (unLoc e)
-matchExpr (HsCase _ scr (MG (MatchGroupTc ([a@(Scaled _ ty)]) res)
+matchExpr (HsCase _ scr (MG (MatchGroupTc [a@(Scaled _ ty)] res)
                             (L _ alts) _)) = do
   v <- freshVar a
   e <- errorExpr CaseAlt res >>= compileMatching [v] res alts
@@ -124,7 +124,7 @@ compileDo ty ctxt [L l (LastStmt x e b r)] = do
       return (NoSyntaxExprTc, noLocA (applySynExpr lr (unLoc e)), True)
     _        -> return (r, e, False)
   return ([L l (LastStmt x e' b r')], ctxtSwap)
-compileDo _ _ (s@(L _ (LastStmt _ _ _ _)) : _) =
+compileDo _ _ (s@(L _ LastStmt {}) : _) =
   panicAny "Unexpected last statement in do notation" s
 compileDo ty ctxt ((L l (BindStmt (XBindStmtTc b' _ _ f') p (e :: LHsExpr GhcTc)) :: ExprLStmt GhcTc) : stmts) = do
   -- Compile the rest of the statements and create a do-expression.
@@ -139,7 +139,7 @@ compileDo ty ctxt ((L l (BindStmt (XBindStmtTc b' _ _ f') p (e :: LHsExpr GhcTc)
   let ty' = snd (splitAppTy ty)
   (b, f) <- case ctxt of
     ListComp -> (,) <$> mkListBind ety ty' <*> mkListFail ty'
-    _        -> return (b', maybe NoSyntaxExprTc id f')
+    _        -> return (b', fromMaybe NoSyntaxExprTc f')
 
   -- Create the regular and fail alternatatives
   -- (if f is not noSynExpr, the fail one never gets used).
@@ -175,7 +175,7 @@ compileDo ty ctxt (L _ (LetStmt _ bs) : xs) = do
       e <- foldrM mkSeq rest (reverse $ map unLoc $ sortBy cmpLocated strictVs)
       let lastS = noLocA (LastStmt noExtField e Nothing NoSyntaxExprTc)
       return (lets ++ [lastS], swapCtxt)
-compileDo _ _ (s@(L _ (ApplicativeStmt _ _ _)) : _) = do
+compileDo _ _ (s@(L _ ApplicativeStmt {}) : _) = do
   reportError (mkMsgEnvelope (getLocA s) neverQualify
     "Applicative do-notation is not supported by the plugin")
   failIfErrsM
@@ -189,17 +189,17 @@ compileDo ty ctxt (L l (BodyStmt x e@(L el ee) s g) : xs) = do
                                    <*> fmap (L el . (`applySynExpr` ee)) mkListGuard
     _        -> return (s, g, e)
   return (L l (BodyStmt x e' s' g'):xs', swapCtxt)
-compileDo _ _ (s@(L _ (ParStmt _ _ _ _)) : _) = do
+compileDo _ _ (s@(L _ ParStmt {}) : _) = do
   reportError (mkMsgEnvelope (getLocA s) neverQualify
     "Parallel list comprehensions are not supported by the plugin")
   failIfErrsM
   return ([], False)
-compileDo _ _ (s@(L _ (TransStmt _ _ _ _ _ _ _ _ _)) : _) = do
+compileDo _ _ (s@(L _ TransStmt {}) : _) = do
   reportError (mkMsgEnvelope (getLocA s) neverQualify
     "Transformative list comprehensions are not supported by the plugin")
   failIfErrsM
   return ([], False)
-compileDo _ _ (s@(L _ (RecStmt _ _ _ _ _ _ _)) : _) =  do
+compileDo _ _ (s@(L _ RecStmt {}) : _) =  do
   reportError (mkMsgEnvelope (getLocA s) neverQualify
     "Recursive do-notation is not supported by the plugin")
   failIfErrsM
@@ -244,9 +244,9 @@ compileLetBind :: LHsBindLR GhcTc GhcTc
 compileLetBind (L l (AbsBinds x tvs evs ex ev bs sig)) = do
   (bss, vss, strictVss) <- unzip3 <$> mapM compileLetBind (bagToList bs)
   let bs' = listToBag $ concat bss
-  (realVs, mbex) <- unzip <$> mapM (getRealVar ex) (concat vss)
+  (realVs, mbex) <- mapAndUnzipM (getRealVar ex) (concat vss)
   let newExports = ex ++ catMaybes mbex
-  strictVs <- fst . unzip <$> mapM (getRealVar newExports) (concat strictVss)
+  strictVs <- map fst <$> mapM (getRealVar newExports) (concat strictVss)
   let binding = L l (AbsBinds x tvs evs newExports ev bs' sig)
   return ([binding], realVs, strictVs)
   where
@@ -275,7 +275,7 @@ compileLetBind pb@(L _ (PatBind ty p grhss _)) = do
   let decidedStrict = isBangPat p ||
                       (Strict `xopt` flags && isNoLazyPat p)
   let export = L (getLocA pb) fname
-  return (b' : bs, [export], if decidedStrict then [export] else [])
+  return (b' : bs, [export], [export | decidedStrict] )
   where
     origStrictness
       | isBangPat   p = SrcStrict
@@ -323,9 +323,9 @@ compileLetBind pb@(L _ (PatBind ty p grhss _)) = do
                                 return (AsPat x (L l2 v') p3, (v,v') : vs')
       ParPat _ p2         -> first unLoc <$> prepareSelPat p2
       BangPat x p2        -> first (BangPat x) <$> prepareSelPat p2
-      ListPat x ps        -> do (ps', vss) <- unzip <$> mapM prepareSelPat ps
+      ListPat x ps        -> do (ps', vss) <- mapAndUnzipM prepareSelPat ps
                                 return (ListPat x ps', concat vss)
-      TuplePat x ps b     -> do (ps', vss) <- unzip <$> mapM prepareSelPat ps
+      TuplePat x ps b     -> do (ps', vss) <- mapAndUnzipM prepareSelPat ps
                                 return (TuplePat x ps' b, concat vss)
       SumPat x p2 t b     -> first (\p3 -> SumPat x p3 t b) <$> prepareSelPat p2
       p2@ConPat { pat_args = args } ->
@@ -342,10 +342,10 @@ compileLetBind pb@(L _ (PatBind ty p grhss _)) = do
     prepareSelDetails :: HsConPatDetails GhcTc
                       -> TcM (HsConPatDetails GhcTc, [(Var, Var)])
     prepareSelDetails (PrefixCon _ ps) = do
-      (ps', vss) <- unzip <$> mapM prepareSelPat ps
+      (ps', vss) <- mapAndUnzipM prepareSelPat ps
       return (PrefixCon [] ps', concat vss)
     prepareSelDetails (RecCon (HsRecFields flds dd)) = do
-      (flds', vss) <- unzip <$> mapM prepareSelField flds
+      (flds', vss) <- mapAndUnzipM prepareSelField flds
       return (RecCon (HsRecFields flds' dd), concat vss)
     prepareSelDetails (InfixCon p1 p2) = do
       (p1', vs1) <- prepareSelPat p1
@@ -408,7 +408,7 @@ compileLetBind b@(L _ (FunBind _ (L _ fname)
                       (strict == SrcStrict ||
                       (strict == NoSrcStrict && Strict `xopt` flags))
   let export = L (getLocA b) fname
-  return ([b], [export], if decidedStrict then [export] else [])
+  return ([b], [export], [export | decidedStrict])
 compileLetBind b = return ([b], [], [])
 
 -- | Checks if the first term contains the second term.
@@ -656,7 +656,7 @@ mkAlts v vs ty1 ty2 err eqs@((vp@(L _ (ViewPat _ e p)), _) : _) = do
     Right ex   ->
       Right . noLocA <$> matchExpr (mkCse [noLocA (mkWild ex)])
 mkAlts v vs ty1 ty2 err eqs@((p, alt) : _)
-  | L _ (c@ConPat {}) <- p,
+  | L _ c@ConPat {} <- p,
     L _ (RealDataCon dc) <- pat_con c,
     isNewTyCon (dataConTyCon dc) = do
       (p', [v'], _) <- flattenPat p
@@ -715,7 +715,7 @@ viewAlts :: [Var] -> Type -> LHsExpr GhcTc
          -> [(LPat GhcTc, LMatch GhcTc (LHsExpr GhcTc))]
          -> TcM [LMatch GhcTc (LHsExpr GhcTc)]
 viewAlts _  _   _   [] = return []
-viewAlts vs ty2 err ((curr@((L _ (ViewPat _ _ p)), L l _))
+viewAlts vs ty2 err (curr@(L _ (ViewPat _ _ p), L l _)
                      :rest) = do
   (p', vs',_) <- flattenPat p
   curr' <- flattenEq curr
